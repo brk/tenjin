@@ -1,0 +1,18 @@
+#!/bin/sh
+
+case "$0" in
+    /*) script_path="$0" ;;
+    *) script_path="$PWD/$0" ;;
+esac
+tenjdir=$(dirname "$script_path")
+rootdir=$(dirname "$tenjdir")
+
+localuv="${rootdir}/_local/uv"
+localcg="${rootdir}/_local/uv.toml"
+
+if [ -e "$localuv" ] && [ -e "$localcg" ]; then
+    exec "$localuv" run --project "$tenjdir" --config-file "$localcg" $tenjdir/main.py "$@"
+else
+    echo "Before running 10j, please run     sh cli/sh/provision.sh" >&2
+    exit 1
+fi

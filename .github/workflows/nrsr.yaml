@@ -1,0 +1,54 @@
+name: not-rocket-science
+
+on:
+  push:
+    branches: [ "test/**" ]
+  pull_request:
+    branches: [ "main" ]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-Dwarnings"
+  XJ_SHOW_CMDS: "1"
+
+jobs:
+  not-rocket-science-py:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Provision Python via uv
+        run: sh cli/sh/provision.sh uv
+
+      - name: Ensure no large files were accidentally added
+        run: cli/10j check-repo-file-sizes
+
+      - name: Code linting and formatting checks
+        run: cli/10j check-py
+
+  not-rocket-science-ocaml:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Extract OCaml Cache Key
+        id: extract
+        run: echo "ocaml_key=$(python3 cli/constants.py ocaml-cache-key)" >> $GITHUB_OUTPUT
+
+      # We don't use setup-ocaml because it would compile OCaml in the runner's
+      # environment, which has libraries that aren't available to the 10j toolchain.
+      # Thus, when our provisioning process would try to compile dune, it would fail.
+      # This action restores a previous cache, if we have one, and populates the cache
+      # if the workflow succeeds.
+      # XREF:ci-opam-paths
+      - name: Cache OCaml
+        id: cache-ocaml
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.opam
+            ~/.local/bin/opam
+          key: ${{ steps.extract.outputs.ocaml_key }}
+          
+      - name: Provision OCaml
+        run: sh cli/sh/provision.sh ocaml
