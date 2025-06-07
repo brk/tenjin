@@ -24,6 +24,35 @@ def do_check_py():
     do_check_py_fmt()
 
 
+def do_fmt_rs():
+    root = repo_root.find_repo_root_dir_Path()
+    hermetic.run_cargo_in(["fmt"], cwd=root / "c2rust", check=True)
+
+
+def do_check_rs_fmt():
+    root = repo_root.find_repo_root_dir_Path()
+    hermetic.run_cargo_in(["fmt", "--", "--check"], cwd=root / "c2rust", check=True)
+
+
+def do_check_rs():
+    root = repo_root.find_repo_root_dir_Path()
+    hermetic.run_cargo_in(
+        "clippy --locked -p c2rust -p c2rust-transpile -- -Aclippy::needless_lifetimes".split(),
+        cwd=root / "c2rust",
+        check=True,
+    )
+    # do_check_rs_fmt()  # c2rust is not yet fmt-clean, will tackle later
+
+
+def do_test_unit_rs():
+    root = repo_root.find_repo_root_dir_Path()
+    hermetic.run_cargo_in(
+        "test --locked -p c2rust -p c2rust-transpile".split(),
+        cwd=root / "c2rust",
+        check=True,
+    )
+
+
 def parse_git_name_status_line(bs: bytes) -> tuple[str, bytes]:
     """
     >>> parse_git_name_status_line(b'A       .gitignore')
@@ -106,6 +135,27 @@ def check_py():
 
 
 @cli.command()
+def fmt_rs():
+    do_fmt_rs()
+
+
+@cli.command()
+def check_rs():
+    try:
+        do_check_rs()
+    except subprocess.CalledProcessError:
+        sys.exit(1)
+
+
+@cli.command()
+def test_unit_rs():
+    try:
+        do_test_unit_rs()
+    except subprocess.CalledProcessError:
+        sys.exit(1)
+
+
+@cli.command()
 def check_star():
     """Runs all code-level checks (formatting and linting)"""
     # The Click documentation discourages invoking one command from
@@ -114,6 +164,7 @@ def check_star():
     # and then make each command be a thin wrapper to invoke the fn.
     try:
         do_check_py()
+        do_check_rs()
     except subprocess.CalledProcessError:
         sys.exit(1)
 
