@@ -3146,6 +3146,12 @@ impl<'c> Translation<'c> {
     }
 
     fn compute_size_of_ty(&self, ty: Box<Type>) -> TranslationResult<WithStmts<Box<Expr>>> {
+        match *ty {
+            Type::Array(ta) if self.is_known_size_1_type(&ta.elem) => {
+                return Ok(WithStmts::new_val(Box::new(ta.len)));
+            }
+            _ => {}
+        }
         let name = "size_of";
         let params = mk().angle_bracketed_args(vec![ty]);
         let path = vec![
@@ -3178,6 +3184,27 @@ impl<'c> Translation<'c> {
         }
         let call = mk().call_expr(mk().abs_path_expr(path), vec![]);
         Ok(WithStmts::new_val(call))
+    }
+
+    fn is_known_size_1_type(&self, ty: &Type) -> bool {
+        match ty {
+            Type::Path(path) => path.qself.is_none() && self.is_known_size_1_path(&path.path),
+            _ => false,
+        }
+    }
+
+    fn is_known_size_1_path(&self, path: &Path) -> bool {
+        if path.segments.len() == 2 {
+            if path.segments[0].ident.to_string().as_str() == "libc"
+                && path.segments[1].ident.to_string().as_str() == "c_char"
+            {
+                return true;
+            }
+        }
+        match path.segments[0].ident.to_string().as_str() {
+            "u8" | "i8" | "bool" | "char" => true,
+            _ => false,
+        }
     }
 
     // Fixing this would require major refactors for marginal benefit.
