@@ -853,6 +853,20 @@ impl Builder {
     }
 
     pub fn cast_expr(self, e: Box<Expr>, t: Box<Type>) -> Box<Expr> {
+        // If the expression is itself a cast of an integer literal, and the
+        // inner cast does not change the value, we can omit the inner cast.
+        if let Expr::Cast(inner) = &*e {
+            if tenjin::int_lit_cast_redundant(&inner.expr, &inner.ty) {
+                // If the inner cast is redundant, we can just return the inner expression.
+                return Box::new(parenthesize_if_necessary(Expr::Cast(ExprCast {
+                    attrs: self.attrs,
+                    as_token: Token![as](self.span),
+                    expr: inner.expr.clone(),
+                    ty: t,
+                })))
+            }
+        }
+
         Box::new(parenthesize_if_necessary(Expr::Cast(ExprCast {
             attrs: self.attrs,
             as_token: Token![as](self.span),
@@ -2383,4 +2397,75 @@ fn parenthesize_if_necessary(mut outer: Expr) -> Expr {
         _ => (),
     };
     outer
+}
+
+mod tenjin {
+    use super::*;
+
+    pub fn int_lit_cast_redundant(e: &Expr, t: &Type) -> bool {
+        if let Expr::Lit(lit) = e {
+            match &lit.lit {
+                Lit::Char(clit) => {
+                    if let Some(max) = int_type_signed_max(t) {
+                        return clit.value() as i64 <= max;
+                    }
+                }
+                Lit::Int(ilit) => {
+                    if let Some(max) = int_type_signed_max(t) {
+                        // If the literal is an integer literal and the target type is
+                        // a signed integer type, check if the literal fits into the
+                        // target type.
+                        if let Ok(value) = ilit.base10_parse::<i64>() {
+                            return value <= max;
+                        }
+                    }
+                },
+                _ => {}
+            }
+        }
+        false
+    }
+
+
+    fn int_type_signed_max(ty: &Type) -> Option<i64> {
+        match ty {
+            Type::Path(path) if path.qself.is_none() =>
+                int_type_path_signed_max(&path.path),
+            _ => None,
+        }
+    }
+
+    fn int_type_path_signed_max(path: &Path) -> Option<i64> {
+        if path.segments.len() == 2 && path.segments[0].ident.to_string().as_str() == "libc" {
+            //             COMMENTARY(TENJIN_C_INT_SIZES)
+            // Technically the C standard places very lax requirements on the
+            // size of these types. In practice we do not expect to compile
+            // for platforms where int is < 32 bits, for example.
+            //
+            // If the value we pick here is smaller than the actual value
+            // representable by the given C type, that's fine; we'll merely
+            // have some redundant casts in the generated code.
+            //
+            // If the value we pick here is larger than the actual value
+            // representable by the given C type, that's not so good; we
+            // may end up generating incorrect code due to the missing cast,
+            // depending on the situation.
+            if path.segments[1].ident.to_string().as_str() == "c_ulong" {
+                return Some(i32::MAX as i64);
+            }
+            if path.segments[1].ident.to_string().as_str() == "c_long" {
+                return Some(i32::MAX as i64);
+            }
+            if path.segments[1].ident.to_string().as_str() == "c_int" {
+                return Some(i32::MAX as i64);
+            }
+        }
+        match path.segments[0].ident.to_string().as_str() {
+            "u8" | "i8" | "bool" | "char" => Some(i8::MAX as i64),
+            "u16" | "i16" => Some(i16::MAX as i64),
+            "u32" | "i32" => Some(i32::MAX as i64),
+            "u64" | "i64" => Some(i64::MAX),
+            _ => None,
+        }
+    }
 }
