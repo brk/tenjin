@@ -289,9 +289,7 @@ fn int_arg_metaitem(name: &str, arg: u128) -> NestedMeta {
     let inner = Meta::List(MetaList {
         path: mk().path(name),
         paren_token: Default::default(),
-        nested: FromIterator::from_iter(
-            vec![mk().nested_meta_item(NestedMeta::Lit(lit))],
-        ),
+        nested: FromIterator::from_iter(vec![mk().nested_meta_item(NestedMeta::Lit(lit))]),
     });
     NestedMeta::Meta(inner)
 }
@@ -667,8 +665,7 @@ pub fn translate(
                 }
                 t.cur_file.borrow_mut().take();
 
-                if t.tcfg.reorganize_definitions
-                    && decl_file_id.is_some_and(|id| id != t.main_file)
+                if t.tcfg.reorganize_definitions && decl_file_id.is_some_and(|id| id != t.main_file)
                 {
                     t.generate_submodule_imports(decl_id, decl_file_id);
                 }
@@ -710,8 +707,7 @@ pub fn translate(
                 let decl = decl_opt.as_ref().unwrap();
                 let decl_file_id = t.ast_context.file_id(decl);
 
-                if t.tcfg.reorganize_definitions
-                    && decl_file_id.is_some_and(|id| id != t.main_file)
+                if t.tcfg.reorganize_definitions && decl_file_id.is_some_and(|id| id != t.main_file)
                 {
                     *t.cur_file.borrow_mut() = decl_file_id;
                 }
@@ -754,8 +750,7 @@ pub fn translate(
                 }
                 t.cur_file.borrow_mut().take();
 
-                if t.tcfg.reorganize_definitions
-                    && decl_file_id.is_some_and(|id| id != t.main_file)
+                if t.tcfg.reorganize_definitions && decl_file_id.is_some_and(|id| id != t.main_file)
                 {
                     t.generate_submodule_imports(*top_id, decl_file_id);
                 }
@@ -1260,9 +1255,7 @@ impl<'c> Translation<'c> {
         F: FnOnce(&mut ItemStore) -> T,
     {
         let mut item_stores = self.items.borrow_mut();
-        let item_store = item_stores
-            .entry(Self::cur_file(self))
-            .or_default();
+        let item_store = item_stores.entry(Self::cur_file(self)).or_default();
         f(item_store)
     }
 
@@ -4844,9 +4837,7 @@ impl<'c> Translation<'c> {
             let attrs = item_attrs(&mut item).expect("no attrs field on unexpected item variant");
             add_src_loc_attr(attrs, &decl.loc.as_ref().map(|x| x.begin()));
             let mut item_stores = self.items.borrow_mut();
-            let items = item_stores
-                .entry(decl_file_id.unwrap())
-                .or_default();
+            let items = item_stores.entry(decl_file_id.unwrap()).or_default();
 
             items.add_item(item);
         } else {
@@ -4865,9 +4856,7 @@ impl<'c> Translation<'c> {
                 .expect("no attrs field on unexpected foreign item variant");
             add_src_loc_attr(attrs, &decl.loc.as_ref().map(|x| x.begin()));
             let mut items = self.items.borrow_mut();
-            let mod_block_items = items
-                .entry(decl_file_id.unwrap())
-                .or_default();
+            let mod_block_items = items.entry(decl_file_id.unwrap()).or_default();
 
             mod_block_items.add_foreign_item(item);
         } else {
@@ -4882,9 +4871,7 @@ impl<'c> Translation<'c> {
         // If the definition lives in the same header, there is no need to import it
         // in fact, this would be a hard rust error.
         // We should never import into the main module here, as that happens in make_submodule
-        if (import_file_id == Some(decl_file_id))
-            || decl_file_id == self.main_file
-        {
+        if (import_file_id == Some(decl_file_id)) || decl_file_id == self.main_file {
             return;
         }
 
