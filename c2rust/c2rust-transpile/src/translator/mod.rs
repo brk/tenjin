@@ -289,9 +289,7 @@ fn int_arg_metaitem(name: &str, arg: u128) -> NestedMeta {
     let inner = Meta::List(MetaList {
         path: mk().path(name),
         paren_token: Default::default(),
-        nested: FromIterator::from_iter(
-            vec![mk().nested_meta_item(NestedMeta::Lit(lit))],
-        ),
+        nested: FromIterator::from_iter(vec![mk().nested_meta_item(NestedMeta::Lit(lit))]),
     });
     NestedMeta::Meta(inner)
 }
@@ -667,8 +665,7 @@ pub fn translate(
                 }
                 t.cur_file.borrow_mut().take();
 
-                if t.tcfg.reorganize_definitions
-                    && decl_file_id.is_some_and(|id| id != t.main_file)
+                if t.tcfg.reorganize_definitions && decl_file_id.is_some_and(|id| id != t.main_file)
                 {
                     t.generate_submodule_imports(decl_id, decl_file_id);
                 }
@@ -710,8 +707,7 @@ pub fn translate(
                 let decl = decl_opt.as_ref().unwrap();
                 let decl_file_id = t.ast_context.file_id(decl);
 
-                if t.tcfg.reorganize_definitions
-                    && decl_file_id.is_some_and(|id| id != t.main_file)
+                if t.tcfg.reorganize_definitions && decl_file_id.is_some_and(|id| id != t.main_file)
                 {
                     *t.cur_file.borrow_mut() = decl_file_id;
                 }
@@ -754,8 +750,7 @@ pub fn translate(
                 }
                 t.cur_file.borrow_mut().take();
 
-                if t.tcfg.reorganize_definitions
-                    && decl_file_id.is_some_and(|id| id != t.main_file)
+                if t.tcfg.reorganize_definitions && decl_file_id.is_some_and(|id| id != t.main_file)
                 {
                     t.generate_submodule_imports(*top_id, decl_file_id);
                 }
@@ -1193,6 +1188,508 @@ struct ConvertedVariable {
     pub init: TranslationResult<WithStmts<Box<Expr>>>,
 }
 
+#[allow(clippy::vec_box)]
+enum RecognizedCallForm {
+    PrintfOut(Vec<Box<Expr>>),
+    PrintfErr(Vec<Box<Expr>>),
+    OtherCall(Box<Expr>, Vec<Box<Expr>>),
+}
+
+mod tenjin {
+    use syn::{Expr, Path, Type};
+
+    pub fn is_known_size_1_type(ty: &Type) -> bool {
+        match ty {
+            Type::Path(path) => path.qself.is_none() && is_known_size_1_path(&path.path),
+            _ => false,
+        }
+    }
+
+    fn is_path_exactly_1(path: &Path, a: &str) -> bool {
+        if path.segments.len() == 1 {
+            path.segments[0].ident.to_string().as_str() == a
+        } else {
+            false
+        }
+    }
+
+    fn is_path_exactly_2(path: &Path, a: &str, b: &str) -> bool {
+        if path.segments.len() == 2 {
+            path.segments[0].ident.to_string().as_str() == a
+                && path.segments[1].ident.to_string().as_str() == b
+        } else {
+            false
+        }
+    }
+
+    fn is_known_size_1_path(path: &Path) -> bool {
+        match path.segments.len() {
+            1 => matches!(path.segments[0].ident.to_string().as_str(),
+                            "u8" | "i8" | "bool" | "char"),
+            2 => is_path_exactly_2(path, "libc", "c_char"),
+            _ => false,
+        }
+    }
+
+    pub fn expr_is_ident(expr: &Expr, ident: &str) -> bool {
+        if let Expr::Path(ref path) = *expr {
+            is_path_exactly_1(&path.path, ident)
+        } else {
+            false
+        }
+    }
+}
+
+enum LitStrOrByteStr<'a> {
+    LitStr(&'a LitStr),
+    ByteStr(&'a LitByteStr),
+}
+
+mod refactor_format {
+    use syn::__private::ToTokens;
+
+    use super::*;
+    use std::str::FromStr;
+
+    fn expr_strip_casts(expr: &Expr) -> &Expr {
+        let mut ep = expr;
+        loop {
+            match ep {
+                Expr::Cast(ExprCast { expr, .. }) => ep = expr,
+                Expr::Type(ExprType { expr, .. }) => ep = expr,
+                _ => break ep,
+            }
+        }
+    }
+
+    fn expr_as_lit_str<'a>(expr: &'a Expr) -> Option<LitStrOrByteStr<'a>> {
+        match *expr {
+            Expr::Lit(ExprLit {
+                lit: Lit::Str(ref s),
+                ..
+            }) => Some(LitStrOrByteStr::LitStr(s)),
+            Expr::Lit(ExprLit {
+                lit: Lit::ByteStr(ref b),
+                ..
+            }) => Some(LitStrOrByteStr::ByteStr(b)),
+            _ => None,
+        }
+    }
+
+    pub fn build_format_macro(
+        macro_name: &str,
+        ln_macro_name: &str,
+        fmt_args: &[Box<Expr>],
+        span: Option<Span>,
+    ) -> Macro {
+        let old_fmt_str_expr = fmt_args[0].clone();
+
+        info!("  found fmt str {:?}", old_fmt_str_expr);
+
+        let ep = &old_fmt_str_expr;
+        let s = match expr_as_lit_str(expr_strip_casts(ep)) {
+            Some(LitStrOrByteStr::LitStr(s)) => s.value(),
+            Some(LitStrOrByteStr::ByteStr(b)) => {
+                str::from_utf8(b.value().as_slice()).unwrap().to_owned()
+            }
+            None => panic!(
+                "TENJIN expected format string to be a string literal: {:?}",
+                ep
+            ),
+        };
+        let mut new_s = String::with_capacity(s.len());
+        let mut casts = HashMap::new();
+
+        let mut idx = 0;
+        Parser::new(&s, |piece| match piece {
+            Piece::Text(s) => {
+                // Find all occurrences of brace characters in `s`
+                let mut brace_indices = s
+                    .match_indices('{')
+                    .chain(s.match_indices('}'))
+                    .collect::<Vec<_>>();
+                brace_indices.sort();
+
+                // Replace all "{" with "{{" and "}" with "}}"
+                let mut last = 0;
+                for (idx, brace) in brace_indices.into_iter() {
+                    new_s.push_str(&s[last..idx]);
+                    if brace == "{" {
+                        new_s.push_str("{{");
+                    } else {
+                        assert_eq!(brace, "}");
+                        new_s.push_str("}}");
+                    }
+                    last = idx + 1;
+                }
+                new_s.push_str(&s[last..]);
+            }
+            Piece::Conv(c) => {
+                c.push_spec(&mut new_s);
+                c.add_casts(&mut idx, &mut casts);
+            }
+        })
+        .parse();
+
+        while new_s.ends_with('\0') {
+            new_s.pop();
+        }
+        let macro_name = if new_s.ends_with('\n') {
+            // Format string ends with "\n", call println!/eprintln! versions instead
+            new_s.pop();
+            ln_macro_name
+        } else {
+            macro_name
+        };
+
+        let new_fmt_str_expr = mk().span(old_fmt_str_expr.span()).lit_expr(&new_s);
+
+        info!("old fmt str expr: {:?}", old_fmt_str_expr);
+        info!("new fmt str expr: {:?}", new_fmt_str_expr);
+
+        let mut macro_tts: Vec<TokenTree> = Vec::new();
+        let expr_tt = |e: Box<Expr>| {
+            TokenTree::Group(proc_macro2::Group::new(
+                proc_macro2::Delimiter::None,
+                e.to_token_stream(),
+            ))
+        };
+        macro_tts.push(expr_tt(new_fmt_str_expr));
+        for (i, arg) in fmt_args[1..].iter().enumerate() {
+            if let Some(cast) = casts.get(&i) {
+                let tt = expr_tt(cast.apply(arg.clone()));
+                //macro_tts.push(TokenTree::Token(Token {kind: TokenKind::Comma, span: DUMMY_SP}));
+                macro_tts.push(TokenTree::Punct(Punct::new(',', Alone)));
+                macro_tts.push(tt);
+            }
+        }
+        let b = if let Some(span) = span {
+            mk().span(span)
+        } else {
+            mk()
+        };
+        b.mac(
+            mk().path(macro_name),
+            macro_tts,
+            MacroDelimiter::Paren(Default::default()),
+        )
+    }
+
+    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+    enum CastType {
+        Int(Length),
+        Uint(Length),
+        Usize,
+        Char,
+        Str,
+        Float,
+    }
+
+    impl CastType {
+        fn apply(&self, e: Box<Expr>) -> Box<Expr> {
+            // Since these get passed to the new print! macros, they need to have spans,
+            // and the spans need to match the original expressions
+            // FIXME: should all the inner nodes have spans too???
+            let span = e.span();
+            //e.span = DUMMY_SP;
+            match *self {
+                CastType::Int(_) => mk()
+                    .span(span)
+                    .cast_expr(e, mk().path_ty(self.as_rust_ty())),
+                CastType::Uint(_) => mk()
+                    .span(span)
+                    .cast_expr(e, mk().path_ty(self.as_rust_ty())),
+                CastType::Usize => mk().span(span).cast_expr(e, mk().ident_ty("usize")),
+                CastType::Float => mk().span(span).cast_expr(e, mk().ident_ty("f64")),
+                CastType::Char => {
+                    // e as u8 as char
+                    let e = mk().cast_expr(e, mk().ident_ty("u8"));
+                    mk().span(span).cast_expr(e, mk().ident_ty("char"))
+                }
+                CastType::Str => {
+                    // CStr::from_ptr(e as *const libc::c_char).to_str().unwrap()
+                    let e = mk().cast_expr(e, mk().ptr_ty(mk().path_ty(vec!["libc", "c_char"])));
+                    let cs = mk().call_expr(
+                        // TODO(kkysen) change `"std"` to `"core"` after `#![feature(core_c_str)]` is stabilized in `1.63.0`
+                        mk().path_expr(vec!["std", "ffi", "CStr", "from_ptr"]),
+                        vec![e],
+                    );
+                    let s = mk().method_call_expr(cs, "to_str", Vec::new());
+                    let call = mk().method_call_expr(s, "unwrap", Vec::new());
+                    let b = mk().unsafe_().block(vec![mk().expr_stmt(call)]);
+                    mk().span(span).block_expr(b)
+                }
+            }
+        }
+
+        fn as_rust_ty(&self) -> Vec<&str> {
+            match *self {
+                CastType::Int(Length::None) => vec!["libc", "c_int"],
+                CastType::Uint(Length::None) => vec!["libc", "c_uint"],
+                CastType::Int(Length::Char) => vec!["libc", "c_schar"],
+                CastType::Uint(Length::Char) => vec!["libc", "c_uchar"],
+                CastType::Int(Length::Short) => vec!["libc", "c_short"],
+                CastType::Uint(Length::Short) => vec!["libc", "c_ushort"],
+                CastType::Int(Length::Long) => vec!["libc", "c_long"],
+                CastType::Uint(Length::Long) => vec!["libc", "c_ulong"],
+                CastType::Int(Length::LongLong) => vec!["libc", "c_longlong"],
+                CastType::Uint(Length::LongLong) => vec!["libc", "c_ulonglong"],
+                // FIXME: should we use the types emitted by the transpiler instead?
+                CastType::Int(Length::IntMax) => vec!["libc", "intmax_t"],
+                CastType::Uint(Length::IntMax) => vec!["libc", "uintmax_t"],
+                CastType::Int(Length::Size) => vec!["libc", "ssize_t"],
+                CastType::Uint(Length::Size) => vec!["libc", "size_t"],
+                CastType::Int(Length::PtrDiff) => vec!["libc", "ptrdiff_t"],
+                _ => panic!("invalid length modifier type: {:?}", self),
+            }
+        }
+    }
+
+    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+    enum Length {
+        None,
+        Char,
+        Short,
+        Long,
+        LongLong,
+        IntMax,
+        Size,
+        PtrDiff,
+        //TODO
+        //LongDouble,
+    }
+
+    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+    enum ConvType {
+        Int(Length),
+        Uint(Length),
+        /// Hexadecimal uint, maybe capitalized.
+        Hex(Length, bool),
+        Char,
+        Str,
+        Float,
+    }
+
+    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+    enum Amount {
+        Number(usize),
+        NextArg,
+    }
+
+    #[derive(Clone, PartialEq, Eq, Debug)]
+    struct Conv {
+        ty: ConvType,
+        width: Option<Amount>,
+        prec: Option<Amount>,
+    }
+
+    impl Conv {
+        fn new() -> Conv {
+            Conv {
+                ty: ConvType::Int(Length::None),
+                width: None,
+                prec: None,
+            }
+        }
+
+        fn add_casts(&self, idx: &mut usize, casts: &mut HashMap<usize, CastType>) {
+            if self.width == Some(Amount::NextArg) {
+                casts.insert(*idx, CastType::Usize);
+                *idx += 1;
+            }
+            if self.prec == Some(Amount::NextArg) {
+                casts.insert(*idx, CastType::Usize);
+                *idx += 1;
+            }
+
+            let cast = match self.ty {
+                ConvType::Int(len) => CastType::Int(len),
+                ConvType::Uint(len) | ConvType::Hex(len, _) => CastType::Uint(len),
+                ConvType::Char => CastType::Char,
+                ConvType::Str => CastType::Str,
+                ConvType::Float => CastType::Float,
+            };
+
+            casts.insert(*idx, cast);
+            *idx += 1;
+        }
+
+        fn push_spec(&self, buf: &mut String) {
+            buf.push_str("{:");
+
+            if let Some(amt) = self.width {
+                match amt {
+                    Amount::Number(n) => buf.push_str(&n.to_string()),
+                    Amount::NextArg => buf.push('*'),
+                }
+            }
+
+            if let Some(amt) = self.prec {
+                buf.push('.');
+                match amt {
+                    Amount::Number(n) => buf.push_str(&n.to_string()),
+                    Amount::NextArg => buf.push('*'),
+                }
+            }
+
+            match self.ty {
+                ConvType::Hex(_, false) => buf.push('x'),
+                ConvType::Hex(_, true) => buf.push('X'),
+                _ => {}
+            }
+
+            buf.push('}');
+        }
+    }
+
+    #[derive(Clone, PartialEq, Eq, Debug)]
+    enum Piece<'a> {
+        Text(&'a str),
+        Conv(Box<Conv>),
+    }
+
+    struct Parser<'a, F: FnMut(Piece)> {
+        s: &'a str,
+        sb: &'a [u8],
+        pos: usize,
+        callback: F,
+    }
+
+    impl<'a, F: FnMut(Piece)> Parser<'a, F> {
+        fn new(s: &'a str, callback: F) -> Parser<'a, F> {
+            Parser {
+                s,
+                sb: s.as_bytes(),
+                pos: 0,
+                callback,
+            }
+        }
+
+        fn peek(&self) -> u8 {
+            self.sb[self.pos]
+        }
+        fn skip(&mut self) {
+            self.pos += 1;
+        }
+
+        /// Check if the next character is `c` and, if true, consume it
+        fn eat(&mut self, c: u8) -> bool {
+            if self.peek() == c {
+                self.skip();
+                true
+            } else {
+                false
+            }
+        }
+
+        /// Try to advance to the next conversion specifier.  Return `true` if a conversion was found.
+        fn next_conv(&mut self) -> bool {
+            if let Some(conv_offset) = self.s[self.pos..].find('%') {
+                if conv_offset > 0 {
+                    let conv_pos = self.pos + conv_offset;
+                    (self.callback)(Piece::Text(&self.s[self.pos..conv_pos]));
+                    self.pos = conv_pos;
+                }
+                true
+            } else {
+                false
+            }
+        }
+
+        fn parse(&mut self) {
+            while self.next_conv() {
+                self.skip();
+                let mut conv = Conv::new();
+
+                if self.eat(b'%') {
+                    (self.callback)(Piece::Text("%"));
+                    continue;
+                }
+
+                if b'1' <= self.peek() && self.peek() <= b'9' || self.peek() == b'*' {
+                    conv.width = Some(self.parse_amount());
+                }
+                if self.eat(b'.') {
+                    conv.prec = Some(self.parse_amount());
+                }
+                conv.ty = self.parse_conv_type();
+                (self.callback)(Piece::Conv(Box::new(conv)));
+            }
+
+            if self.pos < self.s.len() {
+                (self.callback)(Piece::Text(&self.s[self.pos..]));
+            }
+        }
+
+        fn parse_amount(&mut self) -> Amount {
+            if self.eat(b'*') {
+                return Amount::NextArg;
+            }
+
+            let start = self.pos;
+            while b'0' <= self.peek() && self.peek() <= b'9' {
+                self.skip();
+            }
+            let end = self.pos;
+
+            Amount::Number(usize::from_str(&self.s[start..end]).unwrap())
+        }
+
+        fn parse_length(&mut self) -> Length {
+            match self.peek() {
+                b'h' => {
+                    self.skip();
+                    if self.eat(b'h') {
+                        // %hhd
+                        Length::Char
+                    } else {
+                        Length::Short
+                    }
+                }
+                b'l' => {
+                    self.skip();
+                    if self.eat(b'l') {
+                        // %lld
+                        Length::LongLong
+                    } else {
+                        Length::Long
+                    }
+                }
+                b'j' => {
+                    self.skip();
+                    Length::IntMax
+                }
+                b'z' => {
+                    self.skip();
+                    Length::Size
+                }
+                b't' => {
+                    self.skip();
+                    Length::PtrDiff
+                }
+                _ => Length::None,
+            }
+        }
+
+        fn parse_conv_type(&mut self) -> ConvType {
+            let len = self.parse_length();
+            let c = self.peek() as char;
+            self.skip();
+
+            match c {
+                'd' => ConvType::Int(len),
+                'u' => ConvType::Uint(len),
+                'x' => ConvType::Hex(len, false),
+                'X' => ConvType::Hex(len, true),
+                'c' => ConvType::Char,
+                's' => ConvType::Str,
+                'f' => ConvType::Float,
+                _ => panic!("unrecognized conversion spec `{}`", c),
+            }
+        }
+    }
+}
+
 impl<'c> Translation<'c> {
     pub fn new(
         mut ast_context: TypedAstContext,
@@ -1260,9 +1757,7 @@ impl<'c> Translation<'c> {
         F: FnOnce(&mut ItemStore) -> T,
     {
         let mut item_stores = self.items.borrow_mut();
-        let item_store = item_stores
-            .entry(Self::cur_file(self))
-            .or_default();
+        let item_store = item_stores.entry(Self::cur_file(self)).or_default();
         f(item_store)
     }
 
@@ -3146,6 +3641,12 @@ impl<'c> Translation<'c> {
     }
 
     fn compute_size_of_ty(&self, ty: Box<Type>) -> TranslationResult<WithStmts<Box<Expr>>> {
+        match *ty {
+            Type::Array(ta) if tenjin::is_known_size_1_type(&ta.elem) => {
+                return Ok(WithStmts::new_val(Box::new(ta.len)));
+            }
+            _ => {}
+        }
         let name = "size_of";
         let params = mk().angle_bracketed_args(vec![ty]);
         let path = vec![
@@ -3785,8 +4286,7 @@ impl<'c> Translation<'c> {
 
                     let args = self.convert_exprs(ctx.used(), args)?;
 
-                    let res: TranslationResult<_> = Ok(args.map(|args| mk().call_expr(func, args)));
-                    res
+                    self.convert_call(func, args)
                 })?;
 
                 self.convert_side_effects_expr(
@@ -3915,6 +4415,47 @@ impl<'c> Translation<'c> {
                 weak,
                 ..
             } => self.convert_atomic(ctx, name, ptr, order, val1, order_fail, val2, weak),
+        }
+    }
+
+    #[allow(clippy::vec_box)]
+    fn convert_call(
+        &self,
+        func: Box<Expr>,
+        args: WithStmts<Vec<Box<Expr>>>,
+    ) -> TranslationResult<WithStmts<Box<Expr>>> {
+        let res = args.map(|args| self.convert_call_with_args(func, args));
+        Ok(res)
+    }
+
+    #[allow(clippy::vec_box)]
+    fn call_form_cases(&self, func: Box<Expr>, args: Vec<Box<Expr>>) -> RecognizedCallForm {
+        if tenjin::expr_is_ident(&func, "printf") {
+            return RecognizedCallForm::PrintfOut(args);
+        }
+
+        if tenjin::expr_is_ident(&func, "fprintf") && !args.is_empty() {
+            if tenjin::expr_is_ident(&args[0], "stderr") {
+                return RecognizedCallForm::PrintfErr(args[1..].to_vec());
+            }
+            if tenjin::expr_is_ident(&args[0], "stdout") {
+                return RecognizedCallForm::PrintfOut(args[1..].to_vec());
+            }
+        }
+
+        RecognizedCallForm::OtherCall(func, args)
+    }
+
+    #[allow(clippy::vec_box)]
+    fn convert_call_with_args(&self, func: Box<Expr>, args: Vec<Box<Expr>>) -> Box<Expr> {
+        match self.call_form_cases(func, args) {
+            RecognizedCallForm::PrintfOut(args) => mk().mac_expr(
+                refactor_format::build_format_macro("print", "println", &args, None),
+            ),
+            RecognizedCallForm::PrintfErr(args) => mk().mac_expr(
+                refactor_format::build_format_macro("eprint", "eprintln", &args, None),
+            ),
+            RecognizedCallForm::OtherCall(func, args) => mk().call_expr(func, args),
         }
     }
 
@@ -4817,9 +5358,7 @@ impl<'c> Translation<'c> {
             let attrs = item_attrs(&mut item).expect("no attrs field on unexpected item variant");
             add_src_loc_attr(attrs, &decl.loc.as_ref().map(|x| x.begin()));
             let mut item_stores = self.items.borrow_mut();
-            let items = item_stores
-                .entry(decl_file_id.unwrap())
-                .or_default();
+            let items = item_stores.entry(decl_file_id.unwrap()).or_default();
 
             items.add_item(item);
         } else {
@@ -4838,9 +5377,7 @@ impl<'c> Translation<'c> {
                 .expect("no attrs field on unexpected foreign item variant");
             add_src_loc_attr(attrs, &decl.loc.as_ref().map(|x| x.begin()));
             let mut items = self.items.borrow_mut();
-            let mod_block_items = items
-                .entry(decl_file_id.unwrap())
-                .or_default();
+            let mod_block_items = items.entry(decl_file_id.unwrap()).or_default();
 
             mod_block_items.add_foreign_item(item);
         } else {
@@ -4855,9 +5392,7 @@ impl<'c> Translation<'c> {
         // If the definition lives in the same header, there is no need to import it
         // in fact, this would be a hard rust error.
         // We should never import into the main module here, as that happens in make_submodule
-        if (import_file_id == Some(decl_file_id))
-            || decl_file_id == self.main_file
-        {
+        if (import_file_id == Some(decl_file_id)) || decl_file_id == self.main_file {
             return;
         }
 
