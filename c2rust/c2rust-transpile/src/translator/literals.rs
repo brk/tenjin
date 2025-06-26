@@ -138,6 +138,19 @@ impl Translation<'_> {
                     // zero terminator
                     _ => 1,
                 };
+
+                log::info!(
+                    "TENJIN TRACE: convert string literal, contents len {}, num elems {}",
+                    val.len(),
+                    num_elems
+                );
+
+                // XREF:TENJIN-GUIDANCE-STRAWMAN
+                if num_elems == 100 && val.is_empty() {
+                    let newstr = mk().call_expr(mk().path_expr(vec!["String", "new"]), vec![]);
+                    return Ok(WithStmts::new_val(newstr));
+                }
+
                 let size = num_elems * (width as usize);
                 val.resize(size, 0);
 

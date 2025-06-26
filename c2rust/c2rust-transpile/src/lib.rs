@@ -83,6 +83,8 @@ pub struct TranspilerConfig {
     pub preserve_unused_functions: bool,
     pub log_level: log::LevelFilter,
 
+    pub guidance_json: serde_json::Value,
+
     // Options that control build files
     /// Emit `Cargo.toml` and `lib.rs`
     pub emit_build_files: bool,

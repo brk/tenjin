@@ -190,6 +190,7 @@ dependencies = [
  "is_executable",
  "log",
  "regex",
+ "serde_json",
  "shlex",
 ]
 

@@ -856,7 +856,7 @@ impl Builder {
         // If the expression is itself a cast of an integer literal, and the
         // inner cast does not change the value, we can omit the inner cast.
         if let Expr::Cast(inner) = &*e {
-            if tenjin::int_lit_cast_redundant(&inner.expr, &inner.ty) {
+            if tenjin::int_lit_cast_never_truncates(&inner.expr, &inner.ty) {
                 // If the inner cast is redundant, we can just return the inner expression.
                 return Box::new(parenthesize_if_necessary(Expr::Cast(ExprCast {
                     attrs: self.attrs,
@@ -2402,7 +2402,7 @@ fn parenthesize_if_necessary(mut outer: Expr) -> Expr {
 mod tenjin {
     use super::*;
 
-    pub fn int_lit_cast_redundant(e: &Expr, t: &Type) -> bool {
+    pub fn int_lit_cast_never_truncates(e: &Expr, t: &Type) -> bool {
         if let Expr::Lit(lit) = e {
             match &lit.lit {
                 Lit::Char(clit) => {
@@ -2448,6 +2448,8 @@ mod tenjin {
             // representable by the given C type, that's not so good; we
             // may end up generating incorrect code due to the missing cast,
             // depending on the situation.
+            //
+            // So these values are chosen conservatively.
             if path.segments[1].ident.to_string().as_str() == "c_ulong" {
                 return Some(i32::MAX as i64);
             }
@@ -2459,7 +2461,7 @@ mod tenjin {
             }
         }
         match path.segments[0].ident.to_string().as_str() {
-            "u8" | "i8" | "bool" | "char" => Some(i8::MAX as i64),
+            "u8" | "i8" | "char" => Some(i8::MAX as i64),
             "u16" | "i16" => Some(i16::MAX as i64),
             "u32" | "i32" => Some(i32::MAX as i64),
             "u64" | "i64" => Some(i64::MAX),

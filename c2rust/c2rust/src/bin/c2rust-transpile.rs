@@ -112,6 +112,10 @@ struct Args {
     #[clap(long)]
     fail_on_error: bool,
 
+    /// Provide guidance, either as path to JSON file or as a JSON-formatted string
+    #[clap(long)]
+    guidance: Option<String>,
+
     /// Emit Rust build files for a binary using the main function in the specified translation unit (implies -e/--emit-build-files)
     #[clap(short = 'b', long = "binary", multiple = true, number_of_values = 1)]
     binary: Option<Vec<String>>,
@@ -167,6 +171,26 @@ enum InvalidCodes {
 fn main() {
     let args = Args::parse();
 
+    let guidance_json: serde_json::Value = if let Some(guidance) = args.guidance {
+        if guidance.is_empty() {
+            serde_json::json!({})
+        } else if guidance.starts_with('{') || guidance.starts_with('[') {
+            // If guidance is a JSON string, parse it directly
+            serde_json::from_str(&guidance)
+                .unwrap_or_else(|_| panic!("Failed to parse guidance JSON: {}", guidance))
+        } else {
+            // If guidance is a path to a file, read the file content
+            let path = PathBuf::from(guidance);
+            let content = fs::read_to_string(&path)
+                .unwrap_or_else(|_| panic!("Failed to read guidance file: {:?}", path));
+            serde_json::from_str(&content)
+                .unwrap_or_else(|_| panic!("Failed to parse guidance JSON from file: {:?}", path))
+        }
+    } else {
+        // If no guidance is provided, use an empty JSON object
+        serde_json::json!({})
+    };
+
     // Build a TranspilerConfig from the command line
     let mut tcfg = TranspilerConfig {
         dump_untyped_context: args.dump_untyped_clang_ast,
@@ -178,6 +202,8 @@ fn main() {
         dump_structures: args.dump_structures,
         debug_ast_exporter: args.debug_ast_exporter,
         verbose: args.verbose,
+
+        guidance_json,
 
         incremental_relooper: !args.no_incremental_relooper,
         fail_on_error: args.fail_on_error,

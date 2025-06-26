@@ -1,6 +1,6 @@
 use std::cell::RefCell;
 use std::char;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::mem;
 use std::ops::Index;
 use std::path::{self, PathBuf};
@@ -46,6 +46,7 @@ mod named_references;
 mod operators;
 mod simd;
 mod structs;
+mod tenjin;
 mod variadic;
 
 pub use crate::diagnostics::{TranslationError, TranslationErrorKind};
@@ -239,10 +240,138 @@ struct MacroExpansion {
     ty: CTypeId,
 }
 
+struct TenjinDeclSpecifier {
+    pub filespec: String,
+    pub fnname: String,
+    pub varname: String,
+    pub linenumber: u32,
+}
+
+/// Example of a Tenjin declaration specifier:
+///  fnname:varname#linenumber@pathsuffix
+/// The `:varname`, `#linenumber`, and `@pathsuffix` parts are optional.
+/// If omitted, they match all functions, lines, and files, respectively.
+/// A pathsuffix can match one or more files in a directory tree.
+fn parse_tenjin_decl_specifier(s: &str) -> Option<TenjinDeclSpecifier> {
+    if s.is_empty() {
+        return None;
+    }
+
+    let num_colons = s.chars().filter(|c| *c == ':').count();
+    let num_hashes = s.chars().filter(|c| *c == '#').count();
+    let num_atsigns = s.chars().filter(|c| *c == '@').count();
+    if num_colons > 1 || num_hashes > 1 || num_atsigns > 1 {
+        return None; // Invalid format, duplicate tags
+    }
+
+    let fnname: String;
+    let mut varname = String::new();
+    let mut linenumber = 0u32;
+    let mut filespec = String::new();
+
+    let mut s = s;
+
+    if num_atsigns > 0 {
+        let parts = s.split('@').collect::<Vec<&str>>();
+        assert!(parts.len() == 2);
+        filespec = parts[0].to_string();
+        s = parts[1];
+    }
+
+    if num_hashes > 0 {
+        let parts = s.split('#').collect::<Vec<&str>>();
+        assert!(parts.len() == 2);
+        linenumber = parts[1].parse::<u32>().unwrap_or(0);
+        s = parts[0];
+    }
+
+    if num_colons > 0 {
+        let parts = s.split(':').collect::<Vec<&str>>();
+        assert!(parts.len() == 2);
+        fnname = parts[0].to_string();
+        varname = parts[1].to_string();
+    } else {
+        fnname = s.to_string();
+    }
+
+    assert!(!fnname.is_empty());
+
+    Some(TenjinDeclSpecifier {
+        filespec,
+        fnname,
+        varname,
+        linenumber,
+    })
+}
+
+struct ParsedGuidance {
+    pub raw: serde_json::Value,
+    pub declspecs_of_type: HashMap<syn::Type, Vec<TenjinDeclSpecifier>>,
+    pub type_of_decl: HashMap<CDeclId, syn::Type>,
+    decls_without_type_guidance: HashSet<CDeclId>,
+}
+
+impl ParsedGuidance {
+    pub fn new(raw: serde_json::Value) -> Self {
+        let mut declspecs_of_type: HashMap<syn::Type, Vec<TenjinDeclSpecifier>> = HashMap::new();
+
+        // These map will be filled in lazily.
+        let mut type_of_decl: HashMap<CDeclId, syn::Type> = HashMap::new();
+
+        if let Some(decls) = raw.get("vars_of_type") {
+            if let Some(decls) = decls.as_object() {
+                for (unparsed_ty, decls) in decls {
+                    let mut parsed_declspecs = Vec::new();
+                    for decl in decls.as_array().unwrap_or(&vec![]) {
+                        if let Some(declspec_str) = decl.as_str() {
+                            if let Some(decl_specifier) = parse_tenjin_decl_specifier(declspec_str)
+                            {
+                                parsed_declspecs.push(decl_specifier);
+                            }
+                        }
+                    }
+                    let ty = syn::parse_str::<syn::Type>(unparsed_ty)
+                        .expect(&format!("Failed to parse type: {}", unparsed_ty));
+                    declspecs_of_type.insert(ty, parsed_declspecs);
+                }
+            }
+        }
+
+        ParsedGuidance {
+            raw,
+            declspecs_of_type,
+            type_of_decl,
+            decls_without_type_guidance: HashSet::new(),
+        }
+    }
+
+    pub fn query_decl_type(&self, t: Translation, id: CDeclId) -> Option<syn::Type> {
+        if self.decls_without_type_guidance.contains(&id) {
+            return None;
+        }
+        if let Some(ty) = self.type_of_decl.get(&id) {
+            return Some(ty.clone());
+        }
+        if let Some(decl) = self
+            .declspecs_of_type
+            .iter()
+            .find(|(_, declspecs)| declspecs.iter().any(|d| t.matches_decl(d, id)))
+        {
+            let ty = decl.0.clone();
+            self.type_of_decl.insert(id, ty.clone());
+            Some(ty)
+        } else {
+            self.decls_without_type_guidance.insert(id);
+            None
+        }
+    }
+}
+
 pub struct Translation<'c> {
     // Translation environment
     pub ast_context: TypedAstContext,
     pub tcfg: &'c TranspilerConfig,
+    pub parsed_guidance: ParsedGuidance,
 
     // Accumulated outputs
     pub features: RefCell<IndexSet<&'static str>>,
@@ -1195,53 +1324,6 @@ enum RecognizedCallForm {
     OtherCall(Box<Expr>, Vec<Box<Expr>>),
 }
 
-mod tenjin {
-    use syn::{Expr, Path, Type};
-
-    pub fn is_known_size_1_type(ty: &Type) -> bool {
-        match ty {
-            Type::Path(path) => path.qself.is_none() && is_known_size_1_path(&path.path),
-            _ => false,
-        }
-    }
-
-    fn is_path_exactly_1(path: &Path, a: &str) -> bool {
-        if path.segments.len() == 1 {
-            path.segments[0].ident.to_string().as_str() == a
-        } else {
-            false
-        }
-    }
-
-    fn is_path_exactly_2(path: &Path, a: &str, b: &str) -> bool {
-        if path.segments.len() == 2 {
-            path.segments[0].ident.to_string().as_str() == a
-                && path.segments[1].ident.to_string().as_str() == b
-        } else {
-            false
-        }
-    }
-
-    fn is_known_size_1_path(path: &Path) -> bool {
-        match path.segments.len() {
-            1 => matches!(
-                path.segments[0].ident.to_string().as_str(),
-                "u8" | "i8" | "bool" | "char"
-            ),
-            2 => is_path_exactly_2(path, "libc", "c_char"),
-            _ => false,
-        }
-    }
-
-    pub fn expr_is_ident(expr: &Expr, ident: &str) -> bool {
-        if let Expr::Path(ref path) = *expr {
-            is_path_exactly_1(&path.path, ident)
-        } else {
-            false
-        }
-    }
-}
-
 enum LitStrOrByteStr<'a> {
     LitStr(&'a LitStr),
     ByteStr(&'a LitByteStr),
@@ -1713,6 +1795,7 @@ impl<'c> Translation<'c> {
             type_converter: RefCell::new(type_converter),
             ast_context,
             tcfg,
+            parsed_guidance: ParsedGuidance::new(tcfg.guidance_json.clone()),
             renamer: RefCell::new(Renamer::new(&[
                 // Keywords currently in use
                 "as", "break", "const", "continue", "crate", "else", "enum", "extern", "false",
@@ -2059,6 +2142,89 @@ impl<'c> Translation<'c> {
         (fn_item, static_item)
     }
 
+    pub fn matches_decl(&self, spec: &TenjinDeclSpecifier, id: CDeclId) -> bool {
+        match self.ast_context.get_decl(&id) {
+            Some(decl) => {
+                if spec.linenumber > 0
+                    && decl.begin_loc().map(|loc| loc.line) != Some(spec.linenumber)
+                {
+                    log::warn!(
+                        "TENJIN matches_decl: Decl {:?} does not match specified linenumber {}",
+                        id,
+                        spec.linenumber
+                    );
+                    return false;
+                }
+
+                // An empty filespec matches all files, and if we don't have a srcloc
+                // we should conservatively assume it matches.
+                if (!spec.filespec.is_empty())
+                    && decl
+                        .begin_loc()
+                        .and_then(|loc| self.ast_context.get_file_path(loc.fileid))
+                        .map(|path| path.to_string_lossy().to_string().ends_with(spec.filespec))
+                        == Some(false)
+                {
+                    log::warn!(
+                        "TENJIN matches_decl: Decl {:?} does not match specified filespec {}",
+                        id,
+                        spec.filespec
+                    );
+                    return false;
+                }
+
+                // if let Some(currfn) = self.function_context.borrow().name {
+                //     if currfn != spec.fnname {
+                //         log::warn!(
+                //             "TENJIN matches_decl: Decl {:?} does not match current function {}",
+                //             id,
+                //             currfn
+                //         );
+                //         return false;
+                //     }
+                // }
+
+                match decl.kind {
+                    CDeclKind::Function { name, .. } => spec.varname == name.as_str(),
+                    CDeclKind::Field { ref name, .. } => {
+                        // Match field names against the declspecs
+                        //spec.varname == name.as_str()
+                        log::warn!(
+                            "TENJIN matches_decl: Field matching not implemented for decl {:?}",
+                            id
+                        );
+                        false
+                    }
+                    CDeclKind::Variable {
+                        has_static_duration,
+                        has_thread_duration,
+                        is_externally_visible,
+                        is_defn,
+                        ident,
+                        initializer,
+                        typ,
+                        attrs,
+                    } => {
+                        // Match variable declarations against the declspecs
+                        spec.varname == ident.as_str()
+                    }
+                    _ => {
+                        log::warn!(
+                            "TENJIN matches_decl: Unsupported decl kind {:?} for decl {:?}",
+                            decl.kind,
+                            id
+                        );
+                        false
+                    }
+                }
+            }
+            None => {
+                log::warn!("TENJIN matches_decl: Missing decl {:?}", id);
+                false
+            }
+        }
+    }
+
     fn convert_decl(&self, ctx: ExprContext, decl_id: CDeclId) -> TranslationResult<ConvertedDecl> {
         let decl = self
             .ast_context
@@ -2068,6 +2234,8 @@ impl<'c> Translation<'c> {
         let mut span = self
             .get_span(SomeId::Decl(decl_id))
             .unwrap_or_else(Span::call_site);
+
+        log::info!("TENJIN convert_decl: {:?} ({:?})", decl.kind, decl_id);
 
         use CDeclKind::*;
         match decl.kind {
@@ -2751,6 +2919,26 @@ impl<'c> Translation<'c> {
                 let ConvertedVariable { ty, mutbl, init: _ } =
                     self.convert_variable(ctx, None, typ)?;
 
+                if body.is_some() {
+                    log::info!(
+                        "Converting param variable {:?} {:?} of body-having function {:?}",
+                        var,
+                        decl_id,
+                        name
+                    );
+                }
+
+                // XREF:TENJIN-GUIDANCE-STRAWMAN
+                let (ty_override, mut_override) =
+                    if name == "driver" && (var == "s1" || var == "s2") {
+                        (
+                            Some(mk().path_ty(vec!["String"])),
+                            Some(Mutability::Immutable),
+                        )
+                    } else {
+                        (None, None)
+                    };
+
                 let pat = if var.is_empty() {
                     mk().wild_pat()
                 } else {
@@ -2758,7 +2946,7 @@ impl<'c> Translation<'c> {
                     let mutbl = if body.is_none() {
                         Mutability::Immutable
                     } else {
-                        mutbl
+                        mut_override.unwrap_or(mutbl)
                     };
 
                     let new_var = self
@@ -2775,7 +2963,12 @@ impl<'c> Translation<'c> {
                     mk().set_mutbl(mutbl).ident_pat(new_var)
                 };
 
-                args.push(mk().arg(ty, pat))
+                if let Some(ty_override) = ty_override {
+                    // If we have a type override, we use it instead of the converted type
+                    args.push(mk().arg(ty_override, pat));
+                } else {
+                    args.push(mk().arg(ty, pat))
+                }
             }
 
             if is_variadic {
@@ -2860,12 +3053,19 @@ impl<'c> Translation<'c> {
                 let mut mk_ = if is_main {
                     mk()
                 } else if (is_global && !is_inline) || is_extern_inline {
-                    mk_linkage(false, new_name, name).extern_("C").pub_()
+                    mk_linkage(false, new_name, name).pub_()
                 } else if self.cur_file.borrow().is_some() {
-                    mk().extern_("C").pub_()
+                    mk().pub_()
                 } else {
-                    mk().extern_("C")
+                    mk()
                 };
+
+                // XREF:TENJIN-GUIDANCE-STRAWMAN
+                let fn_needs_abi_preservation: bool = name != "driver";
+
+                if fn_needs_abi_preservation && !is_main {
+                    mk_ = mk_.extern_("C");
+                }
 
                 for attr in attrs {
                     mk_ = match attr {
@@ -3134,6 +3334,10 @@ impl<'c> Translation<'c> {
             ..
         } = self.ast_context.index(decl_id).kind
         {
+            log::info!(
+                "TENJIN TRACE: convert decl var (local static duration) line {}",
+                line!()
+            );
             if self.static_initializer_is_uncompilable(initializer, typ) {
                 let ident2 = self
                     .renamer
@@ -3185,6 +3389,11 @@ impl<'c> Translation<'c> {
                     "Only local variable definitions should be extracted"
                 );
 
+                log::info!(
+                    "TENJIN TRACE: convert decl var (local, non-static duration) line {}",
+                    line!()
+                );
+
                 let rust_name = self
                     .renamer
                     .borrow_mut()
@@ -3219,8 +3428,26 @@ impl<'c> Translation<'c> {
                     self.convert_variable(ctx, initializer, typ)?;
                 let mut init = init?;
 
+                log::info!(
+                    "TENJIN TRACE: convert decl var line {}, stmts len = {}",
+                    line!(),
+                    stmts.len()
+                );
+
                 stmts.append(init.stmts_mut());
                 let init = init.into_value();
+
+                log::info!(
+                    "TENJIN TRACE: convert decl var line {}, stmts+init len = {}",
+                    line!(),
+                    stmts.len()
+                );
+
+                log::info!(
+                    "TENJIN TRACE: convert decl var line {}, initializer = {:?}",
+                    line!(),
+                    initializer
+                );
 
                 let zeroed = self.implicit_default_expr(typ.ctype, false)?;
                 let zeroed = if ctx.is_const {
@@ -3229,7 +3456,15 @@ impl<'c> Translation<'c> {
                     zeroed.to_pure_expr()
                 }
                 .expect("Expected decl initializer to not have any statements");
-                let pat_mut = mk().set_mutbl("mut").ident_pat(rust_name.clone());
+
+                let hack_disable_type_annotation = rust_name == "s1" || rust_name == "s2";
+
+                let mutspec = if hack_disable_type_annotation {
+                    Mutability::Immutable
+                } else {
+                    mutbl
+                };
+                let pat_mut = mk().set_mutbl(mutspec).ident_pat(rust_name.clone());
                 let local_mut = mk().local(pat_mut, Some(ty.clone()), Some(zeroed));
                 if has_self_reference {
                     let assign = mk().assign_expr(mk().ident_expr(rust_name), init);
@@ -3237,7 +3472,8 @@ impl<'c> Translation<'c> {
                     let mut assign_stmts = stmts.clone();
                     assign_stmts.push(mk().semi_stmt(assign.clone()));
 
-                    let mut decl_and_assign = vec![mk().local_stmt(Box::new(local_mut.clone()))];
+                    let mut decl_and_assign: Vec<Stmt> =
+                        vec![mk().local_stmt(Box::new(local_mut.clone()))];
                     decl_and_assign.append(&mut stmts);
                     decl_and_assign.push(mk().expr_stmt(assign));
 
@@ -3247,18 +3483,36 @@ impl<'c> Translation<'c> {
                         decl_and_assign,
                     ))
                 } else {
+                    log::info!(
+                        "TENJIN TRACE: convert decl var line {}, no self reference",
+                        line!()
+                    );
+
                     let pat = mk().set_mutbl(mutbl).ident_pat(rust_name.clone());
 
-                    let type_annotation = if self.tcfg.reduce_type_annotations
-                        && !self.should_assign_type_annotation(typ.ctype, initializer)
+                    let type_annotation = if hack_disable_type_annotation
+                        || (self.tcfg.reduce_type_annotations
+                            && !self.should_assign_type_annotation(typ.ctype, initializer))
                     {
                         None
                     } else {
                         Some(ty)
                     };
 
+                    log::info!(
+                        "TENJIN TRACE: convert decl var line {}, type_annotation = {:?}",
+                        line!(),
+                        type_annotation
+                    );
+
                     let local = mk().local(pat, type_annotation, Some(init.clone()));
                     let assign = mk().assign_expr(mk().ident_expr(rust_name), init);
+
+                    log::info!(
+                        "TENJIN TRACE: convert decl var line {}, assign = {:?}",
+                        line!(),
+                        assign
+                    );
 
                     let mut assign_stmts = stmts.clone();
                     assign_stmts.push(mk().semi_stmt(assign));
@@ -3683,6 +3937,27 @@ impl<'c> Translation<'c> {
         Ok(WithStmts::new_val(call))
     }
 
+    fn c_strip_implicit_casts(&self, expr: CExprId) -> CExprId {
+        let mut current = expr;
+        while let CExprKind::ImplicitCast(_, target, _, _, _) = self.ast_context[current].kind {
+            current = target;
+        }
+        current
+    }
+
+    fn c_expr_is_var_ident(&self, expr: CExprId, name: &str) -> bool {
+        if let CExprKind::DeclRef(_, decl_id, _) =
+            self.ast_context[self.c_strip_implicit_casts(expr)].kind
+        {
+            if let Some(decl) = self.ast_context.get_decl(&decl_id) {
+                if let CDeclKind::Variable { ref ident, .. } = decl.kind {
+                    return ident == name;
+                }
+            }
+        }
+        false
+    }
+
     // Fixing this would require major refactors for marginal benefit.
     #[allow(clippy::vec_box)]
     fn convert_exprs(
@@ -3811,6 +4086,17 @@ impl<'c> Translation<'c> {
                     .borrow_mut()
                     .get(&decl_id)
                     .ok_or_else(|| format_err!("name not declared: '{}'", varname))?;
+
+                if let Some(fnname) = &self.function_context.borrow().name {
+                    // XREF:TENJIN-GUIDANCE-STRAWMAN
+                    log::info!(
+                        "Expr::DeclRef {:?} with name {} in function {}, decl =\n\n{:?}\n\n",
+                        decl_id,
+                        varname,
+                        fnname,
+                        decl,
+                    );
+                }
 
                 // Import the referenced global decl into our submodule
                 if self.tcfg.reorganize_definitions {
@@ -4286,9 +4572,7 @@ impl<'c> Translation<'c> {
                     // We want to decay refs only when function is variadic
                     ctx.decay_ref = DecayRef::from(is_variadic);
 
-                    let args = self.convert_exprs(ctx.used(), args)?;
-
-                    self.convert_call(func, args)
+                    self.convert_call(func, ctx, args)
                 })?;
 
                 self.convert_side_effects_expr(
@@ -4424,10 +4708,68 @@ impl<'c> Translation<'c> {
     fn convert_call(
         &self,
         func: Box<Expr>,
-        args: WithStmts<Vec<Box<Expr>>>,
+        ctx: ExprContext,
+        cargs: &[CExprId],
     ) -> TranslationResult<WithStmts<Box<Expr>>> {
-        let res = args.map(|args| self.convert_call_with_args(func, args));
-        Ok(res)
+        // First do selective call conversion, which may not need to convert all subexpressions.
+        match self.call_form_cases_preconversion(ctx, &func, cargs)? {
+            Some(converted) => Ok(converted),
+            None => {
+                let args = self.convert_exprs(ctx.used(), cargs)?;
+                let res = args.map(|args| self.convert_call_with_args(func, args));
+                Ok(res)
+            }
+        }
+    }
+
+    #[allow(clippy::borrowed_box)]
+    fn call_form_cases_preconversion(
+        &self,
+        ctx: ExprContext,
+        func: &Box<Expr>,
+        cargs: &[CExprId],
+    ) -> TranslationResult<Option<WithStmts<Box<Expr>>>> {
+        if tenjin::expr_is_ident(func, "fgets") && cargs.len() == 3 {
+            // fgets(FOO, limit_expr, stdin)
+            //    when FOO is a simple variable with type String
+            // should be translated to
+            // io::stdin().lock().take(limit_expr - 1).read_line(&mut FOO).unwrap();
+            //
+            // Because take() expects a u64, we may be able to elide unnecessary casts from limit_expr.
+            //
+            // One might think the `.take()` is unnecessary, since the C code needed the limit to
+            // avoid a memory safety violation. But the limit_expr also serves to place a bound on the
+            // period spent blocking on the read. If the stream produces limit+1 bytes then blocks,
+            // the fgets() call would return before blocking,
+            // and the .take() is what stops Rust from blocking.
+
+            if !self.c_expr_is_var_ident(cargs[2], "stdin") {
+                return Ok(None);
+            }
+
+            // XREF:TENJIN-GUIDANCE-STRAWMAN
+            if self.c_expr_is_var_ident(cargs[0], "s1") || self.c_expr_is_var_ident(cargs[0], "s2")
+            {
+                let dst = self.convert_expr(ctx.used(), cargs[0])?;
+                let ref_mut_dst = mk().mutbl().addr_of_expr(dst.to_expr());
+                let expr = self.convert_expr(ctx.used(), cargs[1])?;
+                let expr_u64 = tenjin::expr_in_u64(expr.to_expr());
+                let std_io_path: Box<Expr> = mk().path_expr(vec!["std", "io"]);
+                let stdin_call = mk().method_call_expr(std_io_path, "stdin", vec![]);
+                let lock_call = mk().method_call_expr(stdin_call.clone(), "lock", vec![]);
+                let take_call = mk().method_call_expr(lock_call, "take", vec![expr_u64]);
+                let read_line = mk().method_call_expr(take_call, "read_line", vec![ref_mut_dst]);
+                let unwrap_call = mk().method_call_expr(read_line, "unwrap", vec![]);
+                return Ok(Some(WithStmts::new_val(unwrap_call)));
+            }
+            // if self
+            //     .function_context
+            //     .borrow()
+            //     .name
+            //     .is_some_and(|&x| x == "main")
+            // {}
+        }
+        Ok(None)
     }
 
     #[allow(clippy::vec_box)]
@@ -4445,6 +4787,9 @@ impl<'c> Translation<'c> {
             }
         }
 
+        // if tenjin::expr_is_ident(&func, "fgets") {
+        //     panic!("fgets call, translated args: {:?}", args);
+        // }
         RecognizedCallForm::OtherCall(func, args)
     }
 
@@ -4889,12 +5234,25 @@ impl<'c> Translation<'c> {
                         {
                             Ok(val)
                         } else {
+                            // XREF:TENJIN-GUIDANCE-STRAWMAN
+                            log::info!(
+                                "Array to pointer decay cast: {:?} -> {:?} expr {:?}",
+                                source_ty_kind,
+                                target_ty_kind,
+                                expr
+                            );
+
+                            if let Some(CExprKind::DeclRef(cqti, CDeclId(x), lrval)) = expr_kind {
+                                if *x == 851 || *x == 856 {
+                                    return Ok(val);
+                                }
+                            }
+
                             let method = if is_const || ctx.is_static {
                                 "as_ptr"
                             } else {
                                 "as_mut_ptr"
                             };
-
                             let call = val.map(|x| mk().method_call_expr(x, method, vec![]));
 
                             // Static arrays can now use as_ptr. Can also cast that const ptr to a
@@ -5133,6 +5491,7 @@ impl<'c> Translation<'c> {
         type_id: CTypeId,
         is_static: bool,
     ) -> TranslationResult<WithStmts<Box<Expr>>> {
+        log::info!("TRACE: line {}", line!());
         if let Some(file_id) = self.cur_file.borrow().as_ref() {
             self.import_type(type_id, *file_id);
         }
