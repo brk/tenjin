@@ -4767,6 +4767,52 @@ impl<'c> Translation<'c> {
         func: &Box<Expr>,
         cargs: &[CExprId],
     ) -> TranslationResult<Option<WithStmts<Box<Expr>>>> {
+        if let Some(res) = self.recognize_preconversion_call_fgets_stdin(ctx, func, cargs)? {
+            return Ok(Some(res));
+        }
+
+        if let Some(res) = self.recognize_preconversion_call_strlen_guided(ctx, func, cargs)? {
+            return Ok(Some(res));
+        }
+        Ok(None)
+    }
+
+    #[allow(clippy::borrowed_box)]
+    fn recognize_preconversion_call_strlen_guided(
+        &self,
+        ctx: ExprContext,
+        func: &Box<Expr>,
+        cargs: &[CExprId],
+    ) -> TranslationResult<Option<WithStmts<Box<Expr>>>> {
+        if tenjin::expr_is_ident(func, "strlen") && cargs.len() == 1 {
+            // strlen(FOO)
+            //    when FOO is a simple variable with type String
+            // should be translated to
+            // FOO.len()
+            if let Some(var_cdecl_id) = self.c_expr_get_var_decl_id(cargs[0]) {
+                if self
+                    .parsed_guidance
+                    .borrow_mut()
+                    .query_decl_type(self, var_cdecl_id)
+                    == Some(syn::parse_str("String").unwrap())
+                {
+                    let expr = self.convert_expr(ctx.used(), cargs[0])?;
+                    let len_call = mk().method_call_expr(expr.to_expr(), "len", vec![]);
+                    return Ok(Some(WithStmts::new_val(len_call)));
+                }
+            }
+        }
+
+        Ok(None)
+    }
+
+    #[allow(clippy::borrowed_box)]
+    fn recognize_preconversion_call_fgets_stdin(
+        &self,
+        ctx: ExprContext,
+        func: &Box<Expr>,
+        cargs: &[CExprId],
+    ) -> TranslationResult<Option<WithStmts<Box<Expr>>>> {
         if tenjin::expr_is_ident(func, "fgets") && cargs.len() == 3 {
             // fgets(FOO, limit_expr, stdin)
             //    when FOO is a simple variable with type String
@@ -4793,12 +4839,17 @@ impl<'c> Translation<'c> {
                     .query_decl_type(self, var_cdecl_id)
                     == Some(syn::parse_str("String").unwrap())
                 {
+                    self.with_cur_file_item_store(|item_store| {
+                        item_store.add_use(vec!["std".into(), "io".into()], "Read");
+                        item_store.add_use(vec!["std".into(), "io".into()], "BufRead");
+                    });
+
                     let dst = self.convert_expr(ctx.used(), cargs[0])?;
                     let ref_mut_dst = mk().mutbl().addr_of_expr(dst.to_expr());
                     let expr = self.convert_expr(ctx.used(), cargs[1])?;
                     let expr_u64 = tenjin::expr_in_u64(expr.to_expr());
-                    let std_io_path: Box<Expr> = mk().path_expr(vec!["std", "io"]);
-                    let stdin_call = mk().method_call_expr(std_io_path, "stdin", vec![]);
+                    let std_io_path: Box<Expr> = mk().path_expr(vec!["std", "io", "stdin"]);
+                    let stdin_call = mk().call_expr(std_io_path, vec![]);
                     let lock_call = mk().method_call_expr(stdin_call.clone(), "lock", vec![]);
                     let take_call = mk().method_call_expr(lock_call, "take", vec![expr_u64]);
                     let read_line =
@@ -4826,9 +4877,6 @@ impl<'c> Translation<'c> {
             }
         }
 
-        // if tenjin::expr_is_ident(&func, "fgets") {
-        //     panic!("fgets call, translated args: {:?}", args);
-        // }
         RecognizedCallForm::OtherCall(func, args)
     }
 
