@@ -8,7 +8,7 @@ pub fn is_known_size_1_type(ty: &Type) -> bool {
     }
 }
 
-fn is_path_exactly_1(path: &Path, a: &str) -> bool {
+pub fn is_path_exactly_1(path: &Path, a: &str) -> bool {
     if path.segments.len() == 1 {
         path.segments[0].ident.to_string().as_str() == a
     } else {
@@ -33,6 +33,14 @@ fn is_known_size_1_path(path: &Path) -> bool {
         ),
         2 => is_path_exactly_2(path, "libc", "c_char"),
         _ => false,
+    }
+}
+
+pub fn expr_get_path(expr: &Expr) -> Option<&Path> {
+    if let Expr::Path(ref path) = *expr {
+        Some(&path.path)
+    } else {
+        None
     }
 }
 
