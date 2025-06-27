@@ -57,8 +57,6 @@ pub struct TypedAstContext {
     pub c_main: Option<CDeclId>,
     pub parents: HashMap<CDeclId, CDeclId>, // record fields and enum constants
 
-    pub parent_fn: HashMap<CDeclId, CDeclId>, // decl => parent function
-
     // Mapping from FileId to SrcFile. Deduplicated by file path.
     files: Vec<SrcFile>,
     // Mapping from clang file id to translator FileId

@@ -44,6 +44,7 @@ mod literals;
 mod main_function;
 mod named_references;
 mod operators;
+pub mod parent_fn;
 mod simd;
 mod structs;
 mod tenjin;
@@ -240,6 +241,7 @@ struct MacroExpansion {
     ty: CTypeId,
 }
 
+#[derive(Debug)]
 struct TenjinDeclSpecifier {
     pub filespec: String,
     pub fnname: String,
@@ -331,11 +333,13 @@ impl ParsedGuidance {
                         }
                     }
                     let ty = syn::parse_str::<syn::Type>(unparsed_ty)
-                        .expect(&format!("Failed to parse type: {}", unparsed_ty));
+                        .unwrap_or_else(|_| panic!("Failed to parse type: {}", unparsed_ty));
                     declspecs_of_type.insert(ty, parsed_declspecs);
                 }
             }
         }
+
+        dbg!(&declspecs_of_type);
 
         ParsedGuidance {
             raw,
@@ -345,7 +349,7 @@ impl ParsedGuidance {
         }
     }
 
-    pub fn query_decl_type(&self, t: Translation, id: CDeclId) -> Option<syn::Type> {
+    pub fn query_decl_type(&mut self, t: &Translation, id: CDeclId) -> Option<syn::Type> {
         if self.decls_without_type_guidance.contains(&id) {
             return None;
         }
@@ -371,7 +375,7 @@ pub struct Translation<'c> {
     // Translation environment
     pub ast_context: TypedAstContext,
     pub tcfg: &'c TranspilerConfig,
-    pub parsed_guidance: ParsedGuidance,
+    parsed_guidance: RefCell<ParsedGuidance>,
 
     // Accumulated outputs
     pub features: RefCell<IndexSet<&'static str>>,
@@ -379,6 +383,7 @@ pub struct Translation<'c> {
     extern_crates: RefCell<CrateSet>,
 
     // Translation state and utilities
+    parent_fn_map: HashMap<CDeclId, CDeclId>,
     type_converter: RefCell<TypeConverter>,
     renamer: RefCell<Renamer<CDeclId>>,
     zero_inits: RefCell<IndexMap<CDeclId, WithStmts<Box<Expr>>>>,
@@ -617,8 +622,10 @@ pub fn translate(
     ast_context: TypedAstContext,
     tcfg: &TranspilerConfig,
     main_file: PathBuf,
+    parent_fn_map: HashMap<CDeclId, CDeclId>,
 ) -> (String, PragmaVec, CrateSet) {
-    let mut t = Translation::new(ast_context, tcfg, main_file.as_path());
+    let mut t = Translation::new(ast_context, tcfg, main_file.as_path(), parent_fn_map);
+    dbg!(&t.parent_fn_map);
     let ctx = ExprContext {
         used: true,
         is_static: false,
@@ -1779,6 +1786,7 @@ impl<'c> Translation<'c> {
         mut ast_context: TypedAstContext,
         tcfg: &'c TranspilerConfig,
         main_file: &path::Path,
+        parent_fn_map: HashMap<CDeclId, CDeclId>,
     ) -> Self {
         let comment_context = CommentContext::new(&mut ast_context);
         let mut type_converter = TypeConverter::new();
@@ -1795,7 +1803,7 @@ impl<'c> Translation<'c> {
             type_converter: RefCell::new(type_converter),
             ast_context,
             tcfg,
-            parsed_guidance: ParsedGuidance::new(tcfg.guidance_json.clone()),
+            parsed_guidance: RefCell::new(ParsedGuidance::new(tcfg.guidance_json.clone())),
             renamer: RefCell::new(Renamer::new(&[
                 // Keywords currently in use
                 "as", "break", "const", "continue", "crate", "else", "enum", "extern", "false",
@@ -1822,6 +1830,7 @@ impl<'c> Translation<'c> {
             main_file,
             extern_crates: RefCell::new(IndexSet::new()),
             cur_file: RefCell::new(None),
+            parent_fn_map,
         }
     }
 
@@ -2142,11 +2151,12 @@ impl<'c> Translation<'c> {
         (fn_item, static_item)
     }
 
-    pub fn matches_decl(&self, spec: &TenjinDeclSpecifier, id: CDeclId) -> bool {
+    fn matches_decl(&self, spec: &TenjinDeclSpecifier, id: CDeclId) -> bool {
+        log::info!("TENJIN matches_decl: {:?} ({:?})", spec, id);
         match self.ast_context.get_decl(&id) {
             Some(decl) => {
                 if spec.linenumber > 0
-                    && decl.begin_loc().map(|loc| loc.line) != Some(spec.linenumber)
+                    && decl.begin_loc().map(|loc| loc.line) != Some(spec.linenumber as u64)
                 {
                     log::warn!(
                         "TENJIN matches_decl: Decl {:?} does not match specified linenumber {}",
@@ -2159,10 +2169,15 @@ impl<'c> Translation<'c> {
                 // An empty filespec matches all files, and if we don't have a srcloc
                 // we should conservatively assume it matches.
                 if (!spec.filespec.is_empty())
-                    && decl
-                        .begin_loc()
-                        .and_then(|loc| self.ast_context.get_file_path(loc.fileid))
-                        .map(|path| path.to_string_lossy().to_string().ends_with(spec.filespec))
+                    && self
+                        .ast_context
+                        .file_id(decl)
+                        .and_then(|fileid| self.ast_context.get_file_path(fileid))
+                        .map(|path| {
+                            path.to_string_lossy()
+                                .to_string()
+                                .ends_with(spec.filespec.as_str())
+                        })
                         == Some(false)
                 {
                     log::warn!(
@@ -2173,18 +2188,24 @@ impl<'c> Translation<'c> {
                     return false;
                 }
 
-                // if let Some(currfn) = self.function_context.borrow().name {
-                //     if currfn != spec.fnname {
-                //         log::warn!(
-                //             "TENJIN matches_decl: Decl {:?} does not match current function {}",
-                //             id,
-                //             currfn
-                //         );
-                //         return false;
-                //     }
-                // }
+                if (!spec.fnname.is_empty()) && spec.fnname != "*" {
+                    if let Some(parent_fn) = self.parent_fn_map.get(&id) {
+                        if self
+                            .ast_context
+                            .get_decl(parent_fn)
+                            .is_none_or(|fn_decl| fn_decl.kind.get_name() != Some(&spec.fnname))
+                        {
+                            log::warn!(
+                            "TENJIN matches_decl: Decl {:?} does not match parent function {:?}",
+                            id,
+                            parent_fn
+                        );
+                            return false;
+                        }
+                    }
+                }
 
-                match decl.kind {
+                match &decl.kind {
                     CDeclKind::Function { name, .. } => spec.varname == name.as_str(),
                     CDeclKind::Field { ref name, .. } => {
                         // Match field names against the declspecs
@@ -2929,15 +2950,19 @@ impl<'c> Translation<'c> {
                 }
 
                 // XREF:TENJIN-GUIDANCE-STRAWMAN
-                let (ty_override, mut_override) =
-                    if name == "driver" && (var == "s1" || var == "s2") {
-                        (
-                            Some(mk().path_ty(vec!["String"])),
-                            Some(Mutability::Immutable),
-                        )
-                    } else {
-                        (None, None)
-                    };
+                let (ty_override, mut_override) = if self
+                    .parsed_guidance
+                    .borrow_mut()
+                    .query_decl_type(self, decl_id)
+                    == Some(syn::parse_str("String").unwrap())
+                {
+                    (
+                        Some(mk().path_ty(vec!["String"])),
+                        Some(Mutability::Immutable),
+                    )
+                } else {
+                    (None, None)
+                };
 
                 let pat = if var.is_empty() {
                     mk().wild_pat()
@@ -3945,6 +3970,19 @@ impl<'c> Translation<'c> {
         current
     }
 
+    fn c_expr_get_var_decl_id(&self, expr: CExprId) -> Option<CDeclId> {
+        if let CExprKind::DeclRef(_, decl_id, _) =
+            self.ast_context[self.c_strip_implicit_casts(expr)].kind
+        {
+            if let Some(decl) = self.ast_context.get_decl(&decl_id) {
+                if let CDeclKind::Variable { .. } = decl.kind {
+                    return Some(decl_id);
+                }
+            }
+        }
+        None
+    }
+
     fn c_expr_is_var_ident(&self, expr: CExprId, name: &str) -> bool {
         if let CExprKind::DeclRef(_, decl_id, _) =
             self.ast_context[self.c_strip_implicit_casts(expr)].kind
@@ -4748,26 +4786,27 @@ impl<'c> Translation<'c> {
             }
 
             // XREF:TENJIN-GUIDANCE-STRAWMAN
-            if self.c_expr_is_var_ident(cargs[0], "s1") || self.c_expr_is_var_ident(cargs[0], "s2")
-            {
-                let dst = self.convert_expr(ctx.used(), cargs[0])?;
-                let ref_mut_dst = mk().mutbl().addr_of_expr(dst.to_expr());
-                let expr = self.convert_expr(ctx.used(), cargs[1])?;
-                let expr_u64 = tenjin::expr_in_u64(expr.to_expr());
-                let std_io_path: Box<Expr> = mk().path_expr(vec!["std", "io"]);
-                let stdin_call = mk().method_call_expr(std_io_path, "stdin", vec![]);
-                let lock_call = mk().method_call_expr(stdin_call.clone(), "lock", vec![]);
-                let take_call = mk().method_call_expr(lock_call, "take", vec![expr_u64]);
-                let read_line = mk().method_call_expr(take_call, "read_line", vec![ref_mut_dst]);
-                let unwrap_call = mk().method_call_expr(read_line, "unwrap", vec![]);
-                return Ok(Some(WithStmts::new_val(unwrap_call)));
+            if let Some(var_cdecl_id) = self.c_expr_get_var_decl_id(cargs[0]) {
+                if self
+                    .parsed_guidance
+                    .borrow_mut()
+                    .query_decl_type(self, var_cdecl_id)
+                    == Some(syn::parse_str("String").unwrap())
+                {
+                    let dst = self.convert_expr(ctx.used(), cargs[0])?;
+                    let ref_mut_dst = mk().mutbl().addr_of_expr(dst.to_expr());
+                    let expr = self.convert_expr(ctx.used(), cargs[1])?;
+                    let expr_u64 = tenjin::expr_in_u64(expr.to_expr());
+                    let std_io_path: Box<Expr> = mk().path_expr(vec!["std", "io"]);
+                    let stdin_call = mk().method_call_expr(std_io_path, "stdin", vec![]);
+                    let lock_call = mk().method_call_expr(stdin_call.clone(), "lock", vec![]);
+                    let take_call = mk().method_call_expr(lock_call, "take", vec![expr_u64]);
+                    let read_line =
+                        mk().method_call_expr(take_call, "read_line", vec![ref_mut_dst]);
+                    let unwrap_call = mk().method_call_expr(read_line, "unwrap", vec![]);
+                    return Ok(Some(WithStmts::new_val(unwrap_call)));
+                }
             }
-            // if self
-            //     .function_context
-            //     .borrow()
-            //     .name
-            //     .is_some_and(|&x| x == "main")
-            // {}
         }
         Ok(None)
     }
@@ -5242,8 +5281,13 @@ impl<'c> Translation<'c> {
                                 expr
                             );
 
-                            if let Some(CExprKind::DeclRef(cqti, CDeclId(x), lrval)) = expr_kind {
-                                if *x == 851 || *x == 856 {
+                            if let Some(CExprKind::DeclRef(cqti, decl_id, lrval)) = expr_kind {
+                                if self
+                                    .parsed_guidance
+                                    .borrow_mut()
+                                    .query_decl_type(self, *decl_id)
+                                    == Some(syn::parse_str("String").unwrap())
+                                {
                                     return Ok(val);
                                 }
                             }
