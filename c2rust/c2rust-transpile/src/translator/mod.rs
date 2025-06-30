@@ -2677,8 +2677,12 @@ impl<'c> Translation<'c> {
                     .borrow()
                     .get(&decl_id)
                     .expect("Variables should already be renamed");
+                let guided_type = self
+                    .parsed_guidance
+                    .borrow_mut()
+                    .query_decl_type(self, decl_id);
                 let ConvertedVariable { ty, mutbl, init: _ } =
-                    self.convert_variable(ctx.static_(), None, typ)?;
+                    self.convert_variable(ctx.static_(), None, typ, &guided_type)?;
                 // When putting extern statics into submodules, they need to be public to be accessible
                 let visibility = if self.tcfg.reorganize_definitions {
                     "pub"
@@ -2727,6 +2731,10 @@ impl<'c> Translation<'c> {
                     .borrow()
                     .get(&decl_id)
                     .expect("Variables should already be renamed");
+                let guided_type = self
+                    .parsed_guidance
+                    .borrow_mut()
+                    .query_decl_type(self, decl_id);
 
                 // Collect problematic static initializers and offload them to sections for the linker
                 // to initialize for us
@@ -2734,7 +2742,7 @@ impl<'c> Translation<'c> {
                     // Note: We don't pass has_static_duration through here. Extracted initializers
                     // are run outside of the static initializer.
                     let ConvertedVariable { ty, mutbl: _, init } =
-                        self.convert_variable(ctx.not_static(), initializer, typ)?;
+                        self.convert_variable(ctx.not_static(), initializer, typ, &guided_type)?;
 
                     let mut init = init?.to_expr();
 
@@ -2760,7 +2768,7 @@ impl<'c> Translation<'c> {
                     (ty, init)
                 } else {
                     let ConvertedVariable { ty, mutbl: _, init } =
-                        self.convert_variable(ctx.static_(), initializer, typ)?;
+                        self.convert_variable(ctx.static_(), initializer, typ, &guided_type)?;
                     let mut init = init?;
                     // TODO: Replace this by relying entirely on
                     // WithStmts.is_unsafe() of the translated variable
@@ -2937,8 +2945,12 @@ impl<'c> Translation<'c> {
 
             // handle regular (non-variadic) arguments
             for &(decl_id, ref var, typ) in arguments {
+                let guided_type = self
+                    .parsed_guidance
+                    .borrow_mut()
+                    .query_decl_type(self, decl_id);
                 let ConvertedVariable { ty, mutbl, init: _ } =
-                    self.convert_variable(ctx, None, typ)?;
+                    self.convert_variable(ctx, None, typ, &guided_type)?;
 
                 if body.is_some() {
                     log::info!(
@@ -2950,19 +2962,15 @@ impl<'c> Translation<'c> {
                 }
 
                 // XREF:TENJIN-GUIDANCE-STRAWMAN
-                let (ty_override, mut_override) = if self
-                    .parsed_guidance
-                    .borrow_mut()
-                    .query_decl_type(self, decl_id)
-                    == Some(syn::parse_str("String").unwrap())
-                {
-                    (
-                        Some(mk().path_ty(vec!["String"])),
-                        Some(Mutability::Immutable),
-                    )
-                } else {
-                    (None, None)
-                };
+                let (ty_override, mut_override) =
+                    if guided_type == Some(syn::parse_str("String").unwrap()) {
+                        (
+                            Some(mk().path_ty(vec!["String"])),
+                            Some(Mutability::Immutable),
+                        )
+                    } else {
+                        (None, None)
+                    };
 
                 let pat = if var.is_empty() {
                     mk().wild_pat()
@@ -3349,6 +3357,10 @@ impl<'c> Translation<'c> {
         ctx: ExprContext,
         decl_id: CDeclId,
     ) -> TranslationResult<cfg::DeclStmtInfo> {
+        let guided_type = self
+            .parsed_guidance
+            .borrow_mut()
+            .query_decl_type(self, decl_id);
         if let CDeclKind::Variable {
             ref ident,
             has_static_duration: true,
@@ -3374,7 +3386,7 @@ impl<'c> Translation<'c> {
                         )
                     })?;
                 let ConvertedVariable { ty, mutbl: _, init } =
-                    self.convert_variable(ctx.static_(), initializer, typ)?;
+                    self.convert_variable(ctx.static_(), initializer, typ, &guided_type)?;
                 let default_init = self.implicit_default_expr(typ.ctype, true)?.to_expr();
                 let comment = String::from("// Initialized in run_static_initializers");
                 let span = self
@@ -3450,7 +3462,7 @@ impl<'c> Translation<'c> {
                 let mut stmts = self.compute_variable_array_sizes(ctx, typ.ctype)?;
 
                 let ConvertedVariable { ty, mutbl, init } =
-                    self.convert_variable(ctx, initializer, typ)?;
+                    self.convert_variable(ctx, initializer, typ, &guided_type)?;
                 let mut init = init?;
 
                 log::info!(
@@ -3675,14 +3687,16 @@ impl<'c> Translation<'c> {
         }
     }
 
+    /// Type guidance helps convert the initializer expression.
     fn convert_variable(
         &self,
         ctx: ExprContext,
         initializer: Option<CExprId>,
         typ: CQualTypeId,
+        guided_type: &Option<Type>,
     ) -> TranslationResult<ConvertedVariable> {
         let init = match initializer {
-            Some(x) => self.convert_expr(ctx.used(), x),
+            Some(x) => self.convert_expr_guided(ctx.used(), x, guided_type),
             None => self.implicit_default_expr(typ.ctype, ctx.is_static),
         };
 
@@ -4023,6 +4037,15 @@ impl<'c> Translation<'c> {
         mut ctx: ExprContext,
         expr_id: CExprId,
     ) -> TranslationResult<WithStmts<Box<Expr>>> {
+        self.convert_expr_guided(ctx, expr_id, &None)
+    }
+
+    pub fn convert_expr_guided(
+        &self,
+        mut ctx: ExprContext,
+        expr_id: CExprId,
+        guided_type: &Option<Type>,
+    ) -> TranslationResult<WithStmts<Box<Expr>>> {
         let Located {
             loc: src_loc,
             kind: expr_kind,
@@ -4274,7 +4297,7 @@ impl<'c> Translation<'c> {
                 }
             },
 
-            Literal(ty, ref kind) => self.convert_literal(ctx, ty, kind),
+            Literal(ty, ref kind) => self.convert_literal(ctx, ty, kind, guided_type),
 
             ImplicitCast(ty, expr, kind, opt_field_id, _)
             | ExplicitCast(ty, expr, kind, opt_field_id, _) => {

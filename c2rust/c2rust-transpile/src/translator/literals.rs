@@ -77,6 +77,7 @@ impl Translation<'_> {
         _ctx: ExprContext,
         ty: CQualTypeId,
         kind: &CLiteral,
+        guided_type: &Option<Type>,
     ) -> TranslationResult<WithStmts<Box<Expr>>> {
         match *kind {
             CLiteral::Integer(val, base) => Ok(WithStmts::new_val(self.mk_int_lit(ty, val, base)?)),
@@ -146,9 +147,13 @@ impl Translation<'_> {
                 );
 
                 // XREF:TENJIN-GUIDANCE-STRAWMAN
-                if num_elems == 100 && val.is_empty() {
-                    let newstr = mk().call_expr(mk().path_expr(vec!["String", "new"]), vec![]);
-                    return Ok(WithStmts::new_val(newstr));
+                if let Some(guided_type) = guided_type {
+                    if guided_type == &*mk().path_ty(vec!["String"]) {
+                        // If the type is a String, we need to convert the string literal
+                        // into a Rust String.
+                        let newstr = mk().call_expr(mk().path_expr(vec!["String", "new"]), vec![]);
+                        return Ok(WithStmts::new_val(newstr));
+                    }
                 }
 
                 let size = num_elems * (width as usize);

@@ -171,12 +171,14 @@ impl Translation<'_> {
                 }
 
                 if let Some(base_decl_id) = self.c_expr_decl_id(*raw_base) {
-                    let base_decl = &self.ast_context[base_decl_id].kind;
-                    if let CDeclKind::Variable { ident, .. } = base_decl {
-                        if !(ident == "s1" || ident == "s2") {
-                            log::info!("target string not s1 or s2");
-                            return Ok(None);
-                        }
+                    let guided_type = self
+                        .parsed_guidance
+                        .borrow_mut()
+                        .query_decl_type(self, base_decl_id);
+
+                    if guided_type != Some(syn::parse_str("String").unwrap()) {
+                        log::info!("target variable not guided to be of type String");
+                        return Ok(None);
                     }
                 } else {
                     return Ok(None);
