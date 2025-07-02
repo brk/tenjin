@@ -38,3 +38,7 @@ target/
 
 # Built Visual Studio Code Extensions
 *.vsix
+
+# Junk files & directories
+ju_*
+ju.*

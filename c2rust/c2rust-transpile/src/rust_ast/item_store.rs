@@ -72,6 +72,7 @@ pub struct ItemStore {
     items: Vec<Box<Item>>,
     foreign_items: Vec<ForeignItem>,
     uses: PathedMultiImports,
+    singleton_items: IndexMap<String, Box<Item>>,
 }
 
 impl ItemStore {
@@ -85,6 +86,15 @@ impl ItemStore {
 
     pub fn add_foreign_item(&mut self, item: ForeignItem) {
         self.foreign_items.push(item);
+    }
+
+    pub fn add_item_str_once(&mut self, srctext: &str) {
+        if !self.singleton_items.contains_key(srctext) {
+            let item: Item = syn::parse_str(srctext)
+                .unwrap_or_else(|_| panic!("Failed to parse item: {}", srctext));
+            self.singleton_items
+                .insert(srctext.to_string(), Box::new(item));
+        }
     }
 
     pub fn add_use(&mut self, path: Vec<String>, ident: &str) {
@@ -103,6 +113,9 @@ impl ItemStore {
         swap(&mut items, &mut self.items);
         swap(&mut foreign_items, &mut self.foreign_items);
         swap(&mut uses, &mut self.uses);
+
+        let mut singleton_items = self.singleton_items.values().cloned().collect::<Vec<_>>();
+        items.append(&mut singleton_items);
 
         (items, foreign_items, uses)
     }

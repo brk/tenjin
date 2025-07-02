@@ -249,7 +249,19 @@ impl Translation<'_> {
             .kind
             .get_qual_type()
             .ok_or_else(|| format_err!("bad assignment rhs type"))?;
-        let rhs_translation = self.convert_expr(ctx.used(), rhs)?;
+
+        if let Some(tres) =
+            self.recognize_c_assignment_cases(ctx, op, qtype, lhs, rhs, compute_type, result_type)?
+        {
+            if ctx.is_unused() && tres.is_pure() {
+                return Ok(WithStmts::new(
+                    vec![mk().semi_stmt(tres.to_expr())],
+                    mk().tuple_expr(vec![]),
+                ));
+            }
+        }
+
+        let rhs_translation = self.convert_expr(ctx, rhs)?;
         self.convert_assignment_operator_with_rhs(
             ctx,
             op,

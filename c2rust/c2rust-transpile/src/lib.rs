@@ -83,6 +83,8 @@ pub struct TranspilerConfig {
     pub preserve_unused_functions: bool,
     pub log_level: log::LevelFilter,
 
+    pub guidance_json: serde_json::Value,
+
     // Options that control build files
     /// Emit `Cargo.toml` and `lib.rs`
     pub emit_build_files: bool,
@@ -532,8 +534,9 @@ fn transpile_single(
     }
 
     // Perform the translation
+    let parent_fn_map = translator::parent_fn::compute_parent_fn_map(&typed_context);
     let (translated_string, pragmas, crates) =
-        translator::translate(typed_context, tcfg, input_path);
+        translator::translate(typed_context, tcfg, input_path, parent_fn_map);
 
     let mut file = match File::create(&output_path) {
         Ok(file) => file,
