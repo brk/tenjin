@@ -2439,6 +2439,7 @@ mod tenjin {
             // Technically the C standard places very lax requirements on the
             // size of these types. In practice we do not expect to compile
             // for platforms where int is < 32 bits, for example.
+            // (As of 2025, the only such platforms Rust supports are AVR and MSP430.)
             //
             // If the value we pick here is smaller than the actual value
             // representable by the given C type, that's fine; we'll merely
@@ -2450,6 +2451,12 @@ mod tenjin {
             // depending on the situation.
             //
             // So these values are chosen conservatively.
+            if path.segments[1].ident.to_string().as_str() == "c_longlong" {
+                return Some(i64::MAX);
+            }
+            if path.segments[1].ident.to_string().as_str() == "c_ulonglong" {
+                return Some(i64::MAX);
+            }
             if path.segments[1].ident.to_string().as_str() == "c_ulong" {
                 return Some(i32::MAX as i64);
             }
@@ -2458,6 +2465,18 @@ mod tenjin {
             }
             if path.segments[1].ident.to_string().as_str() == "c_int" {
                 return Some(i32::MAX as i64);
+            }
+            if path.segments[1].ident.to_string().as_str() == "c_short" {
+                return Some(i16::MAX as i64);
+            }
+            if path.segments[1].ident.to_string().as_str() == "c_ushort" {
+                return Some(i16::MAX as i64);
+            }
+            if path.segments[1].ident.to_string().as_str() == "c_char" {
+                return Some(i8::MAX as i64);
+            }
+            if path.segments[1].ident.to_string().as_str() == "c_schar" {
+                return Some(i8::MAX as i64);
             }
         }
         match path.segments[0].ident.to_string().as_str() {
