@@ -246,13 +246,14 @@ struct TenjinDeclSpecifier {
     pub filespec: String,
     pub fnname: String,
     pub varname: String,
+    // XREF:TENJIN-DECL-SPEC-LINENUMBER
     pub linenumber: u32,
 }
 
 /// Example of a Tenjin declaration specifier:
 ///  fnname:varname#linenumber@pathsuffix
 /// The `:varname`, `#linenumber`, and `@pathsuffix` parts are optional.
-/// If omitted, they match all functions, lines, and files, respectively.
+/// If omitted, they match all variables, lines, and files, respectively.
 /// A pathsuffix can match one or more files in a directory tree.
 fn parse_tenjin_decl_specifier(s: &str) -> Option<TenjinDeclSpecifier> {
     if s.is_empty() {
@@ -2155,6 +2156,7 @@ impl<'c> Translation<'c> {
         log::info!("TENJIN matches_decl: {:?} ({:?})", spec, id);
         match self.ast_context.get_decl(&id) {
             Some(decl) => {
+                // XREF:TENJIN-DECL-SPEC-LINENUMBER
                 if spec.linenumber > 0
                     && decl.begin_loc().map(|loc| loc.line) != Some(spec.linenumber as u64)
                 {
@@ -2209,7 +2211,6 @@ impl<'c> Translation<'c> {
                     CDeclKind::Function { name, .. } => spec.varname == name.as_str(),
                     CDeclKind::Field { ref name, .. } => {
                         // Match field names against the declspecs
-                        //spec.varname == name.as_str()
                         log::warn!(
                             "TENJIN matches_decl: Field matching not implemented for decl {:?} with name {}",
                             id, name
