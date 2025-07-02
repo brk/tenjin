@@ -1381,9 +1381,9 @@ mod refactor_format {
         let ep = &old_fmt_str_expr;
         let s = match expr_as_lit_str(expr_strip_casts(ep)) {
             Some(LitStrOrByteStr::LitStr(s)) => s.value(),
-            Some(LitStrOrByteStr::ByteStr(b)) => {
-                str::from_utf8(b.value().as_slice()).unwrap().to_owned()
-            }
+            Some(LitStrOrByteStr::ByteStr(b)) => std::str::from_utf8(b.value().as_slice())
+                .unwrap()
+                .to_owned(),
             None => panic!(
                 "TENJIN expected format string to be a string literal: {:?}",
                 ep
