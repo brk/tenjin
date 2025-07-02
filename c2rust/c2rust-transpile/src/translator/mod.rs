@@ -3085,7 +3085,10 @@ impl<'c> Translation<'c> {
                 };
 
                 // XREF:TENJIN-GUIDANCE-STRAWMAN
-                let fn_needs_abi_preservation: bool = name != "driver";
+                // Eventually, we must become more sophisticated about ABI preservation.
+                // Some common types like `String` and `Vec` are not FFI-safe.
+                // YOLO mode for now!
+                let fn_needs_abi_preservation: bool = false;
 
                 if fn_needs_abi_preservation && !is_main {
                     mk_ = mk_.extern_("C");
