@@ -140,7 +140,7 @@ impl Translation<'_> {
                     _ => 1,
                 };
 
-                log::info!(
+                log::trace!(
                     "TENJIN TRACE: convert string literal, contents len {}, num elems {}",
                     val.len(),
                     num_elems

@@ -340,7 +340,7 @@ impl ParsedGuidance {
             }
         }
 
-        dbg!(&declspecs_of_type);
+        //dbg!(&declspecs_of_type);
 
         ParsedGuidance {
             _raw: raw,
@@ -626,7 +626,6 @@ pub fn translate(
     parent_fn_map: HashMap<CDeclId, CDeclId>,
 ) -> (String, PragmaVec, CrateSet) {
     let mut t = Translation::new(ast_context, tcfg, main_file.as_path(), parent_fn_map);
-    dbg!(&t.parent_fn_map);
     let ctx = ExprContext {
         used: true,
         is_static: false,
@@ -1376,7 +1375,7 @@ mod refactor_format {
     ) -> Macro {
         let old_fmt_str_expr = fmt_args[0].clone();
 
-        info!("  found fmt str {:?}", old_fmt_str_expr);
+        trace!("  found fmt str {:?}", old_fmt_str_expr);
 
         let ep = &old_fmt_str_expr;
         let s = match expr_as_lit_str(expr_strip_casts(ep)) {
@@ -1436,8 +1435,8 @@ mod refactor_format {
 
         let new_fmt_str_expr = mk().span(old_fmt_str_expr.span()).lit_expr(&new_s);
 
-        info!("old fmt str expr: {:?}", old_fmt_str_expr);
-        info!("new fmt str expr: {:?}", new_fmt_str_expr);
+        trace!("old fmt str expr: {:?}", old_fmt_str_expr);
+        trace!("new fmt str expr: {:?}", new_fmt_str_expr);
 
         let mut macro_tts: Vec<TokenTree> = Vec::new();
         let expr_tt = |e: Box<Expr>| {
@@ -2153,7 +2152,7 @@ impl<'c> Translation<'c> {
     }
 
     fn matches_decl(&self, spec: &TenjinDeclSpecifier, id: CDeclId) -> bool {
-        log::info!("TENJIN matches_decl: {:?} ({:?})", spec, id);
+        log::trace!("TENJIN matches_decl: {:?} ({:?})", spec, id);
         match self.ast_context.get_decl(&id) {
             Some(decl) => {
                 // XREF:TENJIN-DECL-SPEC-LINENUMBER
@@ -2248,7 +2247,7 @@ impl<'c> Translation<'c> {
             .get_span(SomeId::Decl(decl_id))
             .unwrap_or_else(Span::call_site);
 
-        log::info!("TENJIN convert_decl: {:?} ({:?})", decl.kind, decl_id);
+        log::trace!("TENJIN convert_decl: {:?} ({:?})", decl.kind, decl_id);
 
         use CDeclKind::*;
         match decl.kind {
@@ -2945,7 +2944,7 @@ impl<'c> Translation<'c> {
                     self.convert_variable(ctx, None, typ, &guided_type)?;
 
                 if body.is_some() {
-                    log::info!(
+                    log::trace!(
                         "Converting param variable {:?} {:?} of body-having function {:?}",
                         var,
                         decl_id,
@@ -3363,7 +3362,7 @@ impl<'c> Translation<'c> {
             ..
         } = self.ast_context.index(decl_id).kind
         {
-            log::info!(
+            log::trace!(
                 "TENJIN TRACE: convert decl var (local static duration) line {}",
                 line!()
             );
@@ -3418,7 +3417,7 @@ impl<'c> Translation<'c> {
                     "Only local variable definitions should be extracted"
                 );
 
-                log::info!(
+                log::trace!(
                     "TENJIN TRACE: convert decl var (local, non-static duration) line {}",
                     line!()
                 );
@@ -3457,7 +3456,7 @@ impl<'c> Translation<'c> {
                     self.convert_variable(ctx, initializer, typ, &guided_type)?;
                 let mut init = init?;
 
-                log::info!(
+                log::trace!(
                     "TENJIN TRACE: convert decl var line {}, stmts len = {}",
                     line!(),
                     stmts.len()
@@ -3466,13 +3465,13 @@ impl<'c> Translation<'c> {
                 stmts.append(init.stmts_mut());
                 let init = init.into_value();
 
-                log::info!(
+                log::trace!(
                     "TENJIN TRACE: convert decl var line {}, stmts+init len = {}",
                     line!(),
                     stmts.len()
                 );
 
-                log::info!(
+                log::trace!(
                     "TENJIN TRACE: convert decl var line {}, initializer = {:?}",
                     line!(),
                     initializer
@@ -3512,7 +3511,7 @@ impl<'c> Translation<'c> {
                         decl_and_assign,
                     ))
                 } else {
-                    log::info!(
+                    log::trace!(
                         "TENJIN TRACE: convert decl var line {}, no self reference",
                         line!()
                     );
@@ -3528,7 +3527,7 @@ impl<'c> Translation<'c> {
                         Some(ty)
                     };
 
-                    log::info!(
+                    log::trace!(
                         "TENJIN TRACE: convert decl var line {}, type_annotation = {:?}",
                         line!(),
                         type_annotation
@@ -3537,7 +3536,7 @@ impl<'c> Translation<'c> {
                     let local = mk().local(pat, type_annotation, Some(init.clone()));
                     let assign = mk().assign_expr(mk().ident_expr(rust_name), init);
 
-                    log::info!(
+                    log::trace!(
                         "TENJIN TRACE: convert decl var line {}, assign = {:?}",
                         line!(),
                         assign
@@ -4142,7 +4141,7 @@ impl<'c> Translation<'c> {
 
                 if let Some(fnname) = &self.function_context.borrow().name {
                     // XREF:TENJIN-GUIDANCE-STRAWMAN
-                    log::info!(
+                    log::trace!(
                         "Expr::DeclRef {:?} with name {} in function {}, decl =\n\n{:?}\n\n",
                         decl_id,
                         varname,
@@ -5395,7 +5394,7 @@ impl<'c> Translation<'c> {
                             Ok(val)
                         } else {
                             // XREF:TENJIN-GUIDANCE-STRAWMAN
-                            log::info!(
+                            log::trace!(
                                 "Array to pointer decay cast: {:?} -> {:?} expr {:?}",
                                 source_ty_kind,
                                 target_ty_kind,

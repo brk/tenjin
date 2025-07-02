@@ -143,14 +143,14 @@ impl Translation<'_> {
         // can be translated to
         //     s1.pop();
         // (assuming the assignment expr is in a statement position)
-        log::info!("Recognizing C assignment string pop?...");
+        log::trace!("Recognizing C assignment string pop?...");
         if op != c_ast::BinOp::Assign {
-            log::info!("Not an assignment operator");
+            log::trace!("Not an assignment operator");
             return Ok(None);
         }
 
         if !self.is_integral_lit(self.strip_integral_cast(rhs), 0) {
-            log::info!("Not assigned an integral literal 0");
+            log::trace!("Not assigned an integral literal 0");
             return Ok(None);
         }
 
@@ -166,7 +166,7 @@ impl Translation<'_> {
             ) = self.ast_context.index(*index).kind
             {
                 if !self.is_integral_lit(self.strip_integral_cast(sub_rhs), 1) {
-                    log::info!("Not subtracting 1 from the index");
+                    log::trace!("Not subtracting 1 from the index");
                     return Ok(None);
                 }
 
@@ -177,7 +177,7 @@ impl Translation<'_> {
                         .query_decl_type(self, base_decl_id);
 
                     if guided_type != Some(syn::parse_str("String").unwrap()) {
-                        log::info!("target variable not guided to be of type String");
+                        log::trace!("target variable not guided to be of type String");
                         return Ok(None);
                     }
                 } else {
@@ -207,15 +207,15 @@ impl Translation<'_> {
                                     mk().path_segment("pop"),
                                     vec![],
                                 );
-                                log::info!("Recognized assignment, returning pop call");
+                                log::trace!("Recognized assignment, returning pop call");
                                 return Ok(Some(WithStmts::new_val(pop_call)));
                             } else {
-                                log::info!("Call to strlen does not match the expected argument");
+                                log::trace!("Call to strlen does not match the expected argument");
                             }
                         }
-                        log::info!("Not a call to strlen");
+                        log::trace!("Not a call to strlen");
                     } else {
-                        log::info!(
+                        log::trace!(
                             "Callee is not a decl ref: {:?}",
                             self.ast_context.index(callee).kind
                         );
@@ -223,7 +223,7 @@ impl Translation<'_> {
                 }
             }
         }
-        log::info!("LHS not an array subscript");
+        log::trace!("LHS not an array subscript");
         Ok(None)
     }
 }
