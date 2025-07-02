@@ -131,11 +131,11 @@ impl Translation<'_> {
         &self,
         ctx: ExprContext,
         op: c_ast::BinOp,
-        qtype: CQualTypeId,
+        _qtype: CQualTypeId,
         lhs: CExprId,
         rhs: CExprId,
-        compute_type: Option<CQualTypeId>,
-        result_type: Option<CQualTypeId>,
+        _compute_type: Option<CQualTypeId>,
+        _result_type: Option<CQualTypeId>,
     ) -> TranslationResult<Option<WithStmts<Box<Expr>>>> {
         // Code matching
         //     s1[strlen(s1)-1] = '\0';

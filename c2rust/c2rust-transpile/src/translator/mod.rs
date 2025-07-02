@@ -307,7 +307,7 @@ fn parse_tenjin_decl_specifier(s: &str) -> Option<TenjinDeclSpecifier> {
 }
 
 struct ParsedGuidance {
-    pub raw: serde_json::Value,
+    pub _raw: serde_json::Value,
     pub declspecs_of_type: HashMap<syn::Type, Vec<TenjinDeclSpecifier>>,
     pub type_of_decl: HashMap<CDeclId, syn::Type>,
     decls_without_type_guidance: HashSet<CDeclId>,
@@ -318,7 +318,7 @@ impl ParsedGuidance {
         let mut declspecs_of_type: HashMap<syn::Type, Vec<TenjinDeclSpecifier>> = HashMap::new();
 
         // These map will be filled in lazily.
-        let mut type_of_decl: HashMap<CDeclId, syn::Type> = HashMap::new();
+        let type_of_decl: HashMap<CDeclId, syn::Type> = HashMap::new();
 
         if let Some(decls) = raw.get("vars_of_type") {
             if let Some(decls) = decls.as_object() {
@@ -342,7 +342,7 @@ impl ParsedGuidance {
         dbg!(&declspecs_of_type);
 
         ParsedGuidance {
-            raw,
+            _raw: raw,
             declspecs_of_type,
             type_of_decl,
             decls_without_type_guidance: HashSet::new(),
@@ -2211,21 +2211,12 @@ impl<'c> Translation<'c> {
                         // Match field names against the declspecs
                         //spec.varname == name.as_str()
                         log::warn!(
-                            "TENJIN matches_decl: Field matching not implemented for decl {:?}",
-                            id
+                            "TENJIN matches_decl: Field matching not implemented for decl {:?} with name {}",
+                            id, name
                         );
                         false
                     }
-                    CDeclKind::Variable {
-                        has_static_duration,
-                        has_thread_duration,
-                        is_externally_visible,
-                        is_defn,
-                        ident,
-                        initializer,
-                        typ,
-                        attrs,
-                    } => {
+                    CDeclKind::Variable { ident, .. } => {
                         // Match variable declarations against the declspecs
                         spec.varname == ident.as_str()
                     }
@@ -4034,7 +4025,7 @@ impl<'c> Translation<'c> {
     /// ignored.
     pub fn convert_expr(
         &self,
-        mut ctx: ExprContext,
+        ctx: ExprContext,
         expr_id: CExprId,
     ) -> TranslationResult<WithStmts<Box<Expr>>> {
         self.convert_expr_guided(ctx, expr_id, &None)
@@ -5410,7 +5401,7 @@ impl<'c> Translation<'c> {
                                 expr
                             );
 
-                            if let Some(CExprKind::DeclRef(cqti, decl_id, lrval)) = expr_kind {
+                            if let Some(CExprKind::DeclRef(_cqti, decl_id, _lrval)) = expr_kind {
                                 if self
                                     .parsed_guidance
                                     .borrow_mut()
