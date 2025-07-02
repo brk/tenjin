@@ -135,14 +135,17 @@ def cargo_encoded_rustflags_env_ext() -> dict:
 
 
 def run_cargo_in(
-    args: Sequence[str], cwd: Path | None, check=True, **kwargs
+    args: Sequence[str], cwd: Path | None, env_ext=None, check=True, **kwargs
 ) -> subprocess.CompletedProcess:
+    if not env_ext:
+        env_ext = {}
+
     return run(
         ["cargo", cargo_toolchain_specifier(), *args],
         cwd=cwd,
         check=check,
         with_tenjin_deps=True,
-        env_ext=cargo_encoded_rustflags_env_ext(),
+        env_ext={**env_ext, **cargo_encoded_rustflags_env_ext()},
         **kwargs,
     )
 
@@ -159,7 +162,7 @@ def opam_non_hermetic() -> bool:
     """If we're running in CI and opam is installed, we should use it.
 
     Note that we don't do any version checks; we're assuming that CI is
-    set up to use a version opam that is either known to be compatible,
+    set up to use a version of opam that is either known to be compatible,
     or that we want to test the compatibility of.
     """
     return running_in_ci() and shutil.which("opam") is not None

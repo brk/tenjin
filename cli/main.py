@@ -1,12 +1,14 @@
 import subprocess
 import sys
 import os
+from pathlib import Path
 
 import click
 
 import repo_root
 import provisioning
 import hermetic
+import translation
 
 
 def do_fmt_py():
@@ -42,6 +44,14 @@ def do_check_rs():
         check=True,
     )
     do_check_rs_fmt()
+
+
+def do_build_rs(root: Path):
+    hermetic.run_cargo_in(
+        "build -p c2rust -p c2rust-transpile".split(),
+        cwd=root / "c2rust",
+        check=True,
+    )
 
 
 def do_test_unit_rs():
@@ -119,6 +129,37 @@ def do_check_repo_file_sizes() -> bool:
 @click.group()
 def cli():
     pass
+
+
+@cli.command()
+@click.option("--codebase", help="Path to the codebase to translate.")
+@click.option(
+    "--resultsdir",
+    help="Output directory for translation results (intermediates + final).",
+)
+@click.option(
+    "--cratename",
+    default="tenjinized",
+    help="Name of the crate to generate (default: 'tenjinized').",
+)
+@click.option(
+    "--c_main_in",
+    default="main.c",
+    help="Relative path to the main C file to translate.",
+)
+@click.option(
+    "--guidance",
+    help="Guidance for the translation process. Path or JSON literal.",
+)
+def translate(codebase, resultsdir, cratename, c_main_in, guidance):
+    try:
+        root = repo_root.find_repo_root_dir_Path()
+        do_build_rs(root)
+        translation.do_translate(
+            root, Path(codebase), Path(resultsdir), cratename, c_main_in, guidance
+        )
+    except subprocess.CalledProcessError:
+        sys.exit(1)
 
 
 @cli.command()
