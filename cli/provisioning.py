@@ -204,7 +204,7 @@ def require_rust_stuff():
 
 
 class Provisioner(Protocol):
-    def __call__(self, localdir: Path, version: str) -> None:
+    def __call__(self, localdir: Path, version: str, keyname: str) -> None:
         """Provision the given version of the software into the given localdir."""
 
 
@@ -219,9 +219,9 @@ def want(
             return
         case InstallationState.VERSION_MISMATCH:
             sez(f"{titlename} version is outdated; re-provisioning...", ctx=f"({lowername}) ")
-            provisioner(HAVE.localdir, version=WANT[keyname])
+            provisioner(localdir=HAVE.localdir, version=WANT[keyname], keyname=keyname)
         case InstallationState.NOT_INSTALLED:
-            provisioner(HAVE.localdir, version=WANT[keyname])
+            provisioner(localdir=HAVE.localdir, version=WANT[keyname], keyname=keyname)
 
 
 def want_cmake() -> None:
@@ -264,9 +264,11 @@ def want_10j_sysroot_extras():
     if platform.system() != "Linux":
         return
 
-    key = "10j-bullseye-sysroot-extras"
-
-    def provision_10j_sysroot_extras_into(localdir: Path, version: str):
+    def provision_10j_sysroot_extras_into(
+        localdir: Path,
+        version: str,
+        keyname: str,
+    ):
         filename = f"xj-bullseye-sysroot-extras_{machine_normalized()}.tar.xz"
         url = f"https://github.com/Aarno-Labs/tenjin-build-deps/releases/download/{version}/{filename}"
 
@@ -297,10 +299,10 @@ def want_10j_sysroot_extras():
 
         shutil.rmtree(tmp_dest)
 
-        HAVE.note_we_have(key, specifier=version)
+        HAVE.note_we_have(keyname, specifier=version)
 
     want(
-        key,
+        "10j-bullseye-sysroot-extras",
         "sysroot-extras",
         "sysroot-extras",
         provision_10j_sysroot_extras_into,
@@ -346,11 +348,11 @@ def grab_dune_version_str() -> str:
     return grab_opam_stdout_for_provisioning(["exec", "--", "dune", "--version"])
 
 
-def provision_ocaml_into(localdir: Path, version: str):
+def provision_ocaml_into(localdir: Path, version: str, keyname: str):
     provision_ocaml(version)
 
     hermetic.run_opam(["config", "report"], check=False)
-    HAVE.note_we_have("10j-ocaml", version=Version(grab_ocaml_version_str()))
+    HAVE.note_we_have(keyname, version=Version(grab_ocaml_version_str()))
 
 
 def provision_ocaml(ocaml_version: str):
@@ -492,10 +494,10 @@ def provision_opam_binary_into(opam_version: str, localdir: Path) -> None:
             click.echo("WARNING: ~/.local/bin not on PATH anymore?!? OCaml cache won't work.")
 
 
-def provision_dune_into(localdir: Path, version: str):
+def provision_dune_into(localdir: Path, version: str, keyname: str):
     provision_dune(version)
 
-    HAVE.note_we_have("10j-dune", version=Version(grab_dune_version_str()))
+    HAVE.note_we_have(keyname, version=Version(grab_dune_version_str()))
 
 
 def infer_bwrap_sandboxing_args(localdir: Path) -> list[str]:
@@ -574,7 +576,7 @@ def provision_dune(dune_version: str):
     hermetic.check_call_opam(["install", f"dune.{dune_version}"])
 
 
-def provision_opam_into(localdir: Path, version: str):
+def provision_opam_into(localdir: Path, version: str, keyname: str):
     def say(msg: str):
         sez(msg, ctx="(opam) ")
 
@@ -582,10 +584,10 @@ def provision_opam_into(localdir: Path, version: str):
 
     opam_version_seen = grab_opam_version_str()
     say(f"opam version: {opam_version_seen}")
-    HAVE.note_we_have("10j-opam", version=Version(opam_version_seen))
+    HAVE.note_we_have(keyname, version=Version(opam_version_seen))
 
 
-def provision_cmake_into(localdir: Path, version: str):
+def provision_cmake_into(localdir: Path, version: str, keyname: str):
     def fmt_url(tag: str) -> str:
         return f"https://github.com/Kitware/CMake/releases/download/v{version}/cmake-{version}-{tag}.tar.gz"
 
@@ -612,7 +614,7 @@ def provision_cmake_into(localdir: Path, version: str):
         os.symlink(cmake_app_bin, cmake_dir / "bin")
 
 
-def provision_10j_llvm_into(localdir: Path, version: str):
+def provision_10j_llvm_into(localdir: Path, version: str, keyname: str):
     def provision_clang_config_files(sysroot_path):
         match platform.system():
             case "Linux":
@@ -817,7 +819,7 @@ def cook_pkg_config_within(localdir: Path):
     assert path_of_unusual_size not in data, "Oops, pkg-config was left undercooked!"
 
 
-def provision_10j_deps_into(localdir: Path, version: str):
+def provision_10j_deps_into(localdir: Path, version: str, keyname: str):
     match platform.system():
         case "Linux":
             filename = f"xj-build-deps_{machine_normalized()}.tar.xz"
