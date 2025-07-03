@@ -225,30 +225,30 @@ def want(
 
 
 def want_cmake() -> None:
-    want("10j-cmake", "cmake", "CMake", provision_cmake_into)
+    want("10j-cmake", "cmake", "CMake", provision_cmake_with)
 
 
 def want_dune():
-    want("10j-dune", "dune", "Dune", provision_dune_into)
+    want("10j-dune", "dune", "Dune", provision_dune_with)
 
 
 def want_opam():
-    want("10j-opam", "opam", "opam", provision_opam_into)
+    want("10j-opam", "opam", "opam", provision_opam_with)
 
 
 def want_ocaml():
-    want("10j-ocaml", "ocaml", "OCaml", provision_ocaml_into)
+    want("10j-ocaml", "ocaml", "OCaml", provision_ocaml_with)
 
 
 def want_10j_llvm():
-    want("10j-llvm", "llvm", "LLVM", provision_10j_llvm_into)
+    want("10j-llvm", "llvm", "LLVM", provision_10j_llvm_with)
 
 
 def want_10j_sysroot_extras():
     if platform.system() != "Linux":
         return
 
-    def provision_10j_sysroot_extras_into(
+    def provision_10j_sysroot_extras_with(
         version: str,
         keyname: str,
     ):
@@ -289,7 +289,7 @@ def want_10j_sysroot_extras():
         "10j-bullseye-sysroot-extras",
         "sysroot-extras",
         "sysroot-extras",
-        provision_10j_sysroot_extras_into,
+        provision_10j_sysroot_extras_with,
     )
 
 
@@ -301,7 +301,7 @@ def want_10j_deps():
         "10j-build-deps",
         "10j-build-deps",
         "Tenjin build deps",
-        provision_10j_deps_into,
+        provision_10j_deps_with,
     )
 
 
@@ -330,7 +330,7 @@ def grab_dune_version_str() -> str:
     return grab_opam_stdout_for_provisioning(["exec", "--", "dune", "--version"])
 
 
-def provision_ocaml_into(version: str, keyname: str):
+def provision_ocaml_with(version: str, keyname: str):
     provision_ocaml(version)
 
     hermetic.run_opam(["config", "report"], check=False)
@@ -403,7 +403,7 @@ def provision_ocaml(ocaml_version: str):
     install_ocaml()
 
 
-def provision_debian_bullseye_sysroot_into(dest_sysroot: Path):
+def provision_debian_bullseye_sysroot_with(dest_sysroot: Path):
     def say(msg: str):
         sez(msg, ctx="(sysroot) ")
 
@@ -435,7 +435,7 @@ def provision_debian_bullseye_sysroot_into(dest_sysroot: Path):
     tarball.unlink()
 
 
-def provision_opam_binary_into(opam_version: str) -> None:
+def provision_opam_binary_with(opam_version: str) -> None:
     def say(msg: str):
         sez(msg, ctx="(opam) ")
 
@@ -477,7 +477,7 @@ def provision_opam_binary_into(opam_version: str) -> None:
             click.echo("WARNING: ~/.local/bin not on PATH anymore?!? OCaml cache won't work.")
 
 
-def provision_dune_into(version: str, keyname: str):
+def provision_dune_with(version: str, keyname: str):
     provision_dune(version)
 
     HAVE.note_we_have(keyname, version=Version(grab_dune_version_str()))
@@ -559,18 +559,18 @@ def provision_dune(dune_version: str):
     hermetic.check_call_opam(["install", f"dune.{dune_version}"])
 
 
-def provision_opam_into(version: str, keyname: str):
+def provision_opam_with(version: str, keyname: str):
     def say(msg: str):
         sez(msg, ctx="(opam) ")
 
-    provision_opam_binary_into(version)
+    provision_opam_binary_with(version)
 
     opam_version_seen = grab_opam_version_str()
     say(f"opam version: {opam_version_seen}")
     HAVE.note_we_have(keyname, version=Version(opam_version_seen))
 
 
-def provision_cmake_into(version: str, keyname: str):
+def provision_cmake_with(version: str, keyname: str):
     def fmt_url(tag: str) -> str:
         return f"https://github.com/Kitware/CMake/releases/download/v{version}/cmake-{version}-{tag}.tar.gz"
 
@@ -613,7 +613,7 @@ def update_cmake_have(keyname: str):
                 raise ProvisioningError(f"Unexpected output from CMake version command:\n{outstr}")
 
 
-def provision_10j_llvm_into(version: str, keyname: str):
+def provision_10j_llvm_with(version: str, keyname: str):
     localdir = HAVE.localdir
 
     def provision_clang_config_files(sysroot_path):
@@ -652,7 +652,7 @@ def provision_10j_llvm_into(version: str, keyname: str):
                 )
 
     def provision_debian_sysroot():
-        provision_debian_bullseye_sysroot_into(hermetic.xj_llvm_root(localdir) / SYSROOT_NAME)
+        provision_debian_bullseye_sysroot_with(hermetic.xj_llvm_root(localdir) / SYSROOT_NAME)
 
         #                   COMMENTARY(goblint-cil-gcc-wrapper)
         # Okay, this one is unfortunate. We generally only care about software that
@@ -830,7 +830,7 @@ def cook_pkg_config_within():
     assert path_of_unusual_size not in data, "Oops, pkg-config was left undercooked!"
 
 
-def provision_10j_deps_into(version: str, keyname: str):
+def provision_10j_deps_with(version: str, keyname: str):
     match platform.system():
         case "Linux":
             filename = f"xj-build-deps_{machine_normalized()}.tar.xz"
