@@ -15,7 +15,12 @@ import provisioning
 def check_call_uv(args: Sequence[str | os.PathLike[str]]) -> None:
     # The args here should be kept in sync with the 10j script.
     localdir = repo_root.localdir()
-    subprocess.check_call([localdir / "uv", "--config-file", localdir / "uv.toml", *args])
+    run(
+        [localdir / "uv", "--config-file", localdir / "uv.toml", *args],
+        cwd=repo_root.find_repo_root_dir_Path(),
+        check=True,
+        with_tenjin_deps=False,
+    )
 
 
 def xj_build_deps(localdir: Path) -> Path:
@@ -105,7 +110,7 @@ def run_shell_cmd(
 
 
 def cargo_toolchain_specifier() -> str:
-    return "+stable"
+    return os.environ.get("XJ_CARGO_TOOLCHAIN_SPEC", "+stable")
 
 
 def cargo_encoded_rustflags_env_ext() -> dict:
