@@ -22,7 +22,16 @@ def do_check_py_fmt():
 def do_check_py():
     root = repo_root.find_repo_root_dir_Path()
     hermetic.check_call_uv("run ruff check --quiet".split())
-    hermetic.check_call_uv(["run", "mypy", root / "cli" / "main.py", root / "cli" / "constants.py"])
+    hermetic.check_call_uv([
+        "run",
+        "mypy",
+        root / "cli" / "main.py",
+        root / "cli" / "repo_root.py",
+        root / "cli" / "constants.py",
+        root / "cli" / "sha256sum.py",
+        root / "cli" / "provisioning.py",
+        root / "cli" / "translation.py",
+    ])
     do_check_py_fmt()
 
 
