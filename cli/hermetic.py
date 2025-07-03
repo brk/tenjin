@@ -109,7 +109,7 @@ def run_shell_cmd(
 
 
 def cargo_toolchain_specifier() -> str:
-    return "+stable"
+    return os.environ.get("XJ_CARGO_TOOLCHAIN_SPEC", "+stable")
 
 
 def cargo_encoded_rustflags_env_ext() -> dict:
