@@ -297,14 +297,12 @@ def want_10j_deps():
     if platform.system() == "Darwin":
         return
 
-    key = "10j-build-deps"
     want(
-        key,
+        "10j-build-deps",
         "10j-build-deps",
         "Tenjin build deps",
         provision_10j_deps_into,
     )
-    HAVE.note_we_have(key, specifier=WANT[key])
 
 
 def grab_opam_stdout_for_provisioning(args: list[str]) -> str:
@@ -862,6 +860,8 @@ def provision_10j_deps_into(version: str, keyname: str):
             # The other dependencies we need on Linux, like patch and make,
             # should have been provided already by Xcode Developer Tools.
             # Bubblewrap is Linux-only.
+
+    HAVE.note_we_have(keyname, specifier=WANT[keyname])
 
 
 def download_and_extract_tarball(
