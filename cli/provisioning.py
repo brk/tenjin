@@ -226,17 +226,6 @@ def want(
 
 def want_cmake() -> None:
     want("10j-cmake", "cmake", "CMake", provision_cmake_into)
-    out: bytes = hermetic.run_shell_cmd("cmake --version", check=True, capture_output=True).stdout
-    outstr = out.decode("utf-8")
-    lines = outstr.splitlines()
-    if lines == []:
-        raise ProvisioningError("CMake version command returned no output.")
-    else:
-        match lines[0].split():
-            case ["cmake", "version", version]:
-                HAVE.note_we_have("10j-cmake", version=Version(version))
-            case _:
-                raise ProvisioningError(f"Unexpected output from CMake version command:\n{outstr}")
 
 
 def want_dune():
@@ -253,11 +242,6 @@ def want_ocaml():
 
 def want_10j_llvm():
     want("10j-llvm", "llvm", "LLVM", provision_10j_llvm_into)
-    out = subprocess.check_output([
-        hermetic.xj_llvm_root(HAVE.localdir) / "bin" / "llvm-config",
-        "--version",
-    ])
-    HAVE.note_we_have("10j-llvm", version=Version(out.decode("utf-8")))
 
 
 def want_10j_sysroot_extras():
@@ -613,6 +597,22 @@ def provision_cmake_into(localdir: Path, version: str, keyname: str):
         cmake_app_bin = cmake_dir / "CMake.app" / "Contents" / "bin"
         os.symlink(cmake_app_bin, cmake_dir / "bin")
 
+    update_cmake_have(keyname)
+
+
+def update_cmake_have(keyname: str):
+    out: bytes = hermetic.run_shell_cmd("cmake --version", check=True, capture_output=True).stdout
+    outstr = out.decode("utf-8")
+    lines = outstr.splitlines()
+    if lines == []:
+        raise ProvisioningError("CMake version command returned no output.")
+    else:
+        match lines[0].split():
+            case ["cmake", "version", version]:
+                HAVE.note_we_have(keyname, version=Version(version))
+            case _:
+                raise ProvisioningError(f"Unexpected output from CMake version command:\n{outstr}")
+
 
 def provision_10j_llvm_into(localdir: Path, version: str, keyname: str):
     def provision_clang_config_files(sysroot_path):
@@ -735,6 +735,16 @@ def provision_10j_llvm_into(localdir: Path, version: str, keyname: str):
             provision_clang_config_files(sysroot_path=xcrun_path)
 
     add_binutils_alike_symbolic_links()
+
+    update_10j_llvm_have(localdir, keyname)
+
+
+def update_10j_llvm_have(localdir: Path, keyname: str):
+    out = subprocess.check_output([
+        hermetic.xj_llvm_root(localdir) / "bin" / "llvm-config",
+        "--version",
+    ])
+    HAVE.note_we_have(keyname, version=Version(out.decode("utf-8")))
 
 
 #                COMMENTARY(pkg-config-paths)
