@@ -62,15 +62,15 @@ jobs:
           workspaces: c2rust
 
       - name: Install tss utility for showing timestamps
-        run: go install github.com/kevinburke/tss@dcd046e37a15
+        run: curl --silent --location --output tss https://github.com/kevinburke/tss/releases/download/1.3/tss-linux-amd64 && chmod +x tss
 
       - name: Provision Rust
-        run: sh cli/sh/provision.sh rust | tss
+        run: sh cli/sh/provision.sh rust | ./tss
         shell: bash  # GitHub Actions applies pipefail only for explicitly requested bash shell.
         # See https://docs.github.com/en/actions/reference/workflow-syntax-for-github-actions#exit-codes-and-error-action-preference
 
       - name: Code linting and formatting checks
-        run: cli/10j check-rs | tss
+        run: cli/10j check-rs | ./tss
         shell: bash  # GitHub Actions applies pipefail only for explicitly requested bash shell.
 
   not-rocket-science-ocaml:
