@@ -2,7 +2,7 @@ name: not-rocket-science
 
 on:
   push:
-    branches: [ "test/**" ]
+    branches: [ "test/**", "test-**", "push-**" ]
   pull_request:
     branches: [ "main" ]
 
