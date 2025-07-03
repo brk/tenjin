@@ -204,7 +204,7 @@ def require_rust_stuff():
 
 
 class Provisioner(Protocol):
-    def __call__(self, localdir: Path, version: str, keyname: str) -> None:
+    def __call__(self, version: str, keyname: str) -> None:
         """Provision the given version of the software into the given localdir."""
 
 
@@ -219,9 +219,9 @@ def want(
             return
         case InstallationState.VERSION_MISMATCH:
             sez(f"{titlename} version is outdated; re-provisioning...", ctx=f"({lowername}) ")
-            provisioner(localdir=HAVE.localdir, version=WANT[keyname], keyname=keyname)
+            provisioner(version=WANT[keyname], keyname=keyname)
         case InstallationState.NOT_INSTALLED:
-            provisioner(localdir=HAVE.localdir, version=WANT[keyname], keyname=keyname)
+            provisioner(version=WANT[keyname], keyname=keyname)
 
 
 def want_cmake() -> None:
@@ -249,12 +249,12 @@ def want_10j_sysroot_extras():
         return
 
     def provision_10j_sysroot_extras_into(
-        localdir: Path,
         version: str,
         keyname: str,
     ):
         filename = f"xj-bullseye-sysroot-extras_{machine_normalized()}.tar.xz"
         url = f"https://github.com/Aarno-Labs/tenjin-build-deps/releases/download/{version}/{filename}"
+        localdir = HAVE.localdir
 
         tarball = hermetic.xj_llvm_root(localdir) / filename
         download(url, tarball)
@@ -332,7 +332,7 @@ def grab_dune_version_str() -> str:
     return grab_opam_stdout_for_provisioning(["exec", "--", "dune", "--version"])
 
 
-def provision_ocaml_into(localdir: Path, version: str, keyname: str):
+def provision_ocaml_into(version: str, keyname: str):
     provision_ocaml(version)
 
     hermetic.run_opam(["config", "report"], check=False)
@@ -347,16 +347,16 @@ def provision_ocaml(ocaml_version: str):
 
     TENJIN_SWITCH = "tenjin"
 
-    def install_ocaml(localdir: Path):
+    def install_ocaml():
         if not hermetic.opam_non_hermetic():
             # For hermetic installations, we will simply bulldoze the existing
             # opam root and start fresh. For non-hermetic installations, we'll
             # try to reuse what's already there.
-            opamroot = localdir / "opamroot"
+            opamroot = HAVE.localdir / "opamroot"
             if opamroot.is_dir():
                 shutil.rmtree(opamroot)
 
-        sandboxing_arg = infer_bwrap_sandboxing_args(localdir)
+        sandboxing_arg = infer_bwrap_sandboxing_args()
 
         cp = hermetic.run_opam(["config", "report"], eval_opam_env=False, capture_output=True)
         if b"please run `opam init'" in cp.stderr:
@@ -397,12 +397,12 @@ def provision_ocaml(ocaml_version: str):
             eval_opam_env=False,
             env_ext={
                 "OPAMNOENVNOTICE": "1",
-                "CC": str(hermetic.xj_llvm_root(localdir) / "bin" / "clang"),
-                "CXX": str(hermetic.xj_llvm_root(localdir) / "bin" / "clang++"),
+                "CC": str(hermetic.xj_llvm_root(HAVE.localdir) / "bin" / "clang"),
+                "CXX": str(hermetic.xj_llvm_root(HAVE.localdir) / "bin" / "clang++"),
             },
         )
 
-    install_ocaml(HAVE.localdir)
+    install_ocaml()
 
 
 def provision_debian_bullseye_sysroot_into(dest_sysroot: Path):
@@ -437,10 +437,11 @@ def provision_debian_bullseye_sysroot_into(dest_sysroot: Path):
     tarball.unlink()
 
 
-def provision_opam_binary_into(opam_version: str, localdir: Path) -> None:
+def provision_opam_binary_into(opam_version: str) -> None:
     def say(msg: str):
         sez(msg, ctx="(opam) ")
 
+    localdir = HAVE.localdir
     # If the system happens to have a copy of a suitable version of opam, grab it.
     sys_opam = shutil.which("opam")
     if sys_opam is not None:
@@ -478,17 +479,17 @@ def provision_opam_binary_into(opam_version: str, localdir: Path) -> None:
             click.echo("WARNING: ~/.local/bin not on PATH anymore?!? OCaml cache won't work.")
 
 
-def provision_dune_into(localdir: Path, version: str, keyname: str):
+def provision_dune_into(version: str, keyname: str):
     provision_dune(version)
 
     HAVE.note_we_have(keyname, version=Version(grab_dune_version_str()))
 
 
-def infer_bwrap_sandboxing_args(localdir: Path) -> list[str]:
+def infer_bwrap_sandboxing_args() -> list[str]:
     if platform.system() != "Linux":
         return []  # bwrap is Linux-only
 
-    bwrap_path = hermetic.xj_build_deps(localdir) / "bin" / "bwrap"
+    bwrap_path = hermetic.xj_build_deps(HAVE.localdir) / "bin" / "bwrap"
     if not bwrap_path.is_file():
         return ["--disable-sandboxing"]  # no bwrap, no sandboxing
 
@@ -560,18 +561,18 @@ def provision_dune(dune_version: str):
     hermetic.check_call_opam(["install", f"dune.{dune_version}"])
 
 
-def provision_opam_into(localdir: Path, version: str, keyname: str):
+def provision_opam_into(version: str, keyname: str):
     def say(msg: str):
         sez(msg, ctx="(opam) ")
 
-    provision_opam_binary_into(version, localdir)
+    provision_opam_binary_into(version)
 
     opam_version_seen = grab_opam_version_str()
     say(f"opam version: {opam_version_seen}")
     HAVE.note_we_have(keyname, version=Version(opam_version_seen))
 
 
-def provision_cmake_into(localdir: Path, version: str, keyname: str):
+def provision_cmake_into(version: str, keyname: str):
     def fmt_url(tag: str) -> str:
         return f"https://github.com/Kitware/CMake/releases/download/v{version}/cmake-{version}-{tag}.tar.gz"
 
@@ -588,7 +589,7 @@ def provision_cmake_into(localdir: Path, version: str, keyname: str):
                     f"Tenjin does not yet support {sys_mach} for acquiring CMake."
                 )
 
-    cmake_dir = localdir / "cmake"
+    cmake_dir = HAVE.localdir / "cmake"
     download_and_extract_tarball(mk_url(), cmake_dir, ctx="(cmake) ")
 
     if platform.system() == "Darwin" and (cmake_dir / "CMake.app").is_dir():
@@ -614,7 +615,9 @@ def update_cmake_have(keyname: str):
                 raise ProvisioningError(f"Unexpected output from CMake version command:\n{outstr}")
 
 
-def provision_10j_llvm_into(localdir: Path, version: str, keyname: str):
+def provision_10j_llvm_into(version: str, keyname: str):
+    localdir = HAVE.localdir
+
     def provision_clang_config_files(sysroot_path):
         match platform.system():
             case "Linux":
@@ -736,12 +739,12 @@ def provision_10j_llvm_into(localdir: Path, version: str, keyname: str):
 
     add_binutils_alike_symbolic_links()
 
-    update_10j_llvm_have(localdir, keyname)
+    update_10j_llvm_have(keyname)
 
 
-def update_10j_llvm_have(localdir: Path, keyname: str):
+def update_10j_llvm_have(keyname: str):
     out = subprocess.check_output([
-        hermetic.xj_llvm_root(localdir) / "bin" / "llvm-config",
+        hermetic.xj_llvm_root(HAVE.localdir) / "bin" / "llvm-config",
         "--version",
     ])
     HAVE.note_we_have(keyname, version=Version(out.decode("utf-8")))
@@ -758,7 +761,7 @@ def update_10j_llvm_have(localdir: Path, keyname: str):
 # binary "uncooked". Then we make a copy of the binary, and make in-place edits
 # to have the embedded paths match those on the user's system. (The fake paths
 # are large enough that they should accommodate whatever path the user has.)
-def cook_pkg_config_within(localdir: Path):
+def cook_pkg_config_within():
     def say(msg: str):
         sez(msg, ctx="(pkg-config) ")
 
@@ -772,7 +775,7 @@ def cook_pkg_config_within(localdir: Path):
     pcpath = path_of_unusual_size + b"/lib/pkgconfig:" + path_of_unusual_size + b"/share/pkgconfig"
     nullbyte = b"\0"
 
-    bindir = hermetic.xj_build_deps(localdir) / "bin"
+    bindir = hermetic.xj_build_deps(HAVE.localdir) / "bin"
 
     uncooked = bindir / "pkg-config.uncooked"
     assert uncooked.is_file()
@@ -796,7 +799,7 @@ def cook_pkg_config_within(localdir: Path):
         # Read the file into memory
         data = f.read()
 
-        sysroot_usr = hermetic.xj_llvm_root(localdir) / "sysroot" / "usr"
+        sysroot_usr = hermetic.xj_llvm_root(HAVE.localdir) / "sysroot" / "usr"
         newpcpath_lib = sysroot_usr / "lib" / "pkgconfig"
         newpcpath_shr = sysroot_usr / "share" / "pkgconfig"
 
@@ -817,7 +820,7 @@ def cook_pkg_config_within(localdir: Path):
             data, pcpath, bytes(newpcpath_lib) + b":" + bytes(newpcpath_shr) + b":/usr/lib:/lib"
         )
         data = replace_null_terminated_needle_in(
-            data, libdir, bytes(hermetic.xj_build_deps(localdir) / "lib")
+            data, libdir, bytes(hermetic.xj_build_deps(HAVE.localdir) / "lib")
         )
 
         # Write the modified data back to the file
@@ -829,17 +832,17 @@ def cook_pkg_config_within(localdir: Path):
     assert path_of_unusual_size not in data, "Oops, pkg-config was left undercooked!"
 
 
-def provision_10j_deps_into(localdir: Path, version: str, keyname: str):
+def provision_10j_deps_into(version: str, keyname: str):
     match platform.system():
         case "Linux":
             filename = f"xj-build-deps_{machine_normalized()}.tar.xz"
             url = f"https://github.com/Aarno-Labs/tenjin-build-deps/releases/download/{version}/{filename}"
             download_and_extract_tarball(
                 url,
-                hermetic.xj_build_deps(localdir),
+                hermetic.xj_build_deps(HAVE.localdir),
                 ctx="(builddeps) ",
             )
-            cook_pkg_config_within(localdir)
+            cook_pkg_config_within()
 
         case "Darwin":
             # For macOS, we don't do hermetic build deps; instead, we rely on homebrew.
