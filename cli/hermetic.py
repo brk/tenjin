@@ -17,6 +17,7 @@ def check_call_uv(args: Sequence[str | os.PathLike[str]]) -> None:
     localdir = repo_root.localdir()
     run(
         [localdir / "uv", "--config-file", localdir / "uv.toml", *args],
+        cwd=repo_root.find_repo_root_dir_Path(),
         check=True,
         with_tenjin_deps=False,
     )
