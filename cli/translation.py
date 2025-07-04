@@ -159,6 +159,7 @@ def run_improve_multitool(root: Path, tool: str, args: list[str], dir: Path):
 
 def run_improvement_passes(root: Path, output: Path, resultsdir: Path, toolchain: str):
     improvement_passes = [
+        ("fmt", lambda _root, dir: hermetic.run_cargo_in(["fmt"], cwd=dir, check=True)),
         (
             "fix",
             lambda _root, dir: hermetic.run_cargo_in(
