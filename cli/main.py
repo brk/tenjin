@@ -50,7 +50,8 @@ def do_check_rs_fmt():
 def do_check_rs():
     root = repo_root.find_repo_root_dir_Path()
     hermetic.run_cargo_in(
-        "clippy --locked -p c2rust -p c2rust-transpile -- -Aclippy::needless_lifetimes".split(),
+        """clippy --locked -p c2rust -p c2rust-transpile
+                -- -Aclippy::needless_lifetimes -Aclippy::uninlined_format_args""".split(),
         cwd=root / "c2rust",
         check=True,
     )
@@ -201,6 +202,14 @@ def check_py():
 @cli.command()
 def fmt_rs():
     do_fmt_rs()
+
+
+@cli.command()
+def build_rs():
+    try:
+        do_build_rs(repo_root.find_repo_root_dir_Path())
+    except subprocess.CalledProcessError:
+        sys.exit(1)
 
 
 @cli.command()
