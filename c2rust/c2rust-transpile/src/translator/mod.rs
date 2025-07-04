@@ -4902,7 +4902,9 @@ impl<'c> Translation<'c> {
             // the fgets() call would return before blocking,
             // and the .take() is what stops Rust from blocking.
 
-            if !self.c_expr_is_var_ident(cargs[2], "stdin") {
+            if !(self.c_expr_is_var_ident(cargs[2], "stdin")
+                || self.c_expr_is_var_ident(cargs[2], "__stdinp"))
+            {
                 return Ok(None);
             }
 
@@ -4944,10 +4946,14 @@ impl<'c> Translation<'c> {
         }
 
         if tenjin::expr_is_ident(&func, "fprintf") && !args.is_empty() {
-            if tenjin::expr_is_ident(&args[0], "stderr") {
+            if tenjin::expr_is_ident(&args[0], "stderr")
+                || tenjin::expr_is_ident(&args[0], "__stderrp")
+            {
                 return RecognizedCallForm::PrintfErr(args[1..].to_vec());
             }
-            if tenjin::expr_is_ident(&args[0], "stdout") {
+            if tenjin::expr_is_ident(&args[0], "stdout")
+                || tenjin::expr_is_ident(&args[0], "__stdoutp")
+            {
                 return RecognizedCallForm::PrintfOut(args[1..].to_vec());
             }
         }
