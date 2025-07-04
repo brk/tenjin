@@ -479,4 +479,5 @@ dependencies = [
  "petgraph",
  "rustc_plugin",
  "serde",
+ "serde_json",
 ]

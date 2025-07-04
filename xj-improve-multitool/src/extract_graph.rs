@@ -25,6 +25,7 @@ pub fn extract_def_graph(tcx: TyCtxt<'_>) -> ExtractedGraphData {
         graf: DefGraph::new(),
         defspans: HashMap::new(),
         top_item_defs: HashSet::new(),
+        all_fn_defs: HashSet::new(),
         scope: Vec::new(),
     };
     tcx.hir_walk_toplevel_module(&mut visitor);
@@ -32,6 +33,7 @@ pub fn extract_def_graph(tcx: TyCtxt<'_>) -> ExtractedGraphData {
     ExtractedGraphData {
         graf: visitor.graf,
         defspans: visitor.defspans,
+        all_fn_defs: visitor.all_fn_defs,
         top_item_defs: visitor.top_item_defs,
     }
 }
@@ -39,6 +41,7 @@ pub fn extract_def_graph(tcx: TyCtxt<'_>) -> ExtractedGraphData {
 pub struct ExtractedGraphData {
     pub graf: DefGraph,
     pub defspans: HashMap<DefId, rustc_span::Span>,
+    pub all_fn_defs: HashSet<DefId>,
     pub top_item_defs: HashSet<DefId>,
 }
 
@@ -98,6 +101,7 @@ struct GraphExtractionVisitor<'c> {
     graf: DefGraph,
     defspans: HashMap<DefId, rustc_span::Span>,
     top_item_defs: HashSet<DefId>,
+    all_fn_defs: HashSet<DefId>,
     scope: Vec<hir::OwnerId>,
 }
 
@@ -160,18 +164,24 @@ impl<'c> Visitor<'c> for GraphExtractionVisitor<'c> {
     }
 
     fn visit_item(&mut self, item: &'c Item<'c>) -> Self::Result {
-        if let ItemKind::Use(_, _) = item.kind {
-            // Fixing up use items is tricky. With source syntax like
-            // `use foo::bar::{Baz, Quxx};` we'll have two uses, but the
-            // associated spans will only cover Baz and Quux, so if we
-            // simply erase the spans, we'll end up with invalid source.
-            // Dropping dead uses isn't really something we need to handle
-            // ourselves, since `cargo fix` will do it for us.
-            //
-            // ALSO, identifying actually-dead uses requires considering
-            // trait requirements, etc. Just because a module is not mentioned
-            // doesn't mean it's dead!
-            return intravisit::walk_item(self, item);
+        match item.kind {
+            ItemKind::Use(_, _) => {
+                // Fixing up use items is tricky. With source syntax like
+                // `use foo::bar::{Baz, Quxx};` we'll have two uses, but the
+                // associated spans will only cover Baz and Quux, so if we
+                // simply erase the spans, we'll end up with invalid source.
+                // Dropping dead uses isn't really something we need to handle
+                // ourselves, since `cargo fix` will do it for us.
+                //
+                // ALSO, identifying actually-dead uses requires considering
+                // trait requirements, etc. Just because a module is not mentioned
+                // doesn't mean it's dead!
+                return intravisit::walk_item(self, item);
+            }
+            ItemKind::Fn { .. } => {
+                self.all_fn_defs.insert(item.owner_id.to_def_id());
+            }
+            _ => {}
         }
 
         self.saw_item_like(item.owner_id.to_def_id(), item.span, item.vis_span);
