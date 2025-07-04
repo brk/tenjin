@@ -94,7 +94,7 @@ def do_translate(
     hermetic.run_cargo_in(["check"], cwd=output, check=True, toolchain=toolchain)
     hermetic.run_cargo_in(["clean"], cwd=output, check=True)
 
-    run_improvement_passes(root, output, resultsdir, toolchain)
+    run_improvement_passes(root, output, resultsdir, cratename, toolchain)
 
     # Find the highest numbered output directory and copy its contents
     # to the final output directory.
@@ -157,7 +157,9 @@ def run_improve_multitool(root: Path, tool: str, args: list[str], dir: Path):
     )
 
 
-def run_improvement_passes(root: Path, output: Path, resultsdir: Path, toolchain: str):
+def run_improvement_passes(
+    root: Path, output: Path, resultsdir: Path, cratename: str, toolchain: str
+):
     improvement_passes = [
         ("fmt", lambda _root, dir: hermetic.run_cargo_in(["fmt"], cwd=dir, check=True)),
         (
@@ -196,5 +198,5 @@ def run_improvement_passes(root: Path, output: Path, resultsdir: Path, toolchain
         # Use explicit toolchain for checks because c2rust may use extern_types which is unstable.
         hermetic.run_cargo_in(["check"], cwd=newdir, check=True, toolchain=toolchain)
         # Clean up the target directory so the next pass starts fresh.
-        hermetic.run_cargo_in(["clean"], cwd=newdir, check=True)
+        hermetic.run_cargo_in(["clean", "-p", cratename], cwd=newdir, check=True)
         prev = newdir
