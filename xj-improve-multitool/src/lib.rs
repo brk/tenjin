@@ -11,9 +11,11 @@ extern crate rustc_span;
 
 use std::{borrow::Cow, env, process::Command};
 
+use std::collections::HashMap;
 use std::collections::HashSet;
 
 use clap::{Parser, ValueEnum};
+use petgraph::graph::DiGraph;
 use rustc_hir::def_id::DefId;
 use rustc_middle::ty::TyCtxt;
 use rustc_plugin::{CrateFilter, RustcPlugin, RustcPluginArgs, Utf8Path};
@@ -37,6 +39,9 @@ pub struct XjImproveMultitoolPluginArgs {
 
     #[arg(long, value_enum)]
     tool: Option<SelectedMultitool>,
+
+    #[arg(long)]
+    cacg_json_out: Option<String>,
 
     #[clap(last = true)]
     cargo_args: Vec<String>,
@@ -101,11 +106,12 @@ impl rustc_driver::Callbacks for XjImproveMultitoolCallbacks {
                 rustc_driver::Compilation::Stop
             }
             MultitoolMode::Selected(multitool) => match multitool {
-                SelectedMultitool::ExtractUCGSCCs => {
-                    eprintln!(
-                        "Extracting Under-approximated Call Graph SCCs is not implemented yet."
+                SelectedMultitool::ExtractCACG => {
+                    extract_condensed_approximated_call_graph(
+                        tcx,
+                        args.cacg_json_out, /*.expect("acacg_json_out must be set")*/
                     );
-                    rustc_driver::Compilation::Stop
+                    rustc_driver::Compilation::Continue
                 }
                 SelectedMultitool::TrimDeadItems => {
                     trim_dead_items(tcx, args);
@@ -122,9 +128,9 @@ enum SelectedMultitool {
     /// Trims dead items from the crate.
     #[value(name = "TrimDeadItems")]
     TrimDeadItems,
-    /// Extracts Under-approximated Call Graph SCCs
-    #[value(name = "ExtractUCGSCCs")]
-    ExtractUCGSCCs,
+    /// Extracts Condensed Approximated Call Graph
+    #[value(name = "ExtractCACG")]
+    ExtractCACG,
 }
 
 enum MultitoolMode {
@@ -143,13 +149,18 @@ fn determine_multitool_mode(args: &XjImproveMultitoolPluginArgs) -> MultitoolMod
             }
             MultitoolMode::Selected(SelectedMultitool::TrimDeadItems)
         }
-        Some(SelectedMultitool::ExtractUCGSCCs) => {
+        Some(SelectedMultitool::ExtractCACG) => {
             if args.modify_in_place {
                 return MultitoolMode::ArgConflict(
-                    "The --modify-in-place argument is not supported for ExtractUCGSCCs.",
+                    "The --modify-in-place argument is not supported for ExtractCACG.",
                 );
             }
-            MultitoolMode::Selected(SelectedMultitool::ExtractUCGSCCs)
+            // if args.acgsccs_json_out.is_none() {
+            //     return MultitoolMode::ArgConflict(
+            //         "The --acgsccs-json-out argument is required for ExtractCACG.",
+            //     );
+            // }
+            MultitoolMode::Selected(SelectedMultitool::ExtractCACG)
         }
         None => MultitoolMode::NoToolSelected,
     }
@@ -219,4 +230,179 @@ fn trim_dead_items(tcx: TyCtxt, args: XjImproveMultitoolPluginArgs) {
         args.modify_in_place,
         args.print_to_stdout,
     );
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct ExplicitSpan {
+    fileid: u32,
+    lo: u32,
+    hi: u32,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct CondensedSpanGraph {
+    files: Vec<std::path::PathBuf>,
+    elts: Vec<ExplicitSpan>,
+    nodes: Vec<Vec<usize>>,
+    edges: Vec<(usize, usize)>,
+    reverse_topo_order: Vec<usize>,
+}
+
+impl CondensedSpanGraph {
+    fn from(
+        call_graph: DiGraph<DefId, ()>,
+        defspans: &HashMap<DefId, rustc_span::Span>,
+        source_map: &rustc_span::source_map::SourceMap,
+    ) -> Self {
+        let mut file_map: HashMap<rustc_span::StableSourceFileId, usize> = HashMap::new();
+        let mut def_to_file_idx: HashMap<DefId, usize> = HashMap::new();
+        let mut def_to_elt_idx: HashMap<DefId, usize> = HashMap::new();
+
+        let mut c = CondensedSpanGraph {
+            files: Vec::new(),
+            elts: Vec::new(),
+            nodes: Vec::new(),
+            edges: Vec::new(),
+            reverse_topo_order: Vec::new(),
+        };
+
+        // Populate the list of files with local paths, and the elements (nodes in the un-condensed graph).
+        for node in call_graph.node_indices() {
+            let def_id = &call_graph[node];
+
+            let span = defspans
+                .get(def_id)
+                .expect("DefId should exist in defspans");
+            let srcfile = source_map.lookup_source_file(span.lo());
+
+            if !file_map.contains_key(&srcfile.stable_id) {
+                match &srcfile.name {
+                    rustc_span::FileName::Real(rustc_span::RealFileName::LocalPath(path)) => {
+                        let file_index = c.files.len();
+                        file_map.insert(srcfile.stable_id, file_index);
+                        c.files.push(path.clone());
+                        def_to_file_idx.insert(*def_id, file_index);
+                    }
+                    _ => {
+                        println!(
+                            "For def {:?} found non-local file: {:?}",
+                            def_id, srcfile.name
+                        );
+                        ()
+                    }
+                }
+            } else {
+                // If we have already seen this file, we can just reuse the index.
+                let file_index = file_map
+                    .get(&srcfile.stable_id)
+                    .expect("File should have an index");
+                def_to_file_idx.insert(*def_id, *file_index);
+            }
+
+            // Now, we can try to map the DefId to a file index. If we can't,
+            // it's because the DefId is not a local definition, which ought to be impossible...
+            let file_idx = def_to_file_idx
+                .get(def_id)
+                .expect("DefId should have a file index");
+            let elt_idx = c.elts.len();
+            def_to_elt_idx.insert(*def_id, elt_idx);
+            c.elts.push(ExplicitSpan {
+                fileid: *file_idx as u32,
+                lo: srcfile.relative_position(span.lo()).0,
+                hi: srcfile.relative_position(span.hi()).0,
+            });
+        }
+
+        // Now, the nodes and elts come from the condensed graph.
+        let mut gvec: DiGraph<Vec<DefId>, ()> = petgraph::algo::condensation(call_graph, true);
+        c.nodes = gvec
+            .node_indices()
+            .map(|n| {
+                let mut node_idxs: Vec<usize> = Vec::new();
+                for def_id in gvec[n].iter() {
+                    node_idxs.push(
+                        *def_to_elt_idx
+                            .get(def_id)
+                            .expect("DefId should have an elt index"),
+                    );
+                }
+                node_idxs
+            })
+            .collect();
+
+        c.edges = gvec
+            .edge_indices()
+            .map(|e| {
+                let (a, b) = gvec.edge_endpoints(e).expect("Edge should have endpoints");
+                (a.index(), b.index())
+            })
+            .collect();
+
+        gvec.reverse();
+        let mut topo = petgraph::visit::Topo::new(&gvec);
+        c.reverse_topo_order = Vec::new();
+        while let Some(node_idx) = topo.next(&gvec) {
+            c.reverse_topo_order.push(node_idx.index());
+        }
+
+        c
+    }
+}
+
+/// Call graphs are approximated in two ways:
+/// 1. They may be under-approximated, omitting some possible calls.
+/// 2. They may be over-approximated, including calls that are not
+///    actually possible. This may happen due to higher order usages
+///    which are not direct calls.
+fn extract_condensed_approximated_call_graph(tcx: TyCtxt, cacg_json_out: Option<String>) {
+    let extracted = extract_graph::extract_def_graph(tcx);
+    let graf = extracted.graf;
+    // Construct our approximate call graph: the set of edges consisting of
+    // GEdge::Mentions between function definitions.
+    let call_graph: DiGraph<DefId, ()> = graf.graf.filter_map(
+        |_, node| {
+            if let GNode::Def(def_id) = node {
+                if extracted.all_fn_defs.contains(&def_id) {
+                    Some(*def_id)
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        },
+        |_, edge| {
+            if let GEdge::Mentions = edge {
+                Some(())
+            } else {
+                None
+            }
+        },
+    );
+
+    println!(
+        "Full approximate call graph has {} nodes and {} edges.",
+        call_graph.node_count(),
+        call_graph.edge_count()
+    );
+    println!("{:?}", call_graph);
+
+    let condensed =
+        CondensedSpanGraph::from(call_graph, &extracted.defspans, tcx.sess.source_map());
+
+    println!("{:?}", condensed);
+
+    // use petgraph::dot::{Config, Dot};
+
+    // println!(
+    //     "{:?}",
+    //     Dot::with_config(&condensed, &[Config::EdgeNoLabel])
+    // );
+
+    // // If a JSON output path is provided, serialize the graph to JSON.
+    // if let Some(path) = acgsccs_json_out {
+    //     if let Err(e) = graf.serialize_to_json(&path) {
+    //         eprintln!("Failed to write UCG SCCs to {}: {}", path, e);
+    //     }
+    // }
 }
