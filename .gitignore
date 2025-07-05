@@ -2,6 +2,8 @@
 *~
 .*.swo
 .*.swp
+.swo
+.swp
 
 # Python stuff
 __pycache__/

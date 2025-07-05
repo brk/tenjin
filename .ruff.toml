@@ -1,7 +1,7 @@
 target-version = "py312"
 line-length = 100
 preview = true
-extend-exclude = ["c2rust"]
+extend-exclude = ["c2rust","_local"]
 
 [lint]
 select = ["E", "W", "F", "RUF", "TRY", "PLC", "PLE", "PLW06",
