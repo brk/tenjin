@@ -4,7 +4,11 @@ case "$0" in
     /*) script_path="$0" ;;
     *) script_path="$PWD/$0" ;;
 esac
-tenjdir=$(dirname "$script_path")
+# Without realpath, running ./10j from the cli/ directory
+# would result in script_path ending with "cli/./10j",
+# tenjdir ending with "cli/." and rootdir ending up
+# as the cli dir.
+tenjdir=$(dirname $(realpath "$script_path"))
 rootdir=$(dirname "$tenjdir")
 
 localuv="${rootdir}/_local/uv"
