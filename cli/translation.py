@@ -9,6 +9,7 @@ import json
 import graphlib
 from dataclasses import dataclass
 from typing import Sequence
+import time
 
 from dataclasses_json import dataclass_json
 
@@ -409,6 +410,11 @@ def run_un_unsafe_improvement(root: Path, dir: Path):
                 remove_unsafe_blocks(cacg)
 
 
+def elapsed_ms_of_ns(start_ns: int, end_ns: int) -> float:
+    """Calculate elapsed time in milliseconds from nanoseconds."""
+    return (end_ns - start_ns) / 1_000_000.0
+
+
 def run_improvement_passes(
     root: Path, output: Path, resultsdir: Path, cratename: str, toolchain: str
 ):
@@ -448,12 +454,32 @@ def run_improvement_passes(
 
     prev = output
     for counter, (tag, func) in enumerate(improvement_passes, start=1):
+        start_ns = time.perf_counter_ns()
         newdir = resultsdir / f"{counter:02d}_{tag}"
         shutil.copytree(prev, newdir)
         # Run the actual improvement pass, modifying the contents of `newdir`.
         func(root, newdir)
+        mid_ns = time.perf_counter_ns()
         # Use explicit toolchain for checks because c2rust may use extern_types which is unstable.
         hermetic.run_cargo_in(["check"], cwd=newdir, check=True, toolchain=toolchain)
         # Clean up the target directory so the next pass starts fresh.
         hermetic.run_cargo_in(["clean", "-p", cratename], cwd=newdir, check=True)
+        end_ns = time.perf_counter_ns()
+
+        core_ms = round(elapsed_ms_of_ns(start_ns, mid_ns))
+        cleanup_ms = round(elapsed_ms_of_ns(mid_ns, end_ns))
+
+        print(
+            "Improvement pass",
+            counter,
+            tag,
+            "took",
+            core_ms,
+            "ms (then cleanup took another",
+            cleanup_ms,
+            "ms)",
+        )
+        print()
+        print()
+        print()
         prev = newdir
