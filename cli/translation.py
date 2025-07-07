@@ -89,18 +89,16 @@ def do_translate(
             },
         )
 
-    toolchain = get_toolchain_for_translated_code(root)
-
     # Normalize the unmodified translation results to end up
     # in a directory with a project-independent name.
     output = output.rename(output.with_name("00_out"))
 
     # Verify that the initial translation is valid Rust code.
     # If it has errors, we won't be able to run the improvement passes.
-    hermetic.run_cargo_in(["check"], cwd=output, check=True, toolchain=toolchain)
+    hermetic.run_cargo_in(["check"], cwd=output, check=True)
     hermetic.run_cargo_in(["clean"], cwd=output, check=True)
 
-    run_improvement_passes(root, output, resultsdir, cratename, toolchain)
+    run_improvement_passes(root, output, resultsdir, cratename)
 
     # Find the highest numbered output directory and copy its contents
     # to the final output directory.
@@ -137,11 +135,6 @@ def find_highest_numbered_dir(base: Path) -> Path | None:
     return latest_dir if latest_dir else None
 
 
-def get_toolchain_for_translated_code(root: Path) -> str:
-    # c2rust may generate code that uses unstable features.
-    return get_multitool_toolchain(root)
-
-
 def get_multitool_toolchain(root: Path) -> str:
     return hermetic.get_toolchain_for_directory(root / "xj-improve-multitool")
 
@@ -155,7 +148,6 @@ def run_improve_multitool(root: Path, tool: str, args: list[str], dir: Path):
     hermetic.run_cargo_in(
         ["xj-improve-multitool", "--tool", tool, *args],
         cwd=dir,
-        toolchain=get_multitool_toolchain(root),
         env_ext={
             "PATH": os.pathsep.join([
                 str(root / "xj-improve-multitool" / "target" / "debug"),
@@ -274,7 +266,6 @@ def run_un_unsafe_improvement(root: Path, dir: Path):
         cp = hermetic.run_cargo_in(
             ["check", "--message-format=json"],
             cwd=dir,
-            toolchain=get_toolchain_for_translated_code(root),
             check=False,
             capture_output=True,
         )
@@ -412,9 +403,7 @@ def elapsed_ms_of_ns(start_ns: int, end_ns: int) -> float:
     return (end_ns - start_ns) / 1_000_000.0
 
 
-def run_improvement_passes(
-    root: Path, output: Path, resultsdir: Path, cratename: str, toolchain: str
-):
+def run_improvement_passes(root: Path, output: Path, resultsdir: Path, cratename: str):
     improvement_passes = [
         ("fmt", lambda _root, dir: hermetic.run_cargo_in(["fmt"], cwd=dir, check=True)),
         (
@@ -423,7 +412,6 @@ def run_improvement_passes(
                 ["fix", "--allow-no-vcs", "--allow-dirty"],
                 cwd=dir,
                 check=True,
-                toolchain=toolchain,
             ),
         ),
         (
@@ -443,7 +431,6 @@ def run_improvement_passes(
                 ["fix", "--allow-no-vcs", "--allow-dirty"],
                 cwd=dir,
                 check=True,
-                toolchain=toolchain,
             ),
         ),
         ("fmt", lambda _root, dir: hermetic.run_cargo_in(["fmt"], cwd=dir, check=True)),
@@ -458,7 +445,7 @@ def run_improvement_passes(
         func(root, newdir)
         mid_ns = time.perf_counter_ns()
         # Use explicit toolchain for checks because c2rust may use extern_types which is unstable.
-        hermetic.run_cargo_in(["check"], cwd=newdir, check=True, toolchain=toolchain)
+        hermetic.run_cargo_in(["check"], cwd=newdir, check=True)
         # Clean up the target directory so the next pass starts fresh.
         hermetic.run_cargo_in(["clean", "-p", cratename], cwd=newdir, check=True)
         end_ns = time.perf_counter_ns()
