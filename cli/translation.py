@@ -6,13 +6,16 @@ import re
 import os
 import json
 import graphlib
-from dataclasses import dataclass
 from typing import Sequence
 import time
 
-from dataclasses_json import dataclass_json
-
 import hermetic
+from speculative_rewriters import (
+    CondensedSpanGraph,
+    ExplicitSpan,
+    SpeculativeFileRewriter,
+    SpeculativeSpansEraser,
+)
 
 
 def do_translate(
@@ -89,18 +92,16 @@ def do_translate(
             },
         )
 
-    toolchain = get_toolchain_for_translated_code(root)
-
     # Normalize the unmodified translation results to end up
     # in a directory with a project-independent name.
     output = output.rename(output.with_name("00_out"))
 
     # Verify that the initial translation is valid Rust code.
     # If it has errors, we won't be able to run the improvement passes.
-    hermetic.run_cargo_in(["check"], cwd=output, check=True, toolchain=toolchain)
+    hermetic.run_cargo_in(["check"], cwd=output, check=True)
     hermetic.run_cargo_in(["clean"], cwd=output, check=True)
 
-    run_improvement_passes(root, output, resultsdir, cratename, toolchain)
+    run_improvement_passes(root, output, resultsdir, cratename)
 
     # Find the highest numbered output directory and copy its contents
     # to the final output directory.
@@ -137,11 +138,6 @@ def find_highest_numbered_dir(base: Path) -> Path | None:
     return latest_dir if latest_dir else None
 
 
-def get_toolchain_for_translated_code(root: Path) -> str:
-    # c2rust may generate code that uses unstable features.
-    return get_multitool_toolchain(root)
-
-
 def get_multitool_toolchain(root: Path) -> str:
     return hermetic.get_toolchain_for_directory(root / "xj-improve-multitool")
 
@@ -155,7 +151,6 @@ def run_improve_multitool(root: Path, tool: str, args: list[str], dir: Path):
     hermetic.run_cargo_in(
         ["xj-improve-multitool", "--tool", tool, *args],
         cwd=dir,
-        toolchain=get_multitool_toolchain(root),
         env_ext={
             "PATH": os.pathsep.join([
                 str(root / "xj-improve-multitool" / "target" / "debug"),
@@ -164,24 +159,6 @@ def run_improve_multitool(root: Path, tool: str, args: list[str], dir: Path):
         },
         check=True,
     )
-
-
-# XREF:CONDENSED_SPAN_GRAPH_REPRESENTATION
-@dataclass_json
-@dataclass
-class ExplicitSpan:
-    fileid: int
-    lo: int
-    hi: int
-
-
-@dataclass_json
-@dataclass
-class CondensedSpanGraph:
-    files: list[Path]
-    elts: list[ExplicitSpan]  # full spans for functions
-    nodes: list[list[int]]  # indices into `elts`
-    edges: list[tuple[int, int]]  # indices into `nodes`
 
 
 def run_un_unsafe_improvement(root: Path, dir: Path):
@@ -216,29 +193,6 @@ def run_un_unsafe_improvement(root: Path, dir: Path):
             f.write(content)
             f.truncate()
 
-    def rewrite_spans_to(spans: Sequence[ExplicitSpan | None], replacement: str):
-        spans_by_fileid: dict[int, list[ExplicitSpan]] = {}
-        for span in spans:
-            if span is not None:
-                if span.fileid not in spans_by_fileid:
-                    spans_by_fileid[span.fileid] = []
-                spans_by_fileid[span.fileid].append(span)
-
-        for fileid, spans in spans_by_fileid.items():
-            # Rewrite the spans in the file to the replacement string.
-            # This is a placeholder for the actual rewriting logic.
-            # In practice, you would read the file, replace the spans,
-            # and write it back.
-            file_path = Path(dir / cacg.files[fileid])
-            with file_path.open("r+") as f:
-                content = f.read()
-                for span in spans:
-                    assert (span.hi - span.lo) == len(replacement)
-                    content = content[: span.lo] + replacement + content[span.hi :]
-                f.seek(0)
-                f.write(content)
-                f.truncate()
-
     class FunctionUnsafeNecessity(enum.Enum):
         """Status of a function with respect to unsafe blocks."""
 
@@ -270,11 +224,14 @@ def run_un_unsafe_improvement(root: Path, dir: Path):
         if not unknown_status_spans:
             return
 
-        rewrite_spans_to(unknown_status_spans, " " * len("unsafe"))
+        rewriter = SpeculativeSpansEraser(
+            unknown_status_spans,
+            lambda span: Path(dir / cacg.files[span.fileid]),
+        )
+        rewriter.erase_spans()
         cp = hermetic.run_cargo_in(
             ["check", "--message-format=json"],
             cwd=dir,
-            toolchain=get_toolchain_for_translated_code(root),
             check=False,
             capture_output=True,
         )
@@ -285,7 +242,7 @@ def run_un_unsafe_improvement(root: Path, dir: Path):
             # print()
             # print(cp.stderr)
             # print()
-            rewrite_spans_to(unknown_status_spans, "unsafe")
+            rewriter.restore()
             for fnid in fnids:
                 unsafe_status[fnid] = FunctionUnsafeNecessity.UNSAFE
         else:
@@ -407,14 +364,82 @@ def run_un_unsafe_improvement(root: Path, dir: Path):
                 remove_unsafe_blocks(cacg)
 
 
+def hacky_whiteout_first_occurrence_within_first_n_bytes(contents: str, needle: str, n: int) -> str:
+    # Find the first occurrence of the needle within the first n bytes
+    first_n_bytes = contents[:n]
+    start_idx = first_n_bytes.find(needle)
+    if start_idx == -1:
+        return contents  # No occurrence found, return original contents
+    return contents[:start_idx] + (" " * len(needle)) + contents[start_idx + len(needle) :]
+
+
+def run_trim_allows(root: Path, dir: Path):
+    base_cp = hermetic.run_cargo_in(
+        ["check", "--message-format=json"], cwd=dir, check=True, capture_output=True
+    )
+
+    if base_cp.returncode != 0:
+        print("TENJIN NOTE: skipping trim-allows as initial cargo check failed.")
+        return
+
+    things_to_trim = [
+        "dead_code,",
+        "mutable_transmutes,",
+        "unused_assignments,",
+        "unused_mut,",
+        "unused_mut",
+        "#![feature(extern_types)]",
+    ]
+
+    def rough_parse_inner_attributes_len(rs_file_content: str) -> int:
+        """Estimate the length of the inner attribute prefix in a Rust file."""
+        lines = rs_file_content.splitlines()
+        prelude_len = 0
+        for line in lines:
+            if line.startswith("#![") or line.startswith("    ") or line.startswith(")]"):
+                prelude_len += len(line) + 1
+            else:
+                break
+        return prelude_len
+
+    for path in Path(dir).rglob("*.rs"):
+        if not path.is_file():
+            continue
+
+        rewriter = SpeculativeFileRewriter(path)
+        prelude_len = rough_parse_inner_attributes_len(rewriter.original_content)
+
+        for thing in things_to_trim:
+
+            def whiteout_first_thing(contents: str) -> str:
+                return hacky_whiteout_first_occurrence_within_first_n_bytes(
+                    contents, thing, prelude_len
+                )
+
+            rewriter.update_content_via(whiteout_first_thing)
+            changes_made = rewriter.write()
+            if changes_made:
+                cp = hermetic.run_cargo_in(
+                    ["check", "--message-format=json"], cwd=dir, check=True, capture_output=True
+                )
+                if cp.returncode != 0 or len(cp.stdout) > len(base_cp.stdout):
+                    # If the check fails, we restore the original content.
+                    print(
+                        "TENJIN WARNING: cargo check failed after trimming",
+                        thing,
+                        "in",
+                        dir,
+                        "restoring original content.",
+                    )
+                    rewriter.restore()
+
+
 def elapsed_ms_of_ns(start_ns: int, end_ns: int) -> float:
     """Calculate elapsed time in milliseconds from nanoseconds."""
     return (end_ns - start_ns) / 1_000_000.0
 
 
-def run_improvement_passes(
-    root: Path, output: Path, resultsdir: Path, cratename: str, toolchain: str
-):
+def run_improvement_passes(root: Path, output: Path, resultsdir: Path, cratename: str):
     improvement_passes = [
         ("fmt", lambda _root, dir: hermetic.run_cargo_in(["fmt"], cwd=dir, check=True)),
         (
@@ -423,7 +448,6 @@ def run_improvement_passes(
                 ["fix", "--allow-no-vcs", "--allow-dirty"],
                 cwd=dir,
                 check=True,
-                toolchain=toolchain,
             ),
         ),
         (
@@ -443,9 +467,9 @@ def run_improvement_passes(
                 ["fix", "--allow-no-vcs", "--allow-dirty"],
                 cwd=dir,
                 check=True,
-                toolchain=toolchain,
             ),
         ),
+        ("trim-allows", run_trim_allows),
         ("fmt", lambda _root, dir: hermetic.run_cargo_in(["fmt"], cwd=dir, check=True)),
     ]
 
@@ -458,7 +482,7 @@ def run_improvement_passes(
         func(root, newdir)
         mid_ns = time.perf_counter_ns()
         # Use explicit toolchain for checks because c2rust may use extern_types which is unstable.
-        hermetic.run_cargo_in(["check"], cwd=newdir, check=True, toolchain=toolchain)
+        hermetic.run_cargo_in(["check"], cwd=newdir, check=True)
         # Clean up the target directory so the next pass starts fresh.
         hermetic.run_cargo_in(["clean", "-p", cratename], cwd=newdir, check=True)
         end_ns = time.perf_counter_ns()

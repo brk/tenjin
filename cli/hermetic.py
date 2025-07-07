@@ -132,14 +132,11 @@ def get_toolchain_for_directory(dir: Path) -> str:
         return tenjin_cargo_toolchain_specifier()
 
 
-def cargo_toolchain_specifier_arg(toolchain: str | None, cwd: Path) -> list[str]:
-    if toolchain == "":
-        # Empty-string toolchain means use the default toolchain (which will fall back
-        # to rustup's default toolchain if no rust-toolchain.toml is found).
+def implicit_cargo_toolchain_arg(cwd: Path, args: Sequence[str]) -> list[str]:
+    if args and len(args) > 0 and args[0].startswith("+"):
+        # If the first argument is a toolchain specifier, we don't need
+        # to add our own.
         return []
-
-    if toolchain:
-        return [toolchain]
 
     if cwd.name == "c2rust":
         # Special-case c2rust, which we want to always consistently override.
@@ -180,7 +177,6 @@ def cargo_encoded_rustflags_env_ext() -> dict:
 def run_cargo_in(
     args: Sequence[str],
     cwd: Path,
-    toolchain: str | None = None,
     env_ext=None,
     check=True,
     **kwargs,
@@ -191,7 +187,7 @@ def run_cargo_in(
         env_ext = {}
 
     return run(
-        ["cargo", *cargo_toolchain_specifier_arg(toolchain, cwd), *args],
+        ["cargo", *implicit_cargo_toolchain_arg(cwd, args), *args],
         cwd=cwd,
         check=check,
         with_tenjin_deps=True,
