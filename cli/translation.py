@@ -364,6 +364,76 @@ def run_un_unsafe_improvement(root: Path, dir: Path):
                 remove_unsafe_blocks(cacg)
 
 
+def hacky_whiteout_first_occurrence_within_first_n_bytes(contents: str, needle: str, n: int) -> str:
+    # Find the first occurrence of the needle within the first n bytes
+    first_n_bytes = contents[:n]
+    start_idx = first_n_bytes.find(needle)
+    if start_idx == -1:
+        return contents  # No occurrence found, return original contents
+    return contents[:start_idx] + (" " * len(needle)) + contents[start_idx + len(needle) :]
+
+
+def run_trim_allows(root: Path, dir: Path):
+    base_cp = hermetic.run_cargo_in(
+        ["check", "--message-format=json"], cwd=dir, check=True, capture_output=True
+    )
+
+    if base_cp.returncode != 0:
+        print("TENJIN NOTE: skipping trim-allows as initial cargo check failed.")
+        return
+
+    things_to_trim = [
+        "dead_code,",
+        "mutable_transmutes,",
+        "unused_assignments,",
+        "unused_mut,",
+        "unused_mut",
+        "#![feature(extern_types)]",
+    ]
+
+    def rough_parse_inner_attributes_len(rs_file_content: str) -> int:
+        """Estimate the length of the inner attribute prefix in a Rust file."""
+        lines = rs_file_content.splitlines()
+        prelude_len = 0
+        for line in lines:
+            if line.startswith("#![") or line.startswith("    ") or line.startswith(")]"):
+                prelude_len += len(line) + 1
+            else:
+                break
+        return prelude_len
+
+    for path in Path(dir).rglob("*.rs"):
+        if not path.is_file():
+            continue
+
+        rewriter = SpeculativeFileRewriter(path)
+        prelude_len = rough_parse_inner_attributes_len(rewriter.original_content)
+
+        for thing in things_to_trim:
+
+            def whiteout_first_thing(contents: str) -> str:
+                return hacky_whiteout_first_occurrence_within_first_n_bytes(
+                    contents, thing, prelude_len
+                )
+
+            rewriter.update_content_via(whiteout_first_thing)
+            changes_made = rewriter.write()
+            if changes_made:
+                cp = hermetic.run_cargo_in(
+                    ["check", "--message-format=json"], cwd=dir, check=True, capture_output=True
+                )
+                if cp.returncode != 0 or len(cp.stdout) > len(base_cp.stdout):
+                    # If the check fails, we restore the original content.
+                    print(
+                        "TENJIN WARNING: cargo check failed after trimming",
+                        thing,
+                        "in",
+                        dir,
+                        "restoring original content.",
+                    )
+                    rewriter.restore()
+
+
 def elapsed_ms_of_ns(start_ns: int, end_ns: int) -> float:
     """Calculate elapsed time in milliseconds from nanoseconds."""
     return (end_ns - start_ns) / 1_000_000.0
@@ -399,6 +469,7 @@ def run_improvement_passes(root: Path, output: Path, resultsdir: Path, cratename
                 check=True,
             ),
         ),
+        ("trim-allows", run_trim_allows),
         ("fmt", lambda _root, dir: hermetic.run_cargo_in(["fmt"], cwd=dir, check=True)),
     ]
 
