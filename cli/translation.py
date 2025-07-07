@@ -7,7 +7,7 @@ import os
 import json
 import graphlib
 from dataclasses import dataclass
-from typing import Sequence
+from typing import Callable, Sequence
 import time
 
 from dataclasses_json import dataclass_json
@@ -176,6 +176,76 @@ class CondensedSpanGraph:
     edges: list[tuple[int, int]]  # indices into `nodes`
 
 
+class SpeculativeFileRewriter:
+    def __init__(self, p: Path):
+        self.p = p
+        self.original_content = p.read_text("utf-8")
+        self.cached_content = self.original_content
+
+    def update_content_via(self, fn: Callable[[str], str]):
+        self.cached_content = fn(self.cached_content)
+
+    def write(self) -> bool:
+        """Returns true if any changes were made."""
+        if self.cached_content != self.original_content:
+            self.p.write_text(self.cached_content, encoding="utf-8")
+            return True
+        return False
+
+    def restore(self):
+        self.p.write_text(self.original_content, encoding="utf-8")
+
+
+class SpeculativeSpansEraser:
+    def __init__(
+        self, spans: Sequence[ExplicitSpan | None], span_to_path: Callable[[ExplicitSpan], Path]
+    ):
+        self.spans = spans
+        self.rewriters: dict[Path, SpeculativeFileRewriter] = {}
+        self.spans_by_path: dict[Path, list[ExplicitSpan]] = {}
+
+        for span in spans:
+            if span is not None:
+                file_path = span_to_path(span)
+                if file_path not in self.rewriters:
+                    self.spans_by_path.setdefault(file_path, []).append(span)
+                    self.rewriters[file_path] = SpeculativeFileRewriter(file_path)
+
+    def erase_spans(self):
+        def erase_span(span: ExplicitSpan, content: str) -> str:
+            """Erase the span from the content."""
+            assert span.hi > span.lo, "Span must be non-empty"
+            assert span.hi <= len(content), "Span end must be within content bounds"
+            return content[: span.lo] + (" " * (span.hi - span.lo)) + content[span.hi :]
+
+        for rewriter in self.rewriters.values():
+            for span in self.spans_by_path[rewriter.p]:
+                rewriter.update_content_via(lambda content, span=span: erase_span(span, content))
+            rewriter.write()
+
+    def restore(self):
+        for rewriter in self.rewriters.values():
+            rewriter.restore()
+
+
+class SpeculativeFilesEraser:
+    def __init__(self, files: Sequence[Path]):
+        self.files = files
+        self.rewriters: dict[Path, SpeculativeFileRewriter] = {
+            file: SpeculativeFileRewriter(file) for file in files
+        }
+
+    def add_file(self, file: Path) -> SpeculativeFileRewriter:
+        if file not in self.rewriters:
+            self.rewriters[file] = SpeculativeFileRewriter(file)
+
+        return self.rewriters[file]
+
+    def restore(self):
+        for rewriter in self.rewriters.values():
+            rewriter.restore()
+
+
 def run_un_unsafe_improvement(root: Path, dir: Path):
     """Iteratively remove unsafe blocks.
 
@@ -208,29 +278,6 @@ def run_un_unsafe_improvement(root: Path, dir: Path):
             f.write(content)
             f.truncate()
 
-    def rewrite_spans_to(spans: Sequence[ExplicitSpan | None], replacement: str):
-        spans_by_fileid: dict[int, list[ExplicitSpan]] = {}
-        for span in spans:
-            if span is not None:
-                if span.fileid not in spans_by_fileid:
-                    spans_by_fileid[span.fileid] = []
-                spans_by_fileid[span.fileid].append(span)
-
-        for fileid, spans in spans_by_fileid.items():
-            # Rewrite the spans in the file to the replacement string.
-            # This is a placeholder for the actual rewriting logic.
-            # In practice, you would read the file, replace the spans,
-            # and write it back.
-            file_path = Path(dir / cacg.files[fileid])
-            with file_path.open("r+") as f:
-                content = f.read()
-                for span in spans:
-                    assert (span.hi - span.lo) == len(replacement)
-                    content = content[: span.lo] + replacement + content[span.hi :]
-                f.seek(0)
-                f.write(content)
-                f.truncate()
-
     class FunctionUnsafeNecessity(enum.Enum):
         """Status of a function with respect to unsafe blocks."""
 
@@ -262,7 +309,11 @@ def run_un_unsafe_improvement(root: Path, dir: Path):
         if not unknown_status_spans:
             return
 
-        rewrite_spans_to(unknown_status_spans, " " * len("unsafe"))
+        rewriter = SpeculativeSpansEraser(
+            unknown_status_spans,
+            lambda span: Path(dir / cacg.files[span.fileid]),
+        )
+        rewriter.erase_spans()
         cp = hermetic.run_cargo_in(
             ["check", "--message-format=json"],
             cwd=dir,
@@ -276,7 +327,7 @@ def run_un_unsafe_improvement(root: Path, dir: Path):
             # print()
             # print(cp.stderr)
             # print()
-            rewrite_spans_to(unknown_status_spans, "unsafe")
+            rewriter.restore()
             for fnid in fnids:
                 unsafe_status[fnid] = FunctionUnsafeNecessity.UNSAFE
         else:
