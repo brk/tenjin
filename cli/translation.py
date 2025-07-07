@@ -2,7 +2,6 @@ import enum
 import shutil
 import tempfile
 from pathlib import Path
-import tomllib
 import re
 import os
 import json
@@ -144,9 +143,7 @@ def get_toolchain_for_translated_code(root: Path) -> str:
 
 
 def get_multitool_toolchain(root: Path) -> str:
-    with open(root / "xj-improve-multitool" / "rust-toolchain.toml", "rb") as f:
-        toolchain_dict = tomllib.load(f)
-        return "+" + toolchain_dict["toolchain"]["channel"]
+    return hermetic.get_toolchain_for_directory(root / "xj-improve-multitool")
 
 
 def run_improve_multitool(root: Path, tool: str, args: list[str], dir: Path):

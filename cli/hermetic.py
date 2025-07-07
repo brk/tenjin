@@ -3,6 +3,7 @@ import shlex
 import shutil
 import time
 from pathlib import Path
+import tomllib
 import os
 from typing import Sequence
 
@@ -109,7 +110,7 @@ def run_shell_cmd(
     )
 
 
-def cargo_toolchain_specifier() -> str:
+def tenjin_cargo_toolchain_specifier() -> str:
     spec = provisioning.HAVE.query("10j-xj-default-rust-toolchain")
     if spec is None:
         # We should not encounter this case because we call `provisioning.want_10j_rust_toolchains()`
@@ -119,6 +120,35 @@ def cargo_toolchain_specifier() -> str:
         )
         spec = "stable"
     return os.environ.get("XJ_CARGO_TOOLCHAIN_SPEC", "+" + spec)
+
+
+def get_toolchain_for_directory(dir: Path) -> str:
+    try:
+        with open(dir / "rust-toolchain.toml", "rb") as f:
+            toolchain_dict = tomllib.load(f)
+            return "+" + toolchain_dict["toolchain"]["channel"]
+    except FileNotFoundError:
+        # If no rust-toolchain.toml is found, we use Tenjin's default toolchain.
+        return tenjin_cargo_toolchain_specifier()
+
+
+def cargo_toolchain_specifier_arg(toolchain: str | None, cwd: Path) -> list[str]:
+    if toolchain == "":
+        # Empty-string toolchain means use the default toolchain (which will fall back
+        # to rustup's default toolchain if no rust-toolchain.toml is found).
+        return []
+
+    if toolchain:
+        return [toolchain]
+
+    if cwd.name == "c2rust":
+        # Special-case c2rust, which we want to always consistently override.
+        return [tenjin_cargo_toolchain_specifier()]
+
+    assert cwd.is_dir(), f"cwd {cwd} is not a directory"
+    # Without an explicit toolchain, try using the directory's toolchain, if one is
+    # specified, but fall back to Tenjin's default toolchain rather than rustup's.
+    return [get_toolchain_for_directory(cwd)]
 
 
 def cargo_encoded_rustflags_env_ext() -> dict:
@@ -149,7 +179,7 @@ def cargo_encoded_rustflags_env_ext() -> dict:
 
 def run_cargo_in(
     args: Sequence[str],
-    cwd: Path | None,
+    cwd: Path,
     toolchain: str | None = None,
     env_ext=None,
     check=True,
@@ -160,14 +190,8 @@ def run_cargo_in(
     if not env_ext:
         env_ext = {}
 
-    if toolchain == "":
-        # Empty toolchain means use the default toolchain for the given cwd.
-        toolchain_arg = []
-    else:
-        toolchain_arg = [toolchain or cargo_toolchain_specifier()]
-
     return run(
-        ["cargo", *toolchain_arg, *args],
+        ["cargo", *cargo_toolchain_specifier_arg(toolchain, cwd), *args],
         cwd=cwd,
         check=check,
         with_tenjin_deps=True,
