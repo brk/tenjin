@@ -8,13 +8,14 @@ passing tests.
 
 Rebase merges are not permitted.
 This enforces the invariant that the set of CI-tested commits is easily identifiable,
-without requiring that every intermediate commit also pass tests.
+[without requiring](https://matklad.github.io/2023/12/31/git-things.html)
+that every intermediate commit also pass tests.
 Single-commit merges may be squashed. Multi-commit PRs should use a merge request.
 
 `git log --first-parent --oneline` lists the tested ancestors of the current commit.
 `git bisect --first-parent` likewise has bisection ignore untested commits.
 
-The tests run in CI should be equivalent (for now) to `10j check-star`.
+The tests run in CI should be equivalent (for now) to `10j check-star && 10j check-unit-rs`.
 CI does not yet check whether any particular translations produce the expected results.
 This ought to change in the future.
 
@@ -24,7 +25,7 @@ Tenjin tries hard to be easy to install, in particular without requiring root/su
 We do not automatically install Rust, because `rustup` transparently manages Rust toolchains,
 and the details of how and where that happens should be left to the user -- in particular,
 how to integrate with the user's shell, and where toolchains should be installed.
-Tenjin does require specific toolchains, both stable and nightly. These toolchains are
+Tenjin does require specific Rust toolchains, both stable and nightly. These toolchains are
 selected and updated on demand.
 
 We also assume `git` is available (having been used to fetch this repo).
@@ -50,7 +51,8 @@ either from `git pull` or `bisect`, the support projects should be kept in sync 
 
 ### Set up Visual Studio Code
 
-TODO
+- Extensions: Python/Pylance, rust-analyzer, Ruff
+  - Disable the Black formatter extension, if you already have it, as it will produce style mismatches.
 
 ### 
 
