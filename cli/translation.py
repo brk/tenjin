@@ -8,14 +8,57 @@ import json
 import graphlib
 from typing import Sequence
 import time
+import uuid
 
+from repo_root import find_repo_root_dir_Path
+import ingest
+import ingest_tracking
 import hermetic
+import vcs_helpers
 from speculative_rewriters import (
     CondensedSpanGraph,
     ExplicitSpan,
     SpeculativeFileRewriter,
     SpeculativeSpansEraser,
 )
+
+
+def stub_ingestion_record(codebase: Path, guidance: dict) -> ingest.IngestionRecord | None:
+    """
+    Create a stub IngestionRecord for the given codebase and crate name.
+    This is used to initialize the ingestion record before the actual translation.
+    """
+
+    codebase_vcs_dir = vcs_helpers.find_containing_vcs_dir(codebase)
+    if codebase_vcs_dir is None:
+        return None
+
+    codebase_wcs = vcs_helpers.vcs_working_copy_status(codebase_vcs_dir)
+
+    tenjin_vcs_dir = vcs_helpers.find_containing_vcs_dir(find_repo_root_dir_Path())
+    assert tenjin_vcs_dir is not None, "No VCS directory found for Tenjin?!?!"
+
+    tenjin_wcs = vcs_helpers.vcs_working_copy_status(tenjin_vcs_dir)
+
+    assert tenjin_wcs.origin is not None, "Tenjin working copy has no origin URL?!?"
+    assert tenjin_wcs.commit is not None, "Tenjin working copy has no commit hash?!?"
+
+    assert codebase_wcs.origin is not None, "Codebase working copy has no origin URL?!?"
+    assert codebase_wcs.commit is not None, "Codebase working copy has no commit hash?!?"
+
+    codebase_relative_path = codebase.relative_to(vcs_helpers.vcs_root(codebase_vcs_dir))
+    return ingest.IngestionRecord(
+        uuid=uuid.uuid4(),
+        codebase_git_repo_url=codebase_wcs.origin,
+        codebase_git_commit=codebase_wcs.commit,
+        codebase_relative_path=str(codebase_relative_path),
+        tenjin_git_repo_url=tenjin_wcs.origin,
+        tenjin_git_commit=tenjin_wcs.commit,
+        ingest_start_unix_timestamp=int(time.time()),
+        ingest_elapsed_ms=0,
+        guidance=guidance,
+        transformations=[],
+    )
 
 
 def do_translate(
@@ -43,6 +86,8 @@ def do_translate(
         guidance = json.loads(guidance_path_or_literal)
     except json.JSONDecodeError:
         guidance = json.load(Path(guidance_path_or_literal).open("r", encoding="utf-8"))
+
+    tracker = ingest_tracking.TimingRepo(stub_ingestion_record(codebase, guidance))
 
     def perform_pre_translation(builddir: Path) -> Path:
         provided_compdb = codebase / "compile_commands.json"
@@ -81,7 +126,8 @@ def do_translate(
 
     with tempfile.TemporaryDirectory() as builddirname:
         builddir = Path(builddirname)
-        compdb = perform_pre_translation(builddir)
+        with tracker.tracking("pretranslation", builddir) as _step:
+            compdb = perform_pre_translation(builddir)
 
         c2rust_bin = root / "c2rust" / "target" / "debug" / "c2rust"
 
@@ -89,13 +135,22 @@ def do_translate(
         # so we create a subdirectory with the desired crate name.
         output = resultsdir / cratename
         output.mkdir(parents=True, exist_ok=False)
-        hermetic.run(
-            [str(c2rust_bin), "transpile", str(compdb), "-o", str(output), *c2rust_transpile_flags],
-            check=True,
-            env_ext={
-                "RUST_BACKTRACE": "1",
-            },
-        )
+        with tracker.tracking("c2rust", output) as step:
+            cp = hermetic.run(
+                [
+                    str(c2rust_bin),
+                    "transpile",
+                    str(compdb),
+                    "-o",
+                    str(output),
+                    *c2rust_transpile_flags,
+                ],
+                check=True,
+                env_ext={
+                    "RUST_BACKTRACE": "1",
+                },
+            )
+            step.update_sub(cp)
 
     # Normalize the unmodified translation results to end up
     # in a directory with a project-independent name.
@@ -106,7 +161,7 @@ def do_translate(
     hermetic.run_cargo_in(["check"], cwd=output, check=True)
     hermetic.run_cargo_in(["clean"], cwd=output, check=True)
 
-    run_improvement_passes(root, output, resultsdir, cratename)
+    run_improvement_passes(root, output, resultsdir, cratename, tracker)
 
     # Find the highest numbered output directory and copy its contents
     # to the final output directory.
@@ -116,6 +171,11 @@ def do_translate(
             highest_out,
             resultsdir / "final",
         )
+
+    record = tracker.finalize()
+    if record is not None:
+        with (resultsdir / "ingest.json").open("w") as f:
+            f.write(record.to_json(indent=2))
 
 
 def find_highest_numbered_dir(base: Path) -> Path | None:
@@ -444,7 +504,9 @@ def elapsed_ms_of_ns(start_ns: int, end_ns: int) -> float:
     return (end_ns - start_ns) / 1_000_000.0
 
 
-def run_improvement_passes(root: Path, output: Path, resultsdir: Path, cratename: str):
+def run_improvement_passes(
+    root: Path, output: Path, resultsdir: Path, cratename: str, tracker: ingest_tracking.TimingRepo
+):
     improvement_passes = [
         ("fmt", lambda _root, dir: hermetic.run_cargo_in(["fmt"], cwd=dir, check=True)),
         (
@@ -480,32 +542,33 @@ def run_improvement_passes(root: Path, output: Path, resultsdir: Path, cratename
 
     prev = output
     for counter, (tag, func) in enumerate(improvement_passes, start=1):
-        start_ns = time.perf_counter_ns()
         newdir = resultsdir / f"{counter:02d}_{tag}"
-        shutil.copytree(prev, newdir)
-        # Run the actual improvement pass, modifying the contents of `newdir`.
-        func(root, newdir)
-        mid_ns = time.perf_counter_ns()
-        # Use explicit toolchain for checks because c2rust may use extern_types which is unstable.
-        hermetic.run_cargo_in(["check"], cwd=newdir, check=True)
-        # Clean up the target directory so the next pass starts fresh.
-        hermetic.run_cargo_in(["clean", "-p", cratename], cwd=newdir, check=True)
-        end_ns = time.perf_counter_ns()
+        with tracker.tracking(f"improvement_pass_{counter:02d}_{tag}", newdir) as _step:
+            start_ns = time.perf_counter_ns()
+            shutil.copytree(prev, newdir)
+            # Run the actual improvement pass, modifying the contents of `newdir`.
+            func(root, newdir)
+            mid_ns = time.perf_counter_ns()
+            # Use explicit toolchain for checks because c2rust may use extern_types which is unstable.
+            hermetic.run_cargo_in(["check"], cwd=newdir, check=True)
+            # Clean up the target directory so the next pass starts fresh.
+            hermetic.run_cargo_in(["clean", "-p", cratename], cwd=newdir, check=True)
+            end_ns = time.perf_counter_ns()
 
-        core_ms = round(elapsed_ms_of_ns(start_ns, mid_ns))
-        cleanup_ms = round(elapsed_ms_of_ns(mid_ns, end_ns))
+            core_ms = round(elapsed_ms_of_ns(start_ns, mid_ns))
+            cleanup_ms = round(elapsed_ms_of_ns(mid_ns, end_ns))
 
-        print(
-            "Improvement pass",
-            counter,
-            tag,
-            "took",
-            core_ms,
-            "ms (then cleanup took another",
-            cleanup_ms,
-            "ms)",
-        )
-        print()
-        print()
-        print()
-        prev = newdir
+            print(
+                "Improvement pass",
+                counter,
+                tag,
+                "took",
+                core_ms,
+                "ms (then cleanup took another",
+                cleanup_ms,
+                "ms)",
+            )
+            print()
+            print()
+            print()
+            prev = newdir
