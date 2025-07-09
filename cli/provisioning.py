@@ -356,10 +356,17 @@ def grab_dune_version_str() -> str:
 
 
 def provision_ocaml_with(version: str, keyname: str):
+    # See COMMENTARY(optimistic-provisioning)
+    HAVE.note_we_have(keyname, version=Version(version))
+
     provision_ocaml(version)
 
     hermetic.run_opam(["config", "report"], check=False)
-    HAVE.note_we_have(keyname, version=Version(grab_ocaml_version_str()))
+
+    if Version(grab_ocaml_version_str()) != Version(version):
+        raise ProvisioningError(
+            f"Expected OCaml version {version}, got {grab_ocaml_version_str()}."
+        )
 
 
 def provision_ocaml(ocaml_version: str):
@@ -503,9 +510,16 @@ def provision_opam_binary_with(opam_version: str) -> None:
 
 
 def provision_dune_with(version: str, keyname: str):
+    #        COMMENTARY(optimistic-provisioning)
+    # Optimistically assume that provisioning will succeed.
+    # Setting HAVE first allows us to invoke dune without
+    # triggering infinite re-provisioning loops.
+    HAVE.note_we_have(keyname, version=Version(version))
+
     provision_dune(version)
 
-    HAVE.note_we_have(keyname, version=Version(grab_dune_version_str()))
+    if Version(grab_dune_version_str()) != Version(version):
+        raise ProvisioningError(f"Expected dune version {version}, got {grab_dune_version_str()}.")
 
 
 def infer_bwrap_sandboxing_args() -> list[str]:
@@ -588,11 +602,15 @@ def provision_opam_with(version: str, keyname: str):
     def say(msg: str):
         sez(msg, ctx="(opam) ")
 
+    # See COMMENTARY(optimistic-provisioning)
+    HAVE.note_we_have(keyname, version=Version(version))
     provision_opam_binary_with(version)
 
     opam_version_seen = grab_opam_version_str()
     say(f"opam version: {opam_version_seen}")
-    HAVE.note_we_have(keyname, version=Version(opam_version_seen))
+    # Opam provisioning is flexible; we'll treat greater versions as if they are
+    # the requested version, in some cases (primarily to make CI faster).
+    # So we don't want to fail if the version is greater than requested.
 
 
 def provision_cmake_with(version: str, keyname: str):
