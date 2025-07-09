@@ -448,12 +448,16 @@ def run_trim_allows(root: Path, dir: Path):
         return
 
     things_to_trim = [
-        "dead_code,",
-        "mutable_transmutes,",
-        "unused_assignments,",
-        "unused_mut,",
-        "unused_mut",
+        "  dead_code,",
+        "  mutable_transmutes,",
+        "  unused_assignments,",
+        "  unused_mut,",
+        "  unused_mut",
         "#![feature(extern_types)]",
+        "#![allow(dead_code)]",
+        "#![allow(unused_mut)]",
+        "#![allow(mutable_transmutes)]",
+        "#![allow(unused_assignments)]",
     ]
 
     def rough_parse_inner_attributes_len(rs_file_content: str) -> int:
