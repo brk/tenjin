@@ -372,10 +372,9 @@ def grab_dune_version_str() -> str:
 
 
 def provision_ocaml_with(version: str, keyname: str):
-    # See COMMENTARY(optimistic-provisioning)
-    HAVE.note_we_have(keyname, version=Version(version))
-
     provision_ocaml(version)
+
+    HAVE.note_we_have(keyname, version=Version(version))
 
     hermetic.run_opam(["config", "report"], check=False)
 
@@ -526,13 +525,9 @@ def provision_opam_binary_with(opam_version: str) -> None:
 
 
 def provision_dune_with(version: str, keyname: str):
-    #        COMMENTARY(optimistic-provisioning)
-    # Optimistically assume that provisioning will succeed.
-    # Setting HAVE first allows us to invoke dune without
-    # triggering infinite re-provisioning loops.
-    HAVE.note_we_have(keyname, version=Version(version))
-
     provision_dune(version)
+
+    HAVE.note_we_have(keyname, version=Version(version))
 
     if Version(grab_dune_version_str()) != Version(version):
         raise ProvisioningError(f"Expected dune version {version}, got {grab_dune_version_str()}.")
@@ -618,9 +613,8 @@ def provision_opam_with(version: str, keyname: str):
     def say(msg: str):
         sez(msg, ctx="(opam) ")
 
-    # See COMMENTARY(optimistic-provisioning)
-    HAVE.note_we_have(keyname, version=Version(version))
     provision_opam_binary_with(version)
+    HAVE.note_we_have(keyname, version=Version(version))
 
     opam_version_seen = grab_opam_version_str()
     say(f"opam version: {opam_version_seen}")
