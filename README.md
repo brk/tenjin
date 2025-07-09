@@ -7,7 +7,7 @@ Status: embryonic
 ## Installation
 
 First, [install Rust](https://rustup.rs/). On Linux, you'll also need either `curl` or `wget`.
-On Mac, we assume you already have XCode tools installed.
+On Mac, we assume you already have Xcode tools installed, plus [`brew`](https://brew.sh/).
 Then:
 
 1. Run `sh cli/sh/provision.sh`
