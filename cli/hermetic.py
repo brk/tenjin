@@ -59,8 +59,7 @@ def run_command_with_progress(command, stdout_file, stderr_file, shell=False) ->
     """
     Run a command, redirecting stdout/stderr to files, and print dots while waiting.
     """
-    if os.environ.get("XJ_SHOW_CMDS", "0") != "0":
-        click.echo(f": {command}")
+    common_helper_for_run(command)
 
     with open(stdout_file, "wb") as out_f, open(stderr_file, "wb") as err_f:
         proc = subprocess.Popen(
@@ -85,11 +84,15 @@ def run_command_with_progress(command, stdout_file, stderr_file, shell=False) ->
 type RunSpec = str | Sequence[str | bytes | os.PathLike[str] | os.PathLike[bytes]]
 
 
+def common_helper_for_run(cmd: RunSpec):
+    if os.environ.get("XJ_SHOW_CMDS", "0") != "0":
+        click.echo(f": {cmd}")
+
+
 def run(
     cmd: RunSpec, check=False, with_tenjin_deps=True, env_ext=None, **kwargs
 ) -> subprocess.CompletedProcess:
-    if os.environ.get("XJ_SHOW_CMDS", "0") != "0":
-        click.echo(f": {cmd}")
+    common_helper_for_run(cmd)
 
     return subprocess.run(
         cmd,
@@ -111,8 +114,7 @@ def run_shell_cmd(
 
 
 def check_output(cmd: RunSpec, cwd: Path | None = None) -> bytes:
-    if os.environ.get("XJ_SHOW_CMDS", "0") != "0":
-        click.echo(f": {cmd}")
+    common_helper_for_run(cmd)
 
     return subprocess.check_output(
         cmd,
