@@ -30,6 +30,10 @@ class InstallationState(enum.Enum):
 class TrackingWhatWeHave:
     def __init__(self):
         self.localdir = repo_root.localdir()
+
+        # This must be set in any code path that may call back to hermetic.run(), etc.
+        # provision_desires() sets this, and individual calls to want_*() must do so as well.
+        self.provisioning_depth = 0
         try:
             with open(Path(self.localdir, "config.10j-HAVE.json"), "r", encoding="utf-8") as f:
                 self._have = json.load(f)
@@ -108,7 +112,14 @@ def machine_normalized(aarch64="aarch64") -> str:
 
 
 def provision_desires(wanted: str):
+    """This is the main entry point for provisioning.
+
+    It is designed to be very fast when nothing needs updating:
+    `provision_desires("all")` takes less than 1 ms.
+    """
     assert wanted in "all llvm ocaml rust".split()
+    assert HAVE.provisioning_depth == 0, "Re-provisioning loop detected!"
+    HAVE.provisioning_depth += 1
 
     # Rust first because unlike the other stuff, we won't provision rustup
     # ourselves, so if it's not available, we should inform the user ASAP.
@@ -136,6 +147,8 @@ def provision_desires(wanted: str):
 
     if wanted in ("all", "ocaml"):
         want_dune()
+
+    HAVE.provisioning_depth -= 1
 
 
 def require_rust_stuff():
@@ -239,6 +252,7 @@ def want_10j_llvm():
 
 
 def want_10j_rust_toolchains():
+    """This must not lead back to hermetic.common_helper_for_run()."""
     want("10j-xj-improve-multitool-toolchain", "rust", "Rust", provision_10j_rust_toolchain_with)
     want("10j-xj-default-rust-toolchain", "rust", "Rust", provision_10j_rust_toolchain_with)
 
@@ -305,6 +319,8 @@ def want_10j_deps():
 
 
 def provision_10j_rust_toolchain_with(version: str, keyname: str):
+    """This must not lead back to hermetic.common_helper_for_run()."""
+
     # Examples of expected toolchain specs: "1.88.0" or "nightly-2025-03-03".
     # Specifying the point release helps avoid redundant downloads. Observe:
     #     $ docker run --rm -it rust:1.88-alpine rustc +1.88.0 --version
@@ -325,41 +341,47 @@ def provision_10j_rust_toolchain_with(version: str, keyname: str):
     cmd = ["rustup", "component", "add", "--toolchain", toolchain_spec, "clippy", "rustfmt"]
     if toolchain_spec.startswith("nightly"):
         cmd.append("rustc-dev")
+    # Using subprocess instead of hermetic avoid reprovisioning loops.
     subprocess.check_call(cmd)
 
     HAVE.note_we_have(keyname, specifier=toolchain_spec)
 
 
-def grab_opam_stdout_for_provisioning(args: list[str]) -> str:
+def grab_opam_stdout(args: list[str]) -> str:
     cp = hermetic.run_opam(
         args,
         check=True,
         capture_output=True,
-        suppress_provisioning_check=True,
     )
     return cp.stdout.decode("utf-8").strip()
 
 
 # Prerequisite: opam provisioned.
 def grab_opam_version_str() -> str:
-    return grab_opam_stdout_for_provisioning(["--version"])
+    return grab_opam_stdout(["--version"])
 
 
 # Prerequisite: opam and ocaml provisioned.
 def grab_ocaml_version_str() -> str:
-    return grab_opam_stdout_for_provisioning(["exec", "--", "ocamlc", "--version"])
+    return grab_opam_stdout(["exec", "--", "ocamlc", "--version"])
 
 
 # Prerequisite: opam and dune provisioned.
 def grab_dune_version_str() -> str:
-    return grab_opam_stdout_for_provisioning(["exec", "--", "dune", "--version"])
+    return grab_opam_stdout(["exec", "--", "dune", "--version"])
 
 
 def provision_ocaml_with(version: str, keyname: str):
     provision_ocaml(version)
 
+    HAVE.note_we_have(keyname, version=Version(version))
+
     hermetic.run_opam(["config", "report"], check=False)
-    HAVE.note_we_have(keyname, version=Version(grab_ocaml_version_str()))
+
+    if Version(grab_ocaml_version_str()) != Version(version):
+        raise ProvisioningError(
+            f"Expected OCaml version {version}, got {grab_ocaml_version_str()}."
+        )
 
 
 def provision_ocaml(ocaml_version: str):
@@ -505,7 +527,10 @@ def provision_opam_binary_with(opam_version: str) -> None:
 def provision_dune_with(version: str, keyname: str):
     provision_dune(version)
 
-    HAVE.note_we_have(keyname, version=Version(grab_dune_version_str()))
+    HAVE.note_we_have(keyname, version=Version(version))
+
+    if Version(grab_dune_version_str()) != Version(version):
+        raise ProvisioningError(f"Expected dune version {version}, got {grab_dune_version_str()}.")
 
 
 def infer_bwrap_sandboxing_args() -> list[str]:
@@ -589,10 +614,13 @@ def provision_opam_with(version: str, keyname: str):
         sez(msg, ctx="(opam) ")
 
     provision_opam_binary_with(version)
+    HAVE.note_we_have(keyname, version=Version(version))
 
     opam_version_seen = grab_opam_version_str()
     say(f"opam version: {opam_version_seen}")
-    HAVE.note_we_have(keyname, version=Version(opam_version_seen))
+    # Opam provisioning is flexible; we'll treat greater versions as if they are
+    # the requested version, in some cases (primarily to make CI faster).
+    # So we don't want to fail if the version is greater than requested.
 
 
 def provision_cmake_with(version: str, keyname: str):
@@ -621,10 +649,13 @@ def provision_cmake_with(version: str, keyname: str):
         cmake_app_bin = cmake_dir / "CMake.app" / "Contents" / "bin"
         os.symlink(cmake_app_bin, cmake_dir / "bin")
 
-    update_cmake_have(keyname)
+    HAVE.note_we_have(keyname, version=Version(version))
+    # Running validation after we've set our HAVE version
+    # avoids infinite loops.
+    validate_actual_cmake_version(version)
 
 
-def update_cmake_have(keyname: str):
+def validate_actual_cmake_version(expected_version: str):
     out: bytes = hermetic.run_shell_cmd("cmake --version", check=True, capture_output=True).stdout
     outstr = out.decode("utf-8")
     lines = outstr.splitlines()
@@ -633,7 +664,10 @@ def update_cmake_have(keyname: str):
     else:
         match lines[0].split():
             case ["cmake", "version", version]:
-                HAVE.note_we_have(keyname, version=Version(version))
+                if Version(version) != Version(expected_version):
+                    raise ProvisioningError(
+                        f"Expected CMake version {expected_version}, got {version}."
+                    )
             case _:
                 raise ProvisioningError(f"Unexpected output from CMake version command:\n{outstr}")
 
@@ -743,12 +777,17 @@ def provision_10j_llvm_with(version: str, keyname: str):
             if not dst.is_symlink():
                 os.symlink(src, dst)
 
+    target = hermetic.xj_llvm_root(localdir)
+    if target.is_dir():
+        shutil.rmtree(target)
+
     tarball_name = f"LLVM-{version}-{platform.system()}-{machine_normalized()}.tar.xz"
     if Path(tarball_name).is_file():
-        extract_tarball(Path(tarball_name), hermetic.xj_llvm_root(localdir), ctx="(llvm) ")
+        # A local tarball was likely manually downloaded. Use it if we've got it.
+        extract_tarball(Path(tarball_name), target, ctx="(llvm) ")
     else:
         url = f"https://github.com/Aarno-Labs/tenjin-build-deps/releases/download/rev-03d4672c4/{tarball_name}"
-        download_and_extract_tarball(url, hermetic.xj_llvm_root(localdir), ctx="(llvm) ")
+        download_and_extract_tarball(url, target, ctx="(llvm) ")
 
     match platform.system():
         case "Linux":
@@ -860,11 +899,10 @@ def provision_10j_deps_with(version: str, keyname: str):
         case "Linux":
             filename = f"xj-build-deps_{machine_normalized()}.tar.xz"
             url = f"https://github.com/Aarno-Labs/tenjin-build-deps/releases/download/{version}/{filename}"
-            download_and_extract_tarball(
-                url,
-                hermetic.xj_build_deps(HAVE.localdir),
-                ctx="(builddeps) ",
-            )
+            target = hermetic.xj_build_deps(HAVE.localdir)
+            if target.is_dir():
+                shutil.rmtree(target)
+            download_and_extract_tarball(url, target, ctx="(builddeps) ")
             cook_pkg_config_within()
 
         case "Darwin":
