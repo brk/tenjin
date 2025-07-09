@@ -30,6 +30,10 @@ class InstallationState(enum.Enum):
 class TrackingWhatWeHave:
     def __init__(self):
         self.localdir = repo_root.localdir()
+
+        # This must be set in any code path that may call back to hermetic.run(), etc.
+        # provision_desires() sets this, and individual calls to want_*() must do so as well.
+        self.provisioning_depth = 0
         try:
             with open(Path(self.localdir, "config.10j-HAVE.json"), "r", encoding="utf-8") as f:
                 self._have = json.load(f)
@@ -108,7 +112,14 @@ def machine_normalized(aarch64="aarch64") -> str:
 
 
 def provision_desires(wanted: str):
+    """This is the main entry point for provisioning.
+
+    It is designed to be very fast when nothing needs updating:
+    `provision_desires("all")` takes less than 1 ms.
+    """
     assert wanted in "all llvm ocaml rust".split()
+    assert HAVE.provisioning_depth == 0, "Re-provisioning loop detected!"
+    HAVE.provisioning_depth += 1
 
     # Rust first because unlike the other stuff, we won't provision rustup
     # ourselves, so if it's not available, we should inform the user ASAP.
@@ -136,6 +147,8 @@ def provision_desires(wanted: str):
 
     if wanted in ("all", "ocaml"):
         want_dune()
+
+    HAVE.provisioning_depth -= 1
 
 
 def require_rust_stuff():
@@ -239,6 +252,7 @@ def want_10j_llvm():
 
 
 def want_10j_rust_toolchains():
+    """This must not lead back to hermetic.common_helper_for_run()."""
     want("10j-xj-improve-multitool-toolchain", "rust", "Rust", provision_10j_rust_toolchain_with)
     want("10j-xj-default-rust-toolchain", "rust", "Rust", provision_10j_rust_toolchain_with)
 
@@ -305,6 +319,8 @@ def want_10j_deps():
 
 
 def provision_10j_rust_toolchain_with(version: str, keyname: str):
+    """This must not lead back to hermetic.common_helper_for_run()."""
+
     # Examples of expected toolchain specs: "1.88.0" or "nightly-2025-03-03".
     # Specifying the point release helps avoid redundant downloads. Observe:
     #     $ docker run --rm -it rust:1.88-alpine rustc +1.88.0 --version
@@ -325,6 +341,7 @@ def provision_10j_rust_toolchain_with(version: str, keyname: str):
     cmd = ["rustup", "component", "add", "--toolchain", toolchain_spec, "clippy", "rustfmt"]
     if toolchain_spec.startswith("nightly"):
         cmd.append("rustc-dev")
+    # Using subprocess instead of hermetic avoid reprovisioning loops.
     subprocess.check_call(cmd)
 
     HAVE.note_we_have(keyname, specifier=toolchain_spec)
