@@ -85,6 +85,9 @@ type RunSpec = str | Sequence[str | bytes | os.PathLike[str] | os.PathLike[bytes
 
 
 def common_helper_for_run(cmd: RunSpec):
+    if provisioning.HAVE.provisioning_depth == 0:
+        provisioning.provision_desires("all")
+
     if os.environ.get("XJ_SHOW_CMDS", "0") != "0":
         click.echo(f": {cmd}")
 
@@ -259,16 +262,6 @@ def run_opam(
         opam_subcmd_args = ["--cli=2.3"]
         if hermetic:
             opam_subcmd_args += ["--root", str(opamroot(localdir))]
-        else:
-            # We save about four minutes per run in CI by using the system opam.
-            # If it appears to be installed, use it.
-            provisioning.want_opam()
-
-        match args:
-            case ["exec", "--", "dune", *_rest]:
-                provisioning.want_dune()
-            case _:
-                pass
 
         maincmd = shell_cmd([str(localopam), *insert_opam_subcmd_args(args, opam_subcmd_args)])
 
