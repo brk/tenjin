@@ -2,11 +2,12 @@ import enum
 import shutil
 import tempfile
 from pathlib import Path
+from subprocess import CompletedProcess
 import re
 import os
 import json
 import graphlib
-from typing import Sequence
+from typing import Callable, Sequence
 import time
 import uuid
 
@@ -95,7 +96,7 @@ def do_translate(
 
         if provided_cmakelists.exists() and not provided_compdb.exists():
             # If we have a CMakeLists.txt, we can generate the compile_commands.json
-            hermetic.run(
+            cp = hermetic.run(
                 [
                     "cmake",
                     "-S",
@@ -105,7 +106,9 @@ def do_translate(
                     "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON",
                 ],
                 check=True,
+                capture_output=True,
             )
+            tracker.update_sub(cp)
             return builddir / "compile_commands.json"
         else:
             # Otherwise, we assume the compile_commands.json is already present
@@ -149,6 +152,7 @@ def do_translate(
                 env_ext={
                     "RUST_BACKTRACE": "1",
                 },
+                capture_output=True,
             )
             step.update_sub(cp)
 
@@ -207,13 +211,13 @@ def get_multitool_toolchain(root: Path) -> str:
     return hermetic.get_toolchain_for_directory(root / "xj-improve-multitool")
 
 
-def run_improve_multitool(root: Path, tool: str, args: list[str], dir: Path):
+def run_improve_multitool(root: Path, tool: str, args: list[str], dir: Path) -> CompletedProcess:
     # External Cargo tools need not be installed to be used, they only need to be on the PATH.
     # Since rustc plugins like xj-improve-multitool are tied to a specific toolchain,
     # it's not ideal to install them globally.
     # We could unconditionally `cargo install` into the _local/bin directory,
     # but it's a bit faster to just build & run from `target`.
-    hermetic.run_cargo_in(
+    return hermetic.run_cargo_in(
         ["xj-improve-multitool", "--tool", tool, *args],
         cwd=dir,
         env_ext={
@@ -448,12 +452,16 @@ def run_trim_allows(root: Path, dir: Path):
         return
 
     things_to_trim = [
-        "dead_code,",
-        "mutable_transmutes,",
-        "unused_assignments,",
-        "unused_mut,",
-        "unused_mut",
+        "  dead_code,",
+        "  mutable_transmutes,",
+        "  unused_assignments,",
+        "  unused_mut,",
+        "  unused_mut",
         "#![feature(extern_types)]",
+        "#![allow(dead_code)]",
+        "#![allow(unused_mut)]",
+        "#![allow(mutable_transmutes)]",
+        "#![allow(unused_assignments)]",
     ]
 
     def rough_parse_inner_attributes_len(rs_file_content: str) -> int:
@@ -507,16 +515,25 @@ def elapsed_ms_of_ns(start_ns: int, end_ns: int) -> float:
 def run_improvement_passes(
     root: Path, output: Path, resultsdir: Path, cratename: str, tracker: ingest_tracking.TimingRepo
 ):
-    improvement_passes = [
-        ("fmt", lambda _root, dir: hermetic.run_cargo_in(["fmt"], cwd=dir, check=True)),
-        (
-            "fix",
-            lambda _root, dir: hermetic.run_cargo_in(
-                ["fix", "--allow-no-vcs", "--allow-dirty"],
-                cwd=dir,
-                check=True,
-            ),
-        ),
+    def run_cargo_fmt(_root: Path, dir: Path) -> CompletedProcess:
+        return hermetic.run_cargo_in(
+            ["fmt"],
+            cwd=dir,
+            check=True,
+            capture_output=True,
+        )
+
+    def run_cargo_fix(_root: Path, dir: Path) -> CompletedProcess:
+        return hermetic.run_cargo_in(
+            ["fix", "--allow-no-vcs", "--allow-dirty"],
+            cwd=dir,
+            check=True,
+            capture_output=True,
+        )
+
+    improvement_passes: list[tuple[str, Callable[[Path, Path], CompletedProcess | None]]] = [
+        ("fmt", run_cargo_fmt),
+        ("fix", run_cargo_fix),
         (
             "trimdead",
             lambda root, dir: run_improve_multitool(
@@ -528,16 +545,9 @@ def run_improvement_passes(
         # removing an unsafe marker on a block may have rendered
         # the block safe, and therefore subject to removal.
         # But if we format first, the block may not be removable by `fix`!
-        (
-            "fix",
-            lambda _root, dir: hermetic.run_cargo_in(
-                ["fix", "--allow-no-vcs", "--allow-dirty"],
-                cwd=dir,
-                check=True,
-            ),
-        ),
+        ("fix", run_cargo_fix),
         ("trim-allows", run_trim_allows),
-        ("fmt", lambda _root, dir: hermetic.run_cargo_in(["fmt"], cwd=dir, check=True)),
+        ("fmt", run_cargo_fmt),
     ]
 
     prev = output
@@ -547,7 +557,9 @@ def run_improvement_passes(
             start_ns = time.perf_counter_ns()
             shutil.copytree(prev, newdir)
             # Run the actual improvement pass, modifying the contents of `newdir`.
-            func(root, newdir)
+            cp_or_None: CompletedProcess | None = func(root, newdir)
+            if cp_or_None is not None:
+                _step.update_sub(cp_or_None)
             mid_ns = time.perf_counter_ns()
             # Use explicit toolchain for checks because c2rust may use extern_types which is unstable.
             hermetic.run_cargo_in(["check"], cwd=newdir, check=True)
