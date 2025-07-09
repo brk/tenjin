@@ -766,12 +766,17 @@ def provision_10j_llvm_with(version: str, keyname: str):
             if not dst.is_symlink():
                 os.symlink(src, dst)
 
+    target = hermetic.xj_llvm_root(localdir)
+    if target.is_dir():
+        shutil.rmtree(target)
+
     tarball_name = f"LLVM-{version}-{platform.system()}-{machine_normalized()}.tar.xz"
     if Path(tarball_name).is_file():
-        extract_tarball(Path(tarball_name), hermetic.xj_llvm_root(localdir), ctx="(llvm) ")
+        # A local tarball was likely manually downloaded. Use it if we've got it.
+        extract_tarball(Path(tarball_name), target, ctx="(llvm) ")
     else:
         url = f"https://github.com/Aarno-Labs/tenjin-build-deps/releases/download/rev-03d4672c4/{tarball_name}"
-        download_and_extract_tarball(url, hermetic.xj_llvm_root(localdir), ctx="(llvm) ")
+        download_and_extract_tarball(url, target, ctx="(llvm) ")
 
     match platform.system():
         case "Linux":
@@ -883,11 +888,10 @@ def provision_10j_deps_with(version: str, keyname: str):
         case "Linux":
             filename = f"xj-build-deps_{machine_normalized()}.tar.xz"
             url = f"https://github.com/Aarno-Labs/tenjin-build-deps/releases/download/{version}/{filename}"
-            download_and_extract_tarball(
-                url,
-                hermetic.xj_build_deps(HAVE.localdir),
-                ctx="(builddeps) ",
-            )
+            target = hermetic.xj_build_deps(HAVE.localdir)
+            if target.is_dir():
+                shutil.rmtree(target)
+            download_and_extract_tarball(url, target, ctx="(builddeps) ")
             cook_pkg_config_within()
 
         case "Darwin":
