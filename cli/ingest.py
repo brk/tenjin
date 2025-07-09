@@ -12,8 +12,8 @@ class TransformationRecord:
     start_unix_timestamp: int
     elapsed_ms: int
     exit_code: int
-    stderr: str
-    stdout: str
+    stderr_lines: list[str] | None
+    stdout_lines: list[str] | None
 
 
 @dataclass
