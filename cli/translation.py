@@ -23,8 +23,8 @@ def do_translate(
     codebase: Path,
     resultsdir: Path,
     cratename: str,
+    guidance_path_or_literal: str,
     c_main_in: str | None = None,
-    guidance: str | None = None,
 ):
     """
     Translate a codebase from C to Rust.
@@ -38,6 +38,11 @@ def do_translate(
     (eventually)
     have a file called `ingest.json` containing metadata about the translation.
     """
+
+    try:
+        guidance = json.loads(guidance_path_or_literal)
+    except json.JSONDecodeError:
+        guidance = json.load(Path(guidance_path_or_literal).open("r", encoding="utf-8"))
 
     def perform_pre_translation(builddir: Path) -> Path:
         provided_compdb = codebase / "compile_commands.json"
@@ -68,7 +73,7 @@ def do_translate(
         "--log-level",
         "INFO",
         "--guidance",
-        guidance if guidance else "{}",
+        json.dumps(guidance),
     ]
 
     if c_main_in:
