@@ -621,10 +621,13 @@ def provision_cmake_with(version: str, keyname: str):
         cmake_app_bin = cmake_dir / "CMake.app" / "Contents" / "bin"
         os.symlink(cmake_app_bin, cmake_dir / "bin")
 
-    update_cmake_have(keyname)
+    HAVE.note_we_have(keyname, version=Version(version))
+    # Running validation after we've set our HAVE version
+    # avoids infinite loops.
+    validate_actual_cmake_version(version)
 
 
-def update_cmake_have(keyname: str):
+def validate_actual_cmake_version(expected_version: str):
     out: bytes = hermetic.run_shell_cmd("cmake --version", check=True, capture_output=True).stdout
     outstr = out.decode("utf-8")
     lines = outstr.splitlines()
@@ -633,7 +636,10 @@ def update_cmake_have(keyname: str):
     else:
         match lines[0].split():
             case ["cmake", "version", version]:
-                HAVE.note_we_have(keyname, version=Version(version))
+                if Version(version) != Version(expected_version):
+                    raise ProvisioningError(
+                        f"Expected CMake version {expected_version}, got {version}."
+                    )
             case _:
                 raise ProvisioningError(f"Unexpected output from CMake version command:\n{outstr}")
 
