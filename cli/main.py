@@ -178,7 +178,7 @@ def translate(codebase, resultsdir, cratename, c_main_in, guidance):
         root = repo_root.find_repo_root_dir_Path()
         do_build_rs(root)
         translation.do_translate(
-            root, Path(codebase), Path(resultsdir), cratename, c_main_in, guidance
+            root, Path(codebase), Path(resultsdir), cratename, guidance, c_main_in
         )
     except subprocess.CalledProcessError:
         sys.exit(1)

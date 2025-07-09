@@ -110,6 +110,17 @@ def run_shell_cmd(
     )
 
 
+def check_output(cmd: RunSpec, cwd: Path | None = None) -> bytes:
+    if os.environ.get("XJ_SHOW_CMDS", "0") != "0":
+        click.echo(f": {cmd}")
+
+    return subprocess.check_output(
+        cmd,
+        cwd=cwd,
+        env=mk_env_for(repo_root.localdir(), with_tenjin_deps=False, env_ext=None),
+    )
+
+
 def tenjin_cargo_toolchain_specifier() -> str:
     spec = provisioning.HAVE.query("10j-xj-default-rust-toolchain")
     if spec is None:
