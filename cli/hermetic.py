@@ -231,7 +231,6 @@ def run_opam(
     with_tenjin_deps=True,
     check=False,
     env_ext=None,
-    suppress_provisioning_check=False,
     **kwargs,
 ) -> subprocess.CompletedProcess:
     localdir = repo_root.localdir()
@@ -261,18 +260,13 @@ def run_opam(
         else:
             # We save about four minutes per run in CI by using the system opam.
             # If it appears to be installed, use it.
-            if not suppress_provisioning_check:
-                provisioning.want_opam()
+            provisioning.want_opam()
 
-        if not suppress_provisioning_check:
-            # Provisioning needs to check Dune's version, which is done via
-            # run_opam(["exec", "--", "dune", "--version"]), so we need to
-            # break the recursion.
-            match args:
-                case ["exec", "--", "dune", *_rest]:
-                    provisioning.want_dune()
-                case _:
-                    pass
+        match args:
+            case ["exec", "--", "dune", *_rest]:
+                provisioning.want_dune()
+            case _:
+                pass
 
         maincmd = shell_cmd([str(localopam), *insert_opam_subcmd_args(args, opam_subcmd_args)])
 

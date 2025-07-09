@@ -330,29 +330,28 @@ def provision_10j_rust_toolchain_with(version: str, keyname: str):
     HAVE.note_we_have(keyname, specifier=toolchain_spec)
 
 
-def grab_opam_stdout_for_provisioning(args: list[str]) -> str:
+def grab_opam_stdout(args: list[str]) -> str:
     cp = hermetic.run_opam(
         args,
         check=True,
         capture_output=True,
-        suppress_provisioning_check=True,
     )
     return cp.stdout.decode("utf-8").strip()
 
 
 # Prerequisite: opam provisioned.
 def grab_opam_version_str() -> str:
-    return grab_opam_stdout_for_provisioning(["--version"])
+    return grab_opam_stdout(["--version"])
 
 
 # Prerequisite: opam and ocaml provisioned.
 def grab_ocaml_version_str() -> str:
-    return grab_opam_stdout_for_provisioning(["exec", "--", "ocamlc", "--version"])
+    return grab_opam_stdout(["exec", "--", "ocamlc", "--version"])
 
 
 # Prerequisite: opam and dune provisioned.
 def grab_dune_version_str() -> str:
-    return grab_opam_stdout_for_provisioning(["exec", "--", "dune", "--version"])
+    return grab_opam_stdout(["exec", "--", "dune", "--version"])
 
 
 def provision_ocaml_with(version: str, keyname: str):
