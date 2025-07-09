@@ -2,6 +2,7 @@ import enum
 import shutil
 import tempfile
 from pathlib import Path
+from subprocess import CompletedProcess
 import re
 import os
 import json
@@ -511,16 +512,25 @@ def elapsed_ms_of_ns(start_ns: int, end_ns: int) -> float:
 def run_improvement_passes(
     root: Path, output: Path, resultsdir: Path, cratename: str, tracker: ingest_tracking.TimingRepo
 ):
+    def run_cargo_fmt(_root: Path, dir: Path) -> CompletedProcess:
+        return hermetic.run_cargo_in(
+            ["fmt"],
+            cwd=dir,
+            check=True,
+            capture_output=True,
+        )
+
+    def run_cargo_fix(_root: Path, dir: Path) -> CompletedProcess:
+        return hermetic.run_cargo_in(
+            ["fix", "--allow-no-vcs", "--allow-dirty"],
+            cwd=dir,
+            check=True,
+            capture_output=True,
+        )
+
     improvement_passes = [
-        ("fmt", lambda _root, dir: hermetic.run_cargo_in(["fmt"], cwd=dir, check=True)),
-        (
-            "fix",
-            lambda _root, dir: hermetic.run_cargo_in(
-                ["fix", "--allow-no-vcs", "--allow-dirty"],
-                cwd=dir,
-                check=True,
-            ),
-        ),
+        ("fmt", run_cargo_fmt),
+        ("fix", run_cargo_fix),
         (
             "trimdead",
             lambda root, dir: run_improve_multitool(
@@ -532,16 +542,9 @@ def run_improvement_passes(
         # removing an unsafe marker on a block may have rendered
         # the block safe, and therefore subject to removal.
         # But if we format first, the block may not be removable by `fix`!
-        (
-            "fix",
-            lambda _root, dir: hermetic.run_cargo_in(
-                ["fix", "--allow-no-vcs", "--allow-dirty"],
-                cwd=dir,
-                check=True,
-            ),
-        ),
+        ("fix", run_cargo_fix),
         ("trim-allows", run_trim_allows),
-        ("fmt", lambda _root, dir: hermetic.run_cargo_in(["fmt"], cwd=dir, check=True)),
+        ("fmt", run_cargo_fmt),
     ]
 
     prev = output
