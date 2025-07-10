@@ -11,7 +11,7 @@ from typing import Callable, Sequence
 import time
 import uuid
 
-from repo_root import find_repo_root_dir_Path
+from repo_root import find_repo_root_dir_Path, localdir
 import ingest
 import ingest_tracking
 import hermetic
@@ -145,14 +145,18 @@ def do_translate(
         "--translate-const-macros",
         "--reduce-type-annotations",
         "--disable-refactoring",
+    ]
+
+    if c_main_in:
+        c2rust_transpile_flags.extend(["--binary", c_main_in.removesuffix(".c")])
+
+    xj_c2rust_transpile_flags = [
+        *c2rust_transpile_flags,
         "--log-level",
         "INFO",
         "--guidance",
         json.dumps(guidance),
     ]
-
-    if c_main_in:
-        c2rust_transpile_flags.extend(["--binary", c_main_in.removesuffix(".c")])
 
     with tempfile.TemporaryDirectory() as builddirname:
         builddir = Path(builddirname)
@@ -163,8 +167,18 @@ def do_translate(
         # so we create a subdirectory with the desired crate name.
         output = resultsdir / cratename
         output.mkdir(parents=True, exist_ok=False)
+        # First run the upstream c2rust tool to get a baseline translation.
+        upstream_c2rust_bin = localdir() / "upstream-c2rust" / "target" / "debug" / "c2rust"
+        run_c2rust(
+            tracker, "upstream-c2rust", upstream_c2rust_bin, compdb, output, c2rust_transpile_flags
+        )
+        output = output.rename(output.with_name("vanilla_c2rust"))
+
+        # Then run our version, using guidance and preanalysis.
+        output = resultsdir / cratename
+        output.mkdir(parents=True, exist_ok=False)
         c2rust_bin = root / "c2rust" / "target" / "debug" / "c2rust"
-        run_c2rust(tracker, "xj-c2rust", c2rust_bin, compdb, output, c2rust_transpile_flags)
+        run_c2rust(tracker, "xj-c2rust", c2rust_bin, compdb, output, xj_c2rust_transpile_flags)
 
         # Normalize the unmodified translation results to end up
         # in a directory with a project-independent name.
