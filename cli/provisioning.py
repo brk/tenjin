@@ -852,6 +852,7 @@ def provision_10j_llvm_with(version: str, keyname: str):
                 os.symlink(src, dst)
 
     target = hermetic.xj_llvm_root(localdir)
+    target_dir_existed = target.is_dir()
     if target.is_dir():
         shutil.rmtree(target)
 
@@ -874,6 +875,16 @@ def provision_10j_llvm_with(version: str, keyname: str):
             provision_clang_config_files(sysroot_path=xcrun_path)
 
     add_binutils_alike_symbolic_links()
+
+    if target_dir_existed:
+        # We must clean up any executables that dynamically linked against the old LLVM.
+        # Tenjin's c2rust binary will be rebuilt on demand.
+        sez("Cleaning up binaries linked against the prior LLVM version...", ctx="(c2rust) ")
+        hermetic.run_cargo_in(["clean"], repo_root.find_repo_root_dir_Path() / "c2rust")
+
+        # Upstream c2rust is not rebuilt automatically, so we need to do it here.
+        hermetic.run_cargo_in(["clean"], hermetic.xj_upstream_c2rust(localdir))
+        rebuild_10j_upstream_c2rust(hermetic.xj_upstream_c2rust(localdir))
 
     update_10j_llvm_have(keyname)
 
