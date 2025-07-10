@@ -27,8 +27,8 @@ class Interval:
 
 
 class TimingRepo:
-    def __init__(self, ingestion_record: ingest.IngestionRecord | None):
-        self._ingestion_record = ingestion_record
+    def __init__(self, translation_record: ingest.TranslationRecord | None):
+        self._translation_record = translation_record
         self._current_step: ingest.TransformationRecord | None = None
         self._results: list[ingest.TransformationRecord] = []
         self._start_time_ns = time.monotonic_ns()
@@ -74,16 +74,16 @@ class TimingRepo:
             raise RuntimeError("No current step to set exit code for")
         self._current_step.exit_code = exit_code
 
-    def finalize(self) -> ingest.IngestionRecord | None:
+    def finalize(self) -> ingest.TranslationRecord | None:
         """Get the list of recorded transformation records"""
         if self._current_step is not None:
             raise RuntimeError("Current step is not finalized")
 
-        if self._ingestion_record is None:
+        if self._translation_record is None:
             return None
 
-        self._ingestion_record.transformations = list(self._results)
-        self._ingestion_record.ingest_elapsed_ms = Interval(
+        self._translation_record.results.transformations = list(self._results)
+        self._translation_record.results.translation_elapsed_ms = Interval(
             self._start_time_ns, time.monotonic_ns()
         ).duration_ms_int()
-        return self._ingestion_record
+        return self._translation_record

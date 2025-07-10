@@ -10,8 +10,10 @@ import graphlib
 from typing import Callable, Sequence
 import time
 import uuid
+from platform import platform
 
 from repo_root import find_repo_root_dir_Path, localdir
+import provisioning
 import ingest
 import ingest_tracking
 import hermetic
@@ -24,7 +26,7 @@ from speculative_rewriters import (
 )
 
 
-def stub_ingestion_record(codebase: Path, guidance: dict) -> ingest.IngestionRecord | None:
+def stub_ingestion_record(codebase: Path, guidance: dict) -> ingest.TranslationRecord | None:
     """
     Create a stub IngestionRecord for the given codebase and crate name.
     This is used to initialize the ingestion record before the actual translation.
@@ -48,17 +50,30 @@ def stub_ingestion_record(codebase: Path, guidance: dict) -> ingest.IngestionRec
     assert codebase_wcs.commit is not None, "Codebase working copy has no commit hash?!?"
 
     codebase_relative_path = codebase.relative_to(vcs_helpers.vcs_root(codebase_vcs_dir))
-    return ingest.IngestionRecord(
-        uuid=uuid.uuid4(),
-        codebase_git_repo_url=codebase_wcs.origin,
-        codebase_git_commit=codebase_wcs.commit,
-        codebase_relative_path=str(codebase_relative_path),
-        tenjin_git_repo_url=tenjin_wcs.origin,
-        tenjin_git_commit=tenjin_wcs.commit,
-        ingest_start_unix_timestamp=int(time.time()),
-        ingest_elapsed_ms=0,
-        guidance=guidance,
-        transformations=[],
+    upstream_c2rust = provisioning.HAVE.query("10j-reference-c2rust-tag")
+    return ingest.TranslationRecord(
+        translation_uuid=uuid.uuid4(),
+        inputs=ingest.TranslationInputs(
+            codebase=ingest.IngestedCodebase(
+                git_repo_url=codebase_wcs.origin,
+                git_commit=codebase_wcs.commit,
+                relative_path=str(codebase_relative_path),
+            ),
+            host_platform=platform(),
+            tenjin_git_repo_url=tenjin_wcs.origin,
+            tenjin_git_commit=tenjin_wcs.commit,
+            c2rust_baseline_version=upstream_c2rust or "unknown",
+            guidance=guidance,
+        ),
+        results=ingest.TranslationResults(
+            translation_start_unix_timestamp=int(time.time()),
+            translation_elapsed_ms=0,
+            static_measurement_elapsed_ms=0,
+            transformations=[],
+            c2rust_baseline=None,
+            tenjin_initial=None,
+            tenjin_final=None,
+        ),
     )
 
 
