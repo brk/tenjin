@@ -148,6 +148,9 @@ def provision_desires(wanted: str):
     if wanted in ("all", "ocaml"):
         want_dune()
 
+    if wanted == "all":
+        want_10j_reference_c2rust_tag()
+
     HAVE.provisioning_depth -= 1
 
 
@@ -255,6 +258,77 @@ def want_10j_rust_toolchains():
     """This must not lead back to hermetic.common_helper_for_run()."""
     want("10j-xj-improve-multitool-toolchain", "rust", "Rust", provision_10j_rust_toolchain_with)
     want("10j-xj-default-rust-toolchain", "rust", "Rust", provision_10j_rust_toolchain_with)
+
+
+def want_10j_reference_c2rust_tag():
+    def provision_10j_reference_c2rust_tag_with(
+        version: str,
+        keyname: str,
+    ):
+        def say(msg: str):
+            sez(msg, ctx="(c2rust) ")
+
+        localdir = HAVE.localdir
+
+        xj_upstream_c2rust = hermetic.xj_upstream_c2rust(localdir)
+        if xj_upstream_c2rust.is_dir():
+            say(f"Fetching and resetting C2Rust to version {version} ...")
+            subprocess.check_call(["git", "fetch", "--all"], cwd=str(xj_upstream_c2rust))
+            subprocess.check_call(
+                ["git", "switch", "--detach", version], cwd=str(xj_upstream_c2rust)
+            )
+        else:
+            say(f"Cloning C2Rust {version} ...")
+
+            stdout_path = Path(localdir, "xj-c2rust-clone.log")
+            stderr_path = Path(localdir, "xj-c2rust-clone.err")
+            hermetic.run_command_with_progress(
+                [
+                    "git",
+                    "clone",
+                    "--branch",
+                    version,
+                    "https://github.com/immunant/c2rust.git",
+                    str(xj_upstream_c2rust),
+                ],
+                stdout_file=stdout_path,
+                stderr_file=stderr_path,
+            )
+
+        rebuild_10j_upstream_c2rust(xj_upstream_c2rust)
+        HAVE.note_we_have(keyname, specifier=version)
+
+    want(
+        "10j-reference-c2rust-tag",
+        "c2rust",
+        "Upstream C2Rust",
+        provision_10j_reference_c2rust_tag_with,
+    )
+
+
+def rebuild_10j_upstream_c2rust(xj_upstream_c2rust: Path):
+    stdout_path = Path(xj_upstream_c2rust, "xj-c2rust-build.log")
+    stderr_path = Path(xj_upstream_c2rust, "xj-c2rust-build.err")
+
+    sez("Building upstream C2Rust...", ctx="(c2rust) ")
+    hermetic.run_command_with_progress(
+        [
+            "cargo",
+            hermetic.tenjin_cargo_toolchain_specifier(),
+            "build",
+            "--locked",
+            "-p",
+            "c2rust",
+            "-p",
+            "c2rust-transpile",
+        ],
+        stdout_file=stdout_path,
+        stderr_file=stderr_path,
+        cwd=xj_upstream_c2rust,
+    )
+    # Ensure a clean checkout for future updates
+    stdout_path.unlink(missing_ok=True)
+    stderr_path.unlink(missing_ok=True)
 
 
 def want_10j_sysroot_extras():
@@ -778,6 +852,7 @@ def provision_10j_llvm_with(version: str, keyname: str):
                 os.symlink(src, dst)
 
     target = hermetic.xj_llvm_root(localdir)
+    target_dir_existed = target.is_dir()
     if target.is_dir():
         shutil.rmtree(target)
 
@@ -800,6 +875,16 @@ def provision_10j_llvm_with(version: str, keyname: str):
             provision_clang_config_files(sysroot_path=xcrun_path)
 
     add_binutils_alike_symbolic_links()
+
+    if target_dir_existed:
+        # We must clean up any executables that dynamically linked against the old LLVM.
+        # Tenjin's c2rust binary will be rebuilt on demand.
+        sez("Cleaning up binaries linked against the prior LLVM version...", ctx="(c2rust) ")
+        hermetic.run_cargo_in(["clean"], repo_root.find_repo_root_dir_Path() / "c2rust")
+
+        # Upstream c2rust is not rebuilt automatically, so we need to do it here.
+        hermetic.run_cargo_in(["clean"], hermetic.xj_upstream_c2rust(localdir))
+        rebuild_10j_upstream_c2rust(hermetic.xj_upstream_c2rust(localdir))
 
     update_10j_llvm_have(keyname)
 

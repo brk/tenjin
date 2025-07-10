@@ -11,7 +11,7 @@ from typing import Callable, Sequence
 import time
 import uuid
 
-from repo_root import find_repo_root_dir_Path
+from repo_root import find_repo_root_dir_Path, localdir
 import ingest
 import ingest_tracking
 import hermetic
@@ -60,6 +60,33 @@ def stub_ingestion_record(codebase: Path, guidance: dict) -> ingest.IngestionRec
         guidance=guidance,
         transformations=[],
     )
+
+
+def run_c2rust(
+    tracker: ingest_tracking.TimingRepo,
+    tag: str,
+    c2rust_bin: Path,
+    compdb: Path,
+    output: Path,
+    flags: list[str],
+):
+    with tracker.tracking(tag, output) as step:
+        cp = hermetic.run(
+            [
+                str(c2rust_bin),
+                "transpile",
+                str(compdb),
+                "-o",
+                str(output),
+                *flags,
+            ],
+            check=True,
+            env_ext={
+                "RUST_BACKTRACE": "1",
+            },
+            capture_output=True,
+        )
+        step.update_sub(cp)
 
 
 def do_translate(
@@ -118,47 +145,44 @@ def do_translate(
         "--translate-const-macros",
         "--reduce-type-annotations",
         "--disable-refactoring",
+    ]
+
+    if c_main_in:
+        c2rust_transpile_flags.extend(["--binary", c_main_in.removesuffix(".c")])
+
+    xj_c2rust_transpile_flags = [
+        *c2rust_transpile_flags,
         "--log-level",
         "INFO",
         "--guidance",
         json.dumps(guidance),
     ]
 
-    if c_main_in:
-        c2rust_transpile_flags.extend(["--binary", c_main_in.removesuffix(".c")])
-
     with tempfile.TemporaryDirectory() as builddirname:
         builddir = Path(builddirname)
         with tracker.tracking("pretranslation", builddir) as _step:
             compdb = perform_pre_translation(builddir)
 
-        c2rust_bin = root / "c2rust" / "target" / "debug" / "c2rust"
-
         # The crate name that c2rust uses is based on the directory stem,
         # so we create a subdirectory with the desired crate name.
         output = resultsdir / cratename
         output.mkdir(parents=True, exist_ok=False)
-        with tracker.tracking("c2rust", output) as step:
-            cp = hermetic.run(
-                [
-                    str(c2rust_bin),
-                    "transpile",
-                    str(compdb),
-                    "-o",
-                    str(output),
-                    *c2rust_transpile_flags,
-                ],
-                check=True,
-                env_ext={
-                    "RUST_BACKTRACE": "1",
-                },
-                capture_output=True,
-            )
-            step.update_sub(cp)
+        # First run the upstream c2rust tool to get a baseline translation.
+        upstream_c2rust_bin = localdir() / "upstream-c2rust" / "target" / "debug" / "c2rust"
+        run_c2rust(
+            tracker, "upstream-c2rust", upstream_c2rust_bin, compdb, output, c2rust_transpile_flags
+        )
+        output = output.rename(output.with_name("vanilla_c2rust"))
 
-    # Normalize the unmodified translation results to end up
-    # in a directory with a project-independent name.
-    output = output.rename(output.with_name("00_out"))
+        # Then run our version, using guidance and preanalysis.
+        output = resultsdir / cratename
+        output.mkdir(parents=True, exist_ok=False)
+        c2rust_bin = root / "c2rust" / "target" / "debug" / "c2rust"
+        run_c2rust(tracker, "xj-c2rust", c2rust_bin, compdb, output, xj_c2rust_transpile_flags)
+
+        # Normalize the unmodified translation results to end up
+        # in a directory with a project-independent name.
+        output = output.rename(output.with_name("00_out"))
 
     # Verify that the initial translation is valid Rust code.
     # If it has errors, we won't be able to run the improvement passes.

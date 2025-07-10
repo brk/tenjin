@@ -32,6 +32,10 @@ def xj_llvm_root(localdir: Path) -> Path:
     return localdir / "xj-llvm"
 
 
+def xj_upstream_c2rust(localdir: Path) -> Path:
+    return localdir / "upstream-c2rust"
+
+
 def mk_env_for(localdir: Path, with_tenjin_deps=True, env_ext=None, **kwargs) -> dict[str, str]:
     if "env" in kwargs:
         env = kwargs["env"]
@@ -55,7 +59,7 @@ def mk_env_for(localdir: Path, with_tenjin_deps=True, env_ext=None, **kwargs) ->
     return env
 
 
-def run_command_with_progress(command, stdout_file, stderr_file, shell=False) -> None:
+def run_command_with_progress(command, stdout_file, stderr_file, cwd=None, shell=False) -> None:
     """
     Run a command, redirecting stdout/stderr to files, and print dots while waiting.
     """
@@ -66,8 +70,8 @@ def run_command_with_progress(command, stdout_file, stderr_file, shell=False) ->
             command,
             stdout=out_f,
             stderr=err_f,
-            bufsize=1,
             shell=shell,
+            cwd=cwd,
             env=mk_env_for(repo_root.localdir(), with_tenjin_deps=True, env_ext=None),
         )
 

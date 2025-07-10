@@ -35,11 +35,16 @@ impl Translation<'_> {
                 .get(&main_id)
                 .expect("Could not find main function in renamer");
 
-            let decl = mk().fn_decl("main", vec![], None, ReturnType::Default);
+            let exitcode = mk().path_ty(vec!["ExitCode"]);
+            let decl = mk().fn_decl(
+                "main",
+                vec![],
+                None,
+                ReturnType::Type(Default::default(), exitcode),
+            );
 
             let main_fn = mk().path_expr(vec![main_fn_name]);
 
-            let exit_fn = mk().abs_path_expr(vec!["std", "process", "exit"]);
             let args_fn = mk().abs_path_expr(vec!["std", "env", "args"]);
             let vars_fn = mk().abs_path_expr(vec!["std", "env", "vars"]);
 
@@ -224,23 +229,25 @@ impl Translation<'_> {
                 .into());
             };
 
+            self.with_cur_file_item_store(|item_store| {
+                item_store.add_use(vec!["std".into(), "process".into()], "ExitCode");
+            });
+
             if let CTypeKind::Void = ret {
                 let call_main = mk().call_expr(main_fn, main_args);
                 let unsafe_block = mk().unsafe_block(vec![mk().expr_stmt(call_main)]);
 
                 stmts.push(mk().expr_stmt(mk().unsafe_block_expr(unsafe_block)));
 
-                let exit_arg = mk().lit_expr(mk().int_lit(0, "i32"));
-                let call_exit = mk().call_expr(exit_fn, vec![exit_arg]);
+                let exit_succ = mk().path_expr(vec!["ExitCode", "SUCCESS"]);
 
-                stmts.push(mk().semi_stmt(call_exit));
+                stmts.push(mk().expr_stmt(exit_succ));
             } else {
-                let call_main = mk().cast_expr(
-                    mk().call_expr(main_fn, main_args),
-                    mk().path_ty(vec!["i32"]),
-                );
+                let main_result_casted =
+                    mk().cast_expr(mk().call_expr(main_fn, main_args), mk().path_ty(vec!["u8"]));
 
-                let call_exit = mk().call_expr(exit_fn, vec![call_main]);
+                let exit_fn = mk().path_expr(vec!["ExitCode", "from"]);
+                let call_exit = mk().call_expr(exit_fn, vec![main_result_casted]);
                 let unsafe_block = mk().unsafe_block(vec![mk().expr_stmt(call_exit)]);
 
                 stmts.push(mk().expr_stmt(mk().unsafe_block_expr(unsafe_block)));
