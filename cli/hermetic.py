@@ -32,6 +32,10 @@ def xj_llvm_root(localdir: Path) -> Path:
     return localdir / "xj-llvm"
 
 
+def xj_upstream_c2rust(localdir: Path) -> Path:
+    return localdir / "upstream-c2rust"
+
+
 def mk_env_for(localdir: Path, with_tenjin_deps=True, env_ext=None, **kwargs) -> dict[str, str]:
     if "env" in kwargs:
         env = kwargs["env"]
