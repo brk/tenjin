@@ -4,6 +4,10 @@ from dataclasses import dataclass
 from dataclasses_json import dataclass_json, DataClassJsonMixin
 
 
+type PreprocessorDefinition = tuple[str, str | None]
+type PerFilePreprocessorDefinitions = dict[str, list[PreprocessorDefinition]]
+
+
 @dataclass_json
 @dataclass
 class TransformationRecord:
@@ -16,18 +20,43 @@ class TransformationRecord:
     stdout_lines: list[str] | None
 
 
+@dataclass_json
 @dataclass
-class IngestionRecord(DataClassJsonMixin):  # mixin for better type inference
-    uuid: uuid.UUID
-    codebase_git_repo_url: str
-    codebase_git_commit: str
-    codebase_relative_path: str
+class IngestedCodebase:
+    git_repo_url: str
+    git_commit: str
+    relative_path: str
+
+
+@dataclass_json
+@dataclass
+class TranslationInputs:
+    codebase: IngestedCodebase
+    host_platform: str
+    per_file_preprocessor_definitions: PerFilePreprocessorDefinitions
     tenjin_git_repo_url: str
     tenjin_git_commit: str
-    ingest_start_unix_timestamp: int
-    ingest_elapsed_ms: int
+    c2rust_baseline_version: str
     guidance: dict
+
+
+@dataclass_json
+@dataclass
+class TranslationResults:
+    translation_start_unix_timestamp: int
+    translation_elapsed_ms: int
+    static_measurement_elapsed_ms: int
     transformations: list[TransformationRecord]
+    c2rust_baseline: dict[str, int | float] | None
+    tenjin_initial: dict[str, int | float] | None
+    tenjin_final: dict[str, int | float] | None
+
+
+@dataclass
+class TranslationRecord(DataClassJsonMixin):  # mixin for better type inference
+    translation_uuid: uuid.UUID
+    inputs: TranslationInputs
+    results: TranslationResults
 
 
 @dataclass_json
@@ -45,9 +74,10 @@ class SubdirectorySnapshot:
     files: list[SubdirectoryFileSnapshot]
 
 
-@dataclass_json
 @dataclass
-class IngestionResultsSnapshot:
+class TranslationResultsSnapshot(DataClassJsonMixin):  # mixin for better type inference
+    for_translation: uuid.UUID
+
     c_versions: list[SubdirectorySnapshot]
     rust_versions: list[SubdirectorySnapshot]
 
@@ -76,7 +106,7 @@ class EndpointEvaluationResults:
 @dataclass_json
 @dataclass
 class EvaluationCoverageResult:
-    for_ingestion: uuid.UUID
+    for_translation: uuid.UUID
 
     fuzzing_time_s: int  # how long did it take to generate the input corpus being used?
     exec_time_s: int  # how long did it take to run the target endpoint against the corpus?
@@ -92,7 +122,7 @@ class EvaluationCoverageResult:
 @dataclass_json
 @dataclass
 class EvaluationResults:
-    for_ingestion: uuid.UUID
+    for_translation: uuid.UUID
     # It may be of interest to measure coverage both of the Rust and C versions.
     coverage_results: list[EvaluationCoverageResult]
     endpoint_evaluations: list[EndpointEvaluationResults]

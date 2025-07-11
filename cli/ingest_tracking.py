@@ -27,8 +27,11 @@ class Interval:
 
 
 class TimingRepo:
-    def __init__(self, ingestion_record: ingest.IngestionRecord | None):
-        self._ingestion_record = ingestion_record
+    def __init__(self, translation_record: ingest.TranslationRecord | None):
+        """The `translation_record` can be None if the codebase being translated
+        is not in a Git repository, which would mean that the translation
+        record cannot be used to replicate translation results."""
+        self._translation_record = translation_record
         self._current_step: ingest.TransformationRecord | None = None
         self._results: list[ingest.TransformationRecord] = []
         self._start_time_ns = time.monotonic_ns()
@@ -68,22 +71,40 @@ class TimingRepo:
             cp.stdout.decode("utf-8").splitlines() if cp.stdout is not None else None
         )
 
+    def set_preprocessor_definitions(self, definitions: ingest.PerFilePreprocessorDefinitions):
+        if self._translation_record:
+            self._translation_record.inputs.per_file_preprocessor_definitions = definitions
+
     def set_exit_code(self, exit_code: int):
         """Set the exit code for the current step"""
         if self._current_step is None:
             raise RuntimeError("No current step to set exit code for")
         self._current_step.exit_code = exit_code
 
-    def finalize(self) -> ingest.IngestionRecord | None:
+    def mb_mut_translation_results(self) -> ingest.TranslationResults | None:
+        if self._translation_record:
+            return self._translation_record.results
+        return None
+
+    def mark_translation_finished(self):
+        if self._translation_record:
+            self._translation_record.results.translation_elapsed_ms = Interval(
+                self._start_time_ns, time.monotonic_ns()
+            ).duration_ms_int()
+
+    def finalize(self) -> ingest.TranslationRecord | None:
         """Get the list of recorded transformation records"""
         if self._current_step is not None:
             raise RuntimeError("Current step is not finalized")
 
-        if self._ingestion_record is None:
+        if self._translation_record is None:
             return None
 
-        self._ingestion_record.transformations = list(self._results)
-        self._ingestion_record.ingest_elapsed_ms = Interval(
-            self._start_time_ns, time.monotonic_ns()
-        ).duration_ms_int()
-        return self._ingestion_record
+        self._translation_record.results.transformations = list(self._results)
+
+        total_elapsed_ms = Interval(self._start_time_ns, time.monotonic_ns()).duration_ms_int()
+        self._translation_record.results.static_measurement_elapsed_ms = (
+            total_elapsed_ms - self._translation_record.results.translation_elapsed_ms
+        )
+
+        return self._translation_record
