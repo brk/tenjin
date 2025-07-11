@@ -28,6 +28,9 @@ class Interval:
 
 class TimingRepo:
     def __init__(self, translation_record: ingest.TranslationRecord | None):
+        """The `translation_record` can be None if the codebase being translated
+        is not in a Git repository, which would mean that the translation
+        record cannot be used to replicate translation results."""
         self._translation_record = translation_record
         self._current_step: ingest.TransformationRecord | None = None
         self._results: list[ingest.TransformationRecord] = []
@@ -67,6 +70,10 @@ class TimingRepo:
         self._current_step.stdout_lines = (
             cp.stdout.decode("utf-8").splitlines() if cp.stdout is not None else None
         )
+
+    def set_preprocessor_definitions(self, definitions: ingest.PerFilePreprocessorDefinitions):
+        if self._translation_record:
+            self._translation_record.inputs.per_file_preprocessor_definitions = definitions
 
     def set_exit_code(self, exit_code: int):
         """Set the exit code for the current step"""

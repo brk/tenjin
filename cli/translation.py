@@ -10,6 +10,7 @@ import graphlib
 from typing import Callable, Sequence
 import time
 import uuid
+import shlex
 from platform import platform
 
 from repo_root import find_repo_root_dir_Path, localdir
@@ -63,6 +64,7 @@ def stub_ingestion_record(codebase: Path, guidance: dict) -> ingest.TranslationR
             tenjin_git_repo_url=tenjin_wcs.origin,
             tenjin_git_commit=tenjin_wcs.commit,
             c2rust_baseline_version=upstream_c2rust or "unknown",
+            per_file_preprocessor_definitions={},
             guidance=guidance,
         ),
         results=ingest.TranslationResults(
@@ -133,6 +135,7 @@ def do_translate(
     tracker = ingest_tracking.TimingRepo(stub_ingestion_record(codebase, guidance))
 
     def perform_pre_translation(builddir: Path) -> Path:
+        """Returns the path to the provided-or-generated compile_commands.json file."""
         provided_compdb = codebase / "compile_commands.json"
         provided_cmakelists = codebase / "CMakeLists.txt"
 
@@ -177,6 +180,14 @@ def do_translate(
         builddir = Path(builddirname)
         with tracker.tracking("pretranslation", builddir) as _step:
             compdb = perform_pre_translation(builddir)
+
+        with open(compdb, "r", encoding="utf-8") as compdb_f:
+            tracker.set_preprocessor_definitions(
+                extract_preprocessor_definitions_from_compile_commands(
+                    json.load(compdb_f),
+                    codebase,
+                ),
+            )
 
         # The crate name that c2rust uses is based on the directory stem,
         # so we create a subdirectory with the desired crate name.
@@ -623,3 +634,37 @@ def run_improvement_passes(
             print()
             print()
             prev = newdir
+
+
+def extract_preprocessor_definitions_from_compile_commands(
+    parsed_compile_commands: list[dict],
+    codebase: Path,
+) -> ingest.PerFilePreprocessorDefinitions:
+    """Extract preprocessor definitions from `compile_commands.json`"""
+    definitions = {}
+    for command_info in parsed_compile_commands:
+        command_str = command_info.get("command", "")
+        # command_info["directory"] is build directory, which can be
+        # located anywhere; it has no relation to the source file path.
+        relative_path = Path(command_info.get("file", "")).relative_to(codebase)
+        defs: list[ingest.PreprocessorDefinition] = []
+        args = shlex.split(command_str)
+        i = 0
+        while i < len(args):
+            arg = args[i]
+            i += 1
+            if arg == "-D" and i + 1 < len(args):
+                # If we find a -D, the next argument is a definition.
+                key, _, value = args[i + 1].partition("=")
+                i += 1  # Skip the value
+                defs.append((key, value))
+            elif arg.startswith("-D") and "=" in arg:
+                # Handle -Dkey=value style definitions.
+                key, _, value = arg[2:].partition("=")
+                defs.append((key, value))
+            if arg.startswith("-D"):
+                # Handle -Dkey style definitions.
+                defs.append((arg[2:], None))  # Add the definition without the -D prefix
+        if defs:
+            definitions[relative_path.as_posix()] = defs
+    return definitions

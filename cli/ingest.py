@@ -4,6 +4,10 @@ from dataclasses import dataclass
 from dataclasses_json import dataclass_json, DataClassJsonMixin
 
 
+type PreprocessorDefinition = tuple[str, str | None]
+type PerFilePreprocessorDefinitions = dict[str, list[PreprocessorDefinition]]
+
+
 @dataclass_json
 @dataclass
 class TransformationRecord:
@@ -29,6 +33,7 @@ class IngestedCodebase:
 class TranslationInputs:
     codebase: IngestedCodebase
     host_platform: str
+    per_file_preprocessor_definitions: PerFilePreprocessorDefinitions
     tenjin_git_repo_url: str
     tenjin_git_commit: str
     c2rust_baseline_version: str
