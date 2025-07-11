@@ -74,9 +74,8 @@ class SubdirectorySnapshot:
     files: list[SubdirectoryFileSnapshot]
 
 
-@dataclass_json
 @dataclass
-class TranslationResultsSnapshot:
+class TranslationResultsSnapshot(DataClassJsonMixin):  # mixin for better type inference
     for_translation: uuid.UUID
 
     c_versions: list[SubdirectorySnapshot]

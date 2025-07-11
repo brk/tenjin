@@ -14,6 +14,7 @@ import uuid
 import shlex
 from platform import platform
 import static_measurements_rust
+import hashlib
 
 from repo_root import find_repo_root_dir_Path, localdir
 import provisioning
@@ -108,6 +109,60 @@ def run_c2rust(
         step.update_sub(cp)
 
 
+def create_subdirectory_snapshot(
+    is_rust: bool,
+    codebase: Path,
+    subdir_label: str,
+) -> ingest.SubdirectorySnapshot:
+    file_snapshots = []
+    # if not dir_path.is_dir():
+    #     return ingest.SubdirectorySnapshot(
+    #         path=dir_path.relative_to(base_path).as_posix(), files=[]
+    #     )
+
+    paths = sorted(list(codebase.rglob("*")))
+    for p in paths:
+        if p.is_file():
+            if p.suffix not in [".json", ".rs", ".c", ".h"]:
+                continue
+            if is_rust and p.relative_to(codebase).parts[0] == "target":
+                continue
+            content_bytes = p.read_bytes()
+            lines = content_bytes.decode("utf-8", errors="replace").splitlines()
+
+            file_snapshots.append(
+                ingest.SubdirectoryFileSnapshot(
+                    path=p.relative_to(codebase).as_posix(),
+                    lines=lines,
+                    sha256=hashlib.sha256(content_bytes).hexdigest(),
+                )
+            )
+    return ingest.SubdirectorySnapshot(
+        path=subdir_label,
+        files=file_snapshots,
+    )
+
+
+def create_translation_snapshot(
+    root: Path, codebase: Path, resultsdir: Path, record: ingest.TranslationRecord
+) -> ingest.TranslationResultsSnapshot:
+    c_snapshot = create_subdirectory_snapshot(False, codebase, "original_codebase")
+
+    rust_snapshots = []
+    for dirname in ["vanilla_c2rust", "00_out", "final"]:
+        subdir = resultsdir / dirname
+        assert subdir.is_dir()
+        rust_snapshots.append(create_subdirectory_snapshot(True, subdir, dirname))
+
+    results_snapshot = ingest.TranslationResultsSnapshot(
+        for_translation=record.translation_uuid,
+        c_versions=[c_snapshot],
+        rust_versions=rust_snapshots,
+    )
+
+    return results_snapshot
+
+
 def do_translate(
     root: Path,
     codebase: Path,
@@ -125,8 +180,7 @@ def do_translate(
     The `resultsdir` directory will contain subdirectories with intermediate
     stages of the resulting translation. Assuming no errors occurred, the final
     translation will be in the `final` subdirectory. The `resultsdir` will also
-    (eventually)
-    have a file called `ingest.json` containing metadata about the translation.
+    have files called `translation_metadata.json` and `translation_snapshot.json`.
     """
 
     try:
@@ -252,8 +306,13 @@ def do_translate(
 
     record = tracker.finalize()
     if record is not None:
-        with (resultsdir / "ingest.json").open("w") as f:
+        with (resultsdir / "translation_metadata.json").open("w") as f:
             f.write(record.to_json(indent=2))
+
+        results_snapshot = create_translation_snapshot(root, codebase, resultsdir, record)
+
+        with (resultsdir / "translation_snapshot.json").open("w") as f:
+            f.write(results_snapshot.to_json(indent=2))
 
 
 def find_highest_numbered_dir(base: Path) -> Path | None:
