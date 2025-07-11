@@ -6,12 +6,14 @@ from subprocess import CompletedProcess
 import re
 import os
 import json
+import pprint
 import graphlib
 from typing import Callable, Sequence
 import time
 import uuid
 import shlex
 from platform import platform
+import static_measurements_rust
 
 from repo_root import find_repo_root_dir_Path, localdir
 import provisioning
@@ -225,6 +227,28 @@ def do_translate(
             highest_out,
             resultsdir / "final",
         )
+
+    tracker.mark_translation_finished()
+    print("Translation finished.")
+    print("Collecting static code quality measurements...")
+    baseline_metrics = static_measurements_rust.static_rust_metrics(resultsdir / "vanilla_c2rust")
+    xj_start_metrics = static_measurements_rust.static_rust_metrics(resultsdir / "00_out")
+    xj_final_metrics = static_measurements_rust.static_rust_metrics(resultsdir / "final")
+
+    print("Baseline from upstream c2rust:")
+    pprint.pprint(baseline_metrics)
+
+    print("Tenjin's initial, un-improved Rust output:")
+    pprint.pprint(xj_start_metrics)
+
+    print("Tenjin's final, improved Rust output:")
+    pprint.pprint(xj_final_metrics)
+
+    mb_mut_res = tracker.mb_mut_translation_results()
+    if mb_mut_res:
+        mb_mut_res.c2rust_baseline = baseline_metrics
+        mb_mut_res.tenjin_initial = xj_start_metrics
+        mb_mut_res.tenjin_final = xj_final_metrics
 
     record = tracker.finalize()
     if record is not None:

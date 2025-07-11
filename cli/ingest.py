@@ -42,22 +42,14 @@ class TranslationInputs:
 
 @dataclass_json
 @dataclass
-class RustCodebaseStaticMeasurement:
-    compilation_errors_count: int
-    unsafe_keywords_count: int
-    lint_warnings_count: int
-
-
-@dataclass_json
-@dataclass
 class TranslationResults:
     translation_start_unix_timestamp: int
     translation_elapsed_ms: int
     static_measurement_elapsed_ms: int
     transformations: list[TransformationRecord]
-    c2rust_baseline: RustCodebaseStaticMeasurement | None
-    tenjin_initial: RustCodebaseStaticMeasurement | None
-    tenjin_final: RustCodebaseStaticMeasurement | None
+    c2rust_baseline: dict[str, int | float] | None
+    tenjin_initial: dict[str, int | float] | None
+    tenjin_final: dict[str, int | float] | None
 
 
 @dataclass

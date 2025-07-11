@@ -81,6 +81,17 @@ class TimingRepo:
             raise RuntimeError("No current step to set exit code for")
         self._current_step.exit_code = exit_code
 
+    def mb_mut_translation_results(self) -> ingest.TranslationResults | None:
+        if self._translation_record:
+            return self._translation_record.results
+        return None
+
+    def mark_translation_finished(self):
+        if self._translation_record:
+            self._translation_record.results.translation_elapsed_ms = Interval(
+                self._start_time_ns, time.monotonic_ns()
+            ).duration_ms_int()
+
     def finalize(self) -> ingest.TranslationRecord | None:
         """Get the list of recorded transformation records"""
         if self._current_step is not None:
@@ -90,7 +101,10 @@ class TimingRepo:
             return None
 
         self._translation_record.results.transformations = list(self._results)
-        self._translation_record.results.translation_elapsed_ms = Interval(
-            self._start_time_ns, time.monotonic_ns()
-        ).duration_ms_int()
+
+        total_elapsed_ms = Interval(self._start_time_ns, time.monotonic_ns()).duration_ms_int()
+        self._translation_record.results.static_measurement_elapsed_ms = (
+            total_elapsed_ms - self._translation_record.results.translation_elapsed_ms
+        )
+
         return self._translation_record
