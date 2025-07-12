@@ -184,7 +184,10 @@ def do_translate(
     """
 
     try:
-        guidance = json.loads(guidance_path_or_literal)
+        if guidance_path_or_literal == "":
+            guidance = {}
+        else:
+            guidance = json.loads(guidance_path_or_literal)
     except json.JSONDecodeError:
         guidance = json.load(Path(guidance_path_or_literal).open("r", encoding="utf-8"))
 
