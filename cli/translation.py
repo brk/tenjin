@@ -629,7 +629,7 @@ def run_trim_allows(root: Path, dir: Path):
             changes_made = rewriter.write()
             if changes_made:
                 cp = hermetic.run_cargo_in(
-                    ["check", "--message-format=json"], cwd=dir, check=True, capture_output=True
+                    ["check", "--message-format=json"], cwd=dir, check=False, capture_output=True
                 )
                 if cp.returncode != 0 or len(cp.stdout) > len(base_cp.stdout):
                     # If the check fails, we restore the original content.
