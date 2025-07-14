@@ -125,6 +125,8 @@ def create_subdirectory_snapshot(
         if p.is_file():
             if p.suffix not in [".json", ".rs", ".c", ".h"]:
                 continue
+            if not is_rust and "CMakeFiles" in p.parts:
+                continue
             if is_rust and p.relative_to(codebase).parts[0] == "target":
                 continue
             content_bytes = p.read_bytes()
