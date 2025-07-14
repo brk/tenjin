@@ -53,6 +53,7 @@ either from `git pull` or `bisect`, the support projects should be kept in sync 
 
 - Extensions: Python/Pylance, rust-analyzer, Ruff
   - Disable the Black formatter extension, if you already have it, as it will produce style mismatches.
+  - Depending on what parts of the codebase are being analyzed, `rust-analyzer` may need access to Tenjin's LLVM library directory. From Tenjin's root directory, invoke `10j exec code .` (see below regarding `10j exec`).
 
 ### 
 
@@ -79,6 +80,7 @@ GNU Make 4.4.1
 
 You can also do something like `10j exec bash` which will give you a shell set up
 with the PATH and other environment variables that `10j` passes to its subcommands.
+To see what that environment is, try `10j exec env`.
 
 ### Exec aliases
 

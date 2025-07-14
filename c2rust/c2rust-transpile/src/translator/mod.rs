@@ -1474,6 +1474,7 @@ mod refactor_format {
         Char,
         Str,
         Float,
+        None(char),
     }
 
     impl CastType {
@@ -1509,6 +1510,10 @@ mod refactor_format {
                     let call = mk().method_call_expr(s, "unwrap", Vec::new());
                     let b = mk().unsafe_().block(vec![mk().expr_stmt(call)]);
                     mk().span(span).block_expr(b)
+                }
+                CastType::None(c) => {
+                    log::debug!("unrecognized format specifier '{}' @ {:?}", c, e.span());
+                    e
                 }
             }
         }
@@ -1559,6 +1564,7 @@ mod refactor_format {
         Char,
         Str,
         Float,
+        Unknown(char),
     }
 
     #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -1599,6 +1605,7 @@ mod refactor_format {
                 ConvType::Char => CastType::Char,
                 ConvType::Str => CastType::Str,
                 ConvType::Float => CastType::Float,
+                ConvType::Unknown(c) => CastType::None(c),
             };
 
             casts.insert(*idx, cast);
@@ -1775,7 +1782,7 @@ mod refactor_format {
                 'c' => ConvType::Char,
                 's' => ConvType::Str,
                 'f' => ConvType::Float,
-                _ => panic!("unrecognized conversion spec `{}`", c),
+                _ => ConvType::Unknown(c),
             }
         }
     }

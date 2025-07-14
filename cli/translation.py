@@ -2,7 +2,7 @@ import enum
 import shutil
 import tempfile
 from pathlib import Path
-from subprocess import CompletedProcess
+from subprocess import CompletedProcess, CalledProcessError
 import re
 import os
 import json
@@ -13,8 +13,9 @@ import time
 import uuid
 import shlex
 from platform import platform
-import static_measurements_rust
 import hashlib
+
+import click
 
 from repo_root import find_repo_root_dir_Path, localdir
 import provisioning
@@ -22,6 +23,7 @@ import ingest
 import ingest_tracking
 import hermetic
 import vcs_helpers
+import static_measurements_rust
 from speculative_rewriters import (
     CondensedSpanGraph,
     ExplicitSpan,
@@ -125,6 +127,8 @@ def create_subdirectory_snapshot(
         if p.is_file():
             if p.suffix not in [".json", ".rs", ".c", ".h"]:
                 continue
+            if not is_rust and "CMakeFiles" in p.parts:
+                continue
             if is_rust and p.relative_to(codebase).parts[0] == "target":
                 continue
             content_bytes = p.read_bytes()
@@ -183,10 +187,7 @@ def do_translate(
     have files called `translation_metadata.json` and `translation_snapshot.json`.
     """
 
-    try:
-        guidance = json.loads(guidance_path_or_literal)
-    except json.JSONDecodeError:
-        guidance = json.load(Path(guidance_path_or_literal).open("r", encoding="utf-8"))
+    guidance = load_and_parse_guidance(guidance_path_or_literal)
 
     tracker = ingest_tracking.TimingRepo(stub_ingestion_record(codebase, guidance))
 
@@ -260,7 +261,14 @@ def do_translate(
         output = resultsdir / cratename
         output.mkdir(parents=True, exist_ok=False)
         c2rust_bin = root / "c2rust" / "target" / "debug" / "c2rust"
-        run_c2rust(tracker, "xj-c2rust", c2rust_bin, compdb, output, xj_c2rust_transpile_flags)
+        try:
+            run_c2rust(tracker, "xj-c2rust", c2rust_bin, compdb, output, xj_c2rust_transpile_flags)
+        except CalledProcessError as e:
+            click.echo("stdout:", err=True)
+            click.echo(e.stdout.decode("utf-8", errors="replace"), err=True)
+            click.echo("stderr:", err=True)
+            click.echo(e.stderr.decode("utf-8", errors="replace"), err=True)
+            raise
 
         # Normalize the unmodified translation results to end up
         # in a directory with a project-independent name.
@@ -313,6 +321,17 @@ def do_translate(
 
         with (resultsdir / "translation_snapshot.json").open("w") as f:
             f.write(results_snapshot.to_json(indent=2))
+
+
+def load_and_parse_guidance(guidance_path_or_literal):
+    try:
+        if guidance_path_or_literal == "":
+            guidance = {}
+        else:
+            guidance = json.loads(guidance_path_or_literal)
+    except json.JSONDecodeError:
+        guidance = json.load(Path(guidance_path_or_literal).open("r", encoding="utf-8"))
+    return guidance
 
 
 def find_highest_numbered_dir(base: Path) -> Path | None:
@@ -626,7 +645,7 @@ def run_trim_allows(root: Path, dir: Path):
             changes_made = rewriter.write()
             if changes_made:
                 cp = hermetic.run_cargo_in(
-                    ["check", "--message-format=json"], cwd=dir, check=True, capture_output=True
+                    ["check", "--message-format=json"], cwd=dir, check=False, capture_output=True
                 )
                 if cp.returncode != 0 or len(cp.stdout) > len(base_cp.stdout):
                     # If the check fails, we restore the original content.
