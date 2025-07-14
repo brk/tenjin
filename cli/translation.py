@@ -2,7 +2,7 @@ import enum
 import shutil
 import tempfile
 from pathlib import Path
-from subprocess import CompletedProcess
+from subprocess import CompletedProcess, CalledProcessError
 import re
 import os
 import json
@@ -13,8 +13,9 @@ import time
 import uuid
 import shlex
 from platform import platform
-import static_measurements_rust
 import hashlib
+
+import click
 
 from repo_root import find_repo_root_dir_Path, localdir
 import provisioning
@@ -22,6 +23,7 @@ import ingest
 import ingest_tracking
 import hermetic
 import vcs_helpers
+import static_measurements_rust
 from speculative_rewriters import (
     CondensedSpanGraph,
     ExplicitSpan,
@@ -259,7 +261,14 @@ def do_translate(
         output = resultsdir / cratename
         output.mkdir(parents=True, exist_ok=False)
         c2rust_bin = root / "c2rust" / "target" / "debug" / "c2rust"
-        run_c2rust(tracker, "xj-c2rust", c2rust_bin, compdb, output, xj_c2rust_transpile_flags)
+        try:
+            run_c2rust(tracker, "xj-c2rust", c2rust_bin, compdb, output, xj_c2rust_transpile_flags)
+        except CalledProcessError as e:
+            click.echo("stdout:", err=True)
+            click.echo(e.stdout.decode("utf-8", errors="replace"), err=True)
+            click.echo("stderr:", err=True)
+            click.echo(e.stderr.decode("utf-8", errors="replace"), err=True)
+            raise
 
         # Normalize the unmodified translation results to end up
         # in a directory with a project-independent name.
