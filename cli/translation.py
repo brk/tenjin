@@ -185,13 +185,7 @@ def do_translate(
     have files called `translation_metadata.json` and `translation_snapshot.json`.
     """
 
-    try:
-        if guidance_path_or_literal == "":
-            guidance = {}
-        else:
-            guidance = json.loads(guidance_path_or_literal)
-    except json.JSONDecodeError:
-        guidance = json.load(Path(guidance_path_or_literal).open("r", encoding="utf-8"))
+    guidance = load_and_parse_guidance(guidance_path_or_literal)
 
     tracker = ingest_tracking.TimingRepo(stub_ingestion_record(codebase, guidance))
 
@@ -318,6 +312,17 @@ def do_translate(
 
         with (resultsdir / "translation_snapshot.json").open("w") as f:
             f.write(results_snapshot.to_json(indent=2))
+
+
+def load_and_parse_guidance(guidance_path_or_literal):
+    try:
+        if guidance_path_or_literal == "":
+            guidance = {}
+        else:
+            guidance = json.loads(guidance_path_or_literal)
+    except json.JSONDecodeError:
+        guidance = json.load(Path(guidance_path_or_literal).open("r", encoding="utf-8"))
+    return guidance
 
 
 def find_highest_numbered_dir(base: Path) -> Path | None:
