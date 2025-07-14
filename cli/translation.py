@@ -91,7 +91,7 @@ def run_c2rust(
     compdb: Path,
     output: Path,
     flags: list[str],
-):
+) -> CompletedProcess:
     with tracker.tracking(tag, output) as step:
         cp = hermetic.run(
             [
@@ -109,6 +109,7 @@ def run_c2rust(
             capture_output=True,
         )
         step.update_sub(cp)
+        return cp
 
 
 def create_subdirectory_snapshot(
@@ -252,7 +253,7 @@ def do_translate(
         output.mkdir(parents=True, exist_ok=False)
         # First run the upstream c2rust tool to get a baseline translation.
         upstream_c2rust_bin = localdir() / "upstream-c2rust" / "target" / "debug" / "c2rust"
-        run_c2rust(
+        _up_cp = run_c2rust(
             tracker, "upstream-c2rust", upstream_c2rust_bin, compdb, output, c2rust_transpile_flags
         )
         output = output.rename(output.with_name("vanilla_c2rust"))
@@ -262,7 +263,9 @@ def do_translate(
         output.mkdir(parents=True, exist_ok=False)
         c2rust_bin = root / "c2rust" / "target" / "debug" / "c2rust"
         try:
-            run_c2rust(tracker, "xj-c2rust", c2rust_bin, compdb, output, xj_c2rust_transpile_flags)
+            _xj_cp = run_c2rust(
+                tracker, "xj-c2rust", c2rust_bin, compdb, output, xj_c2rust_transpile_flags
+            )
         except CalledProcessError as e:
             click.echo("stdout:", err=True)
             click.echo(e.stdout.decode("utf-8", errors="replace"), err=True)
