@@ -279,10 +279,12 @@ def do_translate(
 
     # Verify that the initial translation is valid Rust code.
     # If it has errors, we won't be able to run the improvement passes.
-    hermetic.run_cargo_in(["check"], cwd=output, check=True)
-    hermetic.run_cargo_in(["clean"], cwd=output, check=True)
+    initial_cp = hermetic.run_cargo_in(["check"], cwd=output, check=False)
+    # Ensure that subsequent passes start with a clean slate.
+    hermetic.run_cargo_in(["clean", "-p", cratename], cwd=output, check=True)
 
-    run_improvement_passes(root, output, resultsdir, cratename, tracker)
+    if initial_cp.returncode == 0:
+        run_improvement_passes(root, output, resultsdir, cratename, tracker)
 
     # Find the highest numbered output directory and copy its contents
     # to the final output directory.
