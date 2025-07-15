@@ -680,7 +680,23 @@ def provision_dune(dune_version: str):
     say("Installing Dune; this will take a minute to compile...")
     say("      (subsequent output comes from `opam install dune`)")
     say("----------------------------------------------------------------")
-    hermetic.check_call_opam(["install", f"dune.{dune_version}"])
+
+    try:
+        # Try installing from opam registry first
+        hermetic.check_call_opam(["install", f"dune.{dune_version}"])
+    except subprocess.CalledProcessError:
+        say("Failed to install dune from opam registry.")
+        provision_dune_from_source(dune_version, say)
+
+
+def provision_dune_from_source(dune_version: str, say):
+    """
+    Download and install dune from source when opam registry installation fails.
+    """
+    # GitHub releases URL pattern
+    say("Installing dune from source...")
+    dune_git_url = f"git+https://github.com/ocaml/dune.git#{dune_version}"
+    hermetic.check_call_opam(["pin", "add", "--yes", f"dune.{dune_version}", dune_git_url])
 
 
 def provision_opam_with(version: str, keyname: str):
@@ -1097,6 +1113,8 @@ def extract_tarball(
                 return ".tgz"
             elif filename.endswith(".tar.bz2"):
                 return ".tar.bz2"
+            elif filename.endswith(".tbz"):
+                return ".tbz"
             raise ValueError(f"Unknown tarball suffix for URL: {filename}")
 
         suffix = select_tarball_suffix(tarball_path.name)
