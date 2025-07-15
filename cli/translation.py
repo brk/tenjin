@@ -117,12 +117,26 @@ def create_subdirectory_snapshot(
     codebase: Path,
     subdir_label: str,
 ) -> ingest.SubdirectorySnapshot:
-    file_snapshots = []
-    # if not dir_path.is_dir():
-    #     return ingest.SubdirectorySnapshot(
-    #         path=dir_path.relative_to(base_path).as_posix(), files=[]
-    #     )
+    def snapshot_for_file(p: Path) -> ingest.SubdirectoryFileSnapshot:
+        content_bytes = p.read_bytes()
+        lines = content_bytes.decode("utf-8", errors="replace").splitlines()
+        relpath = p.relative_to(codebase).as_posix()
+        if relpath == ".":
+            relpath = p.name
+        return ingest.SubdirectoryFileSnapshot(
+            path=relpath,
+            lines=lines,
+            sha256=hashlib.sha256(content_bytes).hexdigest(),
+        )
 
+    if codebase.is_file():
+        # If the codebase is a single file, we treat it as a subdirectory with one file.
+        return ingest.SubdirectorySnapshot(
+            path=subdir_label,
+            files=[snapshot_for_file(codebase)],
+        )
+
+    file_snapshots = []
     paths = sorted(list(codebase.rglob("*")))
     for p in paths:
         if p.is_file():
@@ -132,16 +146,7 @@ def create_subdirectory_snapshot(
                 continue
             if is_rust and p.relative_to(codebase).parts[0] == "target":
                 continue
-            content_bytes = p.read_bytes()
-            lines = content_bytes.decode("utf-8", errors="replace").splitlines()
-
-            file_snapshots.append(
-                ingest.SubdirectoryFileSnapshot(
-                    path=p.relative_to(codebase).as_posix(),
-                    lines=lines,
-                    sha256=hashlib.sha256(content_bytes).hexdigest(),
-                )
-            )
+            file_snapshots.append(snapshot_for_file(p))
     return ingest.SubdirectorySnapshot(
         path=subdir_label,
         files=file_snapshots,
@@ -168,6 +173,26 @@ def create_translation_snapshot(
     return results_snapshot
 
 
+def write_synthetic_compile_commands_to(compdb_path: Path, c_file: Path, builddir: Path):
+    """Write a synthetic compile_commands.json file for a single C file."""
+    assert compdb_path.parent.is_dir()
+    outname = c_file.with_suffix(".o").name
+    cc = hermetic.xj_llvm_root(localdir()) / "bin" / "clang"
+    c_file_full_q = shlex.quote(c_file.resolve().as_posix())
+    contents = json.dumps(
+        [
+            {
+                "directory": builddir.as_posix(),
+                "command": f"{cc} -c {c_file_full_q} -o {shlex.quote(outname)}",
+                "file": c_file.resolve().as_posix(),
+                "output": outname,
+            }
+        ],
+        indent=2,
+    )
+    compdb_path.write_text(contents, encoding="utf-8")
+
+
 def do_translate(
     root: Path,
     codebase: Path,
@@ -178,6 +203,8 @@ def do_translate(
 ):
     """
     Translate a codebase from C to Rust.
+
+    The `codebase` argument should be a path to a directory or a single C file.
 
     The input directory should have a pre-generated compile_commands.json file,
     or an easy means of generating one (such as a CMakeLists.txt file).
@@ -213,6 +240,13 @@ def do_translate(
             )
             tracker.update_sub(cp)
             return builddir / "compile_commands.json"
+        elif codebase.is_file() and codebase.suffix == ".c":
+            # If we have a single C file, we can trivially generate a compile_commands.json
+            # with a single entry for it.
+            write_synthetic_compile_commands_to(
+                builddir / "compile_commands.json", codebase, builddir
+            )
+            return builddir / "compile_commands.json"
         else:
             # Otherwise, we assume the compile_commands.json is already present
             return provided_compdb
@@ -222,6 +256,12 @@ def do_translate(
         "--reduce-type-annotations",
         "--disable-refactoring",
     ]
+
+    if not c_main_in and codebase.is_file() and codebase.suffix == ".c":
+        c_main_in = codebase.name
+
+    if not c_main_in and (codebase / "main.c").is_file():
+        c_main_in = "main.c"
 
     if c_main_in:
         c2rust_transpile_flags.extend(["--binary", c_main_in.removesuffix(".c")])
