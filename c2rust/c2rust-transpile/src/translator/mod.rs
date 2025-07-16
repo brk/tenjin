@@ -4376,6 +4376,7 @@ impl<'c> Translation<'c> {
                     Some(expr),
                     Some(kind),
                     opt_field_id,
+                    guided_type,
                 )
             }
 
@@ -5121,6 +5122,7 @@ impl<'c> Translation<'c> {
                             None,
                             None,
                             None,
+                            &None,
                         )
                         .map(Some);
                 } else {
@@ -5270,6 +5272,7 @@ impl<'c> Translation<'c> {
         expr: Option<CExprId>,
         kind: Option<CastKind>,
         opt_field_id: Option<CFieldId>,
+        guided_type: &Option<tenjin::GuidedType>,
     ) -> TranslationResult<WithStmts<Box<Expr>>> {
         let source_ty_kind = &self.ast_context.resolve_type(source_ty.ctype).kind;
         let target_ty_kind = &self.ast_context.resolve_type(ty.ctype).kind;
@@ -5459,6 +5462,12 @@ impl<'c> Translation<'c> {
                 let expr_kind = expr.map(|e| &self.ast_context.index(e).kind);
                 match expr_kind {
                     Some(&CExprKind::Literal(_, CLiteral::String(ref bytes, 1))) if is_const => {
+                        if guided_type.as_ref().is_some_and(|g| g.pretty == "String") {
+                            return Ok(WithStmts::new_val(
+                                self.convert_literal_to_rust_string(&bytes, 1),
+                            ));
+                        }
+
                         let target_ty = self.convert_type(ty.ctype)?;
 
                         let mut bytes = bytes.to_owned();
