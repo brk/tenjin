@@ -1526,6 +1526,18 @@ mod refactor_format {
                             );
                         }
                     }
+
+                    if let Some(cdecl) = x.c_expr_get_var_decl_id(cexpr) {
+                        if x.parsed_guidance
+                            .borrow_mut()
+                            .query_decl_type(x, cdecl)
+                            .is_some_and(|g| g.pretty == "String")
+                        {
+                            // For a variable that's already type String, we can leave it as is.
+                            return e;
+                        }
+                    }
+
                     // CStr::from_ptr(e as *const libc::c_char).to_str().unwrap()
                     let e = mk().cast_expr(e, mk().ptr_ty(mk().path_ty(vec!["libc", "c_char"])));
                     let cs = mk().call_expr(
