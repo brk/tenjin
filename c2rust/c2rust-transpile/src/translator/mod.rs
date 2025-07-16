@@ -4373,7 +4373,7 @@ impl<'c> Translation<'c> {
                     val.prepend_stmts(stmts);
                     val
                 } else {
-                    self.convert_expr(ctx, expr)?
+                    self.convert_expr_guided(ctx, expr, guided_type)?
                 };
                 // Shuffle Vector "function" builtins will add a cast to the output of the
                 // builtin call which is unnecessary for translation purposes
