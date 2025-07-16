@@ -88,6 +88,10 @@ def count_rustc_and_clippy_lints(cargo_project_dir: Path) -> dict[str, int]:
         check=False,
     )
 
+    if res.returncode != 0:
+        rustc_errors += 1
+        print("Error running clippy:\n", res.stderr)
+
     for line in res.stdout.split("\n"):
         if line == "" or line[0] != "{":
             continue
