@@ -129,52 +129,74 @@ impl Translation<'_> {
                 };
                 Ok(WithStmts::new_val(val))
             }
-
             CLiteral::String(ref val, width) => {
-                let mut val = val.to_owned();
-
-                let num_elems = match self.ast_context.resolve_type(ty.ctype).kind {
-                    // Match the literal size to the expected size padding with zeros as needed
-                    CTypeKind::ConstantArray(_elem_ty, size) => size,
-                    // zero terminator
-                    _ => 1,
-                };
-
-                log::trace!(
-                    "TENJIN TRACE: convert string literal, contents len {}, num elems {}",
-                    val.len(),
-                    num_elems
-                );
-
-                // XREF:TENJIN-GUIDANCE-STRAWMAN
-                if let Some(guided_type) = guided_type {
-                    if guided_type == &*mk().path_ty(vec!["String"]) {
-                        // If the type is a String, we need to convert the string literal
-                        // into a Rust String.
-                        let newstr = mk().call_expr(mk().path_expr(vec!["String", "new"]), vec![]);
-                        return Ok(WithStmts::new_val(newstr));
-                    }
-                }
-
-                let size = num_elems * (width as usize);
-                val.resize(size, 0);
-
-                let u8_ty = mk().path_ty(vec!["u8"]);
-                let width_lit = mk().lit_expr(mk().int_unsuffixed_lit(val.len() as u128));
-                let array_ty = mk().array_ty(u8_ty, width_lit);
-                let source_ty = mk().ref_ty(array_ty);
-                let mutbl = if ty.qualifiers.is_const {
-                    Mutability::Immutable
-                } else {
-                    Mutability::Mutable
-                };
-                let target_ty = mk().set_mutbl(mutbl).ref_ty(self.convert_type(ty.ctype)?);
-                let byte_literal = mk().lit_expr(val);
-                let pointer = transmute_expr(source_ty, target_ty, byte_literal);
-                let array = mk().unary_expr(UnOp::Deref(Default::default()), pointer);
-                Ok(WithStmts::new_unsafe_val(array))
+                self.convert_string_literal(ty, &val, width, guided_type)
             }
         }
+    }
+
+    /// Convert a C string literal to a Rust expression via casting a byte array
+    pub fn convert_string_literal(
+        &self,
+        ty: CQualTypeId,
+        val: &Vec<u8>,
+        width: u8,
+        guided_type: &Option<Type>,
+    ) -> TranslationResult<WithStmts<Box<Expr>>> {
+        let mut val = val.to_owned();
+
+        let num_elems = match self.ast_context.resolve_type(ty.ctype).kind {
+            // Match the literal size to the expected size padding with zeros as needed
+            CTypeKind::ConstantArray(_elem_ty, size) => size,
+            // zero terminator
+            _ => 1,
+        };
+
+        log::trace!(
+            "TENJIN TRACE: convert string literal, contents len {}, num elems {}",
+            val.len(),
+            num_elems
+        );
+
+        // XREF:TENJIN-GUIDANCE-STRAWMAN
+        if let Some(guided_type) = guided_type {
+            if guided_type == &*mk().path_ty(vec!["String"]) {
+                return Ok(WithStmts::new_val(
+                    self.convert_literal_to_rust_string(&val, width),
+                ));
+            }
+        }
+
+        let size = num_elems * (width as usize);
+        val.resize(size, 0);
+
+        let u8_ty = mk().path_ty(vec!["u8"]);
+        let width_lit = mk().lit_expr(mk().int_unsuffixed_lit(val.len() as u128));
+        let array_ty = mk().array_ty(u8_ty, width_lit);
+        let source_ty = mk().ref_ty(array_ty);
+        let mutbl = if ty.qualifiers.is_const {
+            Mutability::Immutable
+        } else {
+            Mutability::Mutable
+        };
+        let target_ty = mk().set_mutbl(mutbl).ref_ty(self.convert_type(ty.ctype)?);
+        let byte_literal = mk().lit_expr(val);
+        let pointer = transmute_expr(source_ty, target_ty, byte_literal);
+        let array = mk().unary_expr(UnOp::Deref(Default::default()), pointer);
+        Ok(WithStmts::new_unsafe_val(array))
+    }
+
+    /// Convert a C string literal to a Rust expression of type `String`
+    pub fn convert_literal_to_rust_string(&self, val: &Vec<u8>, width: u8) -> Box<Expr> {
+        mk().call_expr(mk().path_expr(vec!["String", "new"]), vec![])
+    }
+
+    /// Convert a C string literal to a Rust expression of type `&str`
+    pub fn convert_literal_to_rust_str(&self, val: &Vec<u8>, _width: u8) -> Option<Box<Expr>> {
+        if let Ok(s) = std::str::from_utf8(val) {
+            return Some(mk().lit_expr(s));
+        }
+        None
     }
 
     /// Convert an initialization list into an expression. These initialization lists can be
