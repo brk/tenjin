@@ -1368,9 +1368,11 @@ mod refactor_format {
     }
 
     pub fn build_format_macro(
+        x: &Translation,
         macro_name: &str,
         ln_macro_name: &str,
         fmt_args: &[Box<Expr>],
+        cargs: &[CExprId],
         span: Option<Span>,
         fmt_string_span: Option<DisplaySrcSpan>,
     ) -> Macro {
@@ -1449,7 +1451,10 @@ mod refactor_format {
         macro_tts.push(expr_tt(new_fmt_str_expr));
         for (i, arg) in fmt_args[1..].iter().enumerate() {
             if let Some(cast) = casts.get(&i) {
-                let tt = expr_tt(cast.apply(arg.clone(), &fmt_string_span));
+                let cexpr = cargs
+                    .get(i + 1)
+                    .expect("missing CExprId for format argument");
+                let tt = expr_tt(cast.apply(x, arg.clone(), *cexpr, &fmt_string_span));
                 //macro_tts.push(TokenTree::Token(Token {kind: TokenKind::Comma, span: DUMMY_SP}));
                 macro_tts.push(TokenTree::Punct(Punct::new(',', Alone)));
                 macro_tts.push(tt);
@@ -1479,7 +1484,13 @@ mod refactor_format {
     }
 
     impl CastType {
-        fn apply(&self, e: Box<Expr>, fmt_string_span: &Option<DisplaySrcSpan>) -> Box<Expr> {
+        fn apply(
+            &self,
+            x: &Translation,
+            e: Box<Expr>,
+            cexpr: CExprId,
+            fmt_string_span: &Option<DisplaySrcSpan>,
+        ) -> Box<Expr> {
             // Since these get passed to the new print! macros, they need to have spans,
             // and the spans need to match the original expressions
             // FIXME: should all the inner nodes have spans too???
@@ -1500,6 +1511,21 @@ mod refactor_format {
                     mk().span(span).cast_expr(e, mk().ident_ty("char"))
                 }
                 CastType::Str => {
+                    if let Some(CLiteral::String(ref val, width)) =
+                        x.get_string_lit(x.strip_implicit_array_to_pointer_cast(cexpr))
+                    {
+                        // If the expression is a string literal, we'll re-translate it directly,
+                        // without needing to have it start as a byte string.
+                        if let Some(str_expr) = x.convert_literal_to_rust_str(val, *width) {
+                            return str_expr;
+                        } else {
+                            log::warn!(
+                                "failed to convert string literal '{:?}' to Rust str @ {:?}",
+                                val,
+                                fmt_string_span
+                            );
+                        }
+                    }
                     // CStr::from_ptr(e as *const libc::c_char).to_str().unwrap()
                     let e = mk().cast_expr(e, mk().ptr_ty(mk().path_ty(vec!["libc", "c_char"])));
                     let cs = mk().call_expr(
@@ -4991,9 +5017,11 @@ impl<'c> Translation<'c> {
                     .ast_context
                     .display_loc(&self.ast_context[fmt_carg].loc);
                 mk().mac_expr(refactor_format::build_format_macro(
+                    &self,
                     "print",
                     "println",
                     &args,
+                    cargs,
                     None,
                     fmt_string_span,
                 ))
@@ -5003,9 +5031,11 @@ impl<'c> Translation<'c> {
                     .ast_context
                     .display_loc(&self.ast_context[fmt_carg].loc);
                 mk().mac_expr(refactor_format::build_format_macro(
+                    &self,
                     "eprint",
                     "eprintln",
                     &args,
+                    cargs,
                     None,
                     fmt_string_span,
                 ))

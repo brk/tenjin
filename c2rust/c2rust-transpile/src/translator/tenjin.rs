@@ -102,6 +102,15 @@ impl Translation<'_> {
         }
     }
 
+    pub fn strip_implicit_array_to_pointer_cast(&self, expr: CExprId) -> CExprId {
+        let kind = &self.ast_context.index(expr).kind;
+        if let CExprKind::ImplicitCast(_, inner, CastKind::ArrayToPointerDecay, _, _) = kind {
+            *inner
+        } else {
+            expr
+        }
+    }
+
     fn is_integral_lit(&self, expr: CExprId, val: u64) -> bool {
         let kind = &self.ast_context.index(expr).kind;
         if let CExprKind::Literal(_, clit) = kind {
@@ -112,6 +121,18 @@ impl Translation<'_> {
             }
         } else {
             false
+        }
+    }
+
+    pub fn get_string_lit(&self, expr: CExprId) -> Option<&CLiteral> {
+        let kind = &self.ast_context.index(expr).kind;
+        if let CExprKind::Literal(_, clit) = kind {
+            match clit {
+                CLiteral::String(_, _) => Some(clit),
+                _ => None,
+            }
+        } else {
+            None
         }
     }
 
