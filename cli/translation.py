@@ -263,6 +263,9 @@ def do_translate(
     if not c_main_in and (codebase / "main.c").is_file():
         c_main_in = "main.c"
 
+    if not c_main_in and (codebase / "src" / "main.c").is_file():
+        c_main_in = "main.c"
+
     if c_main_in:
         c2rust_transpile_flags.extend(["--binary", c_main_in.removesuffix(".c")])
 
