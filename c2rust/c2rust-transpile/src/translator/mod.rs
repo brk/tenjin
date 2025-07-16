@@ -1326,8 +1326,8 @@ struct ConvertedVariable {
 
 #[allow(clippy::vec_box)]
 enum RecognizedCallForm {
-    PrintfOut(Vec<Box<Expr>>),
-    PrintfErr(Vec<Box<Expr>>),
+    PrintfOut(Vec<Box<Expr>>, CExprId),
+    PrintfErr(Vec<Box<Expr>>, CExprId),
     OtherCall(Box<Expr>, Vec<Box<Expr>>),
 }
 
@@ -1372,6 +1372,7 @@ mod refactor_format {
         ln_macro_name: &str,
         fmt_args: &[Box<Expr>],
         span: Option<Span>,
+        fmt_string_span: Option<DisplaySrcSpan>,
     ) -> Macro {
         let old_fmt_str_expr = fmt_args[0].clone();
 
@@ -1448,7 +1449,7 @@ mod refactor_format {
         macro_tts.push(expr_tt(new_fmt_str_expr));
         for (i, arg) in fmt_args[1..].iter().enumerate() {
             if let Some(cast) = casts.get(&i) {
-                let tt = expr_tt(cast.apply(arg.clone()));
+                let tt = expr_tt(cast.apply(arg.clone(), &fmt_string_span));
                 //macro_tts.push(TokenTree::Token(Token {kind: TokenKind::Comma, span: DUMMY_SP}));
                 macro_tts.push(TokenTree::Punct(Punct::new(',', Alone)));
                 macro_tts.push(tt);
@@ -1478,7 +1479,7 @@ mod refactor_format {
     }
 
     impl CastType {
-        fn apply(&self, e: Box<Expr>) -> Box<Expr> {
+        fn apply(&self, e: Box<Expr>, fmt_string_span: &Option<DisplaySrcSpan>) -> Box<Expr> {
             // Since these get passed to the new print! macros, they need to have spans,
             // and the spans need to match the original expressions
             // FIXME: should all the inner nodes have spans too???
@@ -1512,7 +1513,11 @@ mod refactor_format {
                     mk().span(span).block_expr(b)
                 }
                 CastType::None(c) => {
-                    log::debug!("unrecognized format specifier '{}' @ {:?}", c, e.span());
+                    log::warn!(
+                        "unrecognized format specifier '{}' within format string @ {:?}",
+                        c,
+                        fmt_string_span
+                    );
                     e
                 }
             }
@@ -4778,7 +4783,7 @@ impl<'c> Translation<'c> {
             Some(converted) => Ok(converted),
             None => {
                 let args = self.convert_exprs(ctx.used(), cargs)?;
-                let res = args.map(|args| self.convert_call_with_args(func, args));
+                let res = args.map(|args| self.convert_call_with_args(func, args, cargs));
                 Ok(res)
             }
         }
@@ -4947,21 +4952,26 @@ impl<'c> Translation<'c> {
     }
 
     #[allow(clippy::vec_box)]
-    fn call_form_cases(&self, func: Box<Expr>, args: Vec<Box<Expr>>) -> RecognizedCallForm {
+    fn call_form_cases(
+        &self,
+        func: Box<Expr>,
+        args: Vec<Box<Expr>>,
+        cargs: &[CExprId],
+    ) -> RecognizedCallForm {
         if tenjin::expr_is_ident(&func, "printf") {
-            return RecognizedCallForm::PrintfOut(args);
+            return RecognizedCallForm::PrintfOut(args, cargs[0]);
         }
 
         if tenjin::expr_is_ident(&func, "fprintf") && !args.is_empty() {
             if tenjin::expr_is_ident(&args[0], "stderr")
                 || tenjin::expr_is_ident(&args[0], "__stderrp")
             {
-                return RecognizedCallForm::PrintfErr(args[1..].to_vec());
+                return RecognizedCallForm::PrintfErr(args[1..].to_vec(), cargs[1]);
             }
             if tenjin::expr_is_ident(&args[0], "stdout")
                 || tenjin::expr_is_ident(&args[0], "__stdoutp")
             {
-                return RecognizedCallForm::PrintfOut(args[1..].to_vec());
+                return RecognizedCallForm::PrintfOut(args[1..].to_vec(), cargs[1]);
             }
         }
 
@@ -4969,14 +4979,37 @@ impl<'c> Translation<'c> {
     }
 
     #[allow(clippy::vec_box)]
-    fn convert_call_with_args(&self, func: Box<Expr>, args: Vec<Box<Expr>>) -> Box<Expr> {
-        match self.call_form_cases(func, args) {
-            RecognizedCallForm::PrintfOut(args) => mk().mac_expr(
-                refactor_format::build_format_macro("print", "println", &args, None),
-            ),
-            RecognizedCallForm::PrintfErr(args) => mk().mac_expr(
-                refactor_format::build_format_macro("eprint", "eprintln", &args, None),
-            ),
+    fn convert_call_with_args(
+        &self,
+        func: Box<Expr>,
+        args: Vec<Box<Expr>>,
+        cargs: &[CExprId],
+    ) -> Box<Expr> {
+        match self.call_form_cases(func, args, cargs) {
+            RecognizedCallForm::PrintfOut(args, fmt_carg) => {
+                let fmt_string_span = self
+                    .ast_context
+                    .display_loc(&self.ast_context[fmt_carg].loc);
+                mk().mac_expr(refactor_format::build_format_macro(
+                    "print",
+                    "println",
+                    &args,
+                    None,
+                    fmt_string_span,
+                ))
+            }
+            RecognizedCallForm::PrintfErr(args, fmt_carg) => {
+                let fmt_string_span = self
+                    .ast_context
+                    .display_loc(&self.ast_context[fmt_carg].loc);
+                mk().mac_expr(refactor_format::build_format_macro(
+                    "eprint",
+                    "eprintln",
+                    &args,
+                    None,
+                    fmt_string_span,
+                ))
+            }
             RecognizedCallForm::OtherCall(func, args) => mk().call_expr(func, args),
         }
     }

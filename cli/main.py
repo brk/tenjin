@@ -166,7 +166,6 @@ def cli():
 )
 @click.option(
     "--c_main_in",
-    default="main.c",
     help="Relative path to the main C file to translate.",
 )
 @click.option(
