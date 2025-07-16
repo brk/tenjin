@@ -310,7 +310,7 @@ fn parse_tenjin_decl_specifier(s: &str) -> Option<TenjinDeclSpecifier> {
 struct ParsedGuidance {
     pub _raw: serde_json::Value,
     pub declspecs_of_type: HashMap<syn::Type, Vec<TenjinDeclSpecifier>>,
-    pub type_of_decl: HashMap<CDeclId, syn::Type>,
+    pub type_of_decl: HashMap<CDeclId, tenjin::GuidedType>,
     decls_without_type_guidance: HashSet<CDeclId>,
 }
 
@@ -319,7 +319,7 @@ impl ParsedGuidance {
         let mut declspecs_of_type: HashMap<syn::Type, Vec<TenjinDeclSpecifier>> = HashMap::new();
 
         // These map will be filled in lazily.
-        let type_of_decl: HashMap<CDeclId, syn::Type> = HashMap::new();
+        let type_of_decl: HashMap<CDeclId, tenjin::GuidedType> = HashMap::new();
 
         if let Some(decls) = raw.get("vars_of_type") {
             if let Some(decls) = decls.as_object() {
@@ -350,7 +350,7 @@ impl ParsedGuidance {
         }
     }
 
-    pub fn query_decl_type(&mut self, t: &Translation, id: CDeclId) -> Option<syn::Type> {
+    pub fn query_decl_type(&mut self, t: &Translation, id: CDeclId) -> Option<tenjin::GuidedType> {
         if self.decls_without_type_guidance.contains(&id) {
             return None;
         }
@@ -362,7 +362,7 @@ impl ParsedGuidance {
             .iter()
             .find(|(_, declspecs)| declspecs.iter().any(|d| t.matches_decl(d, id)))
         {
-            let ty = decl.0.clone();
+            let ty = tenjin::GuidedType::from_type(decl.0.clone());
             self.type_of_decl.insert(id, ty.clone());
             Some(ty)
         } else {
@@ -2992,7 +2992,7 @@ impl<'c> Translation<'c> {
 
                 // XREF:TENJIN-GUIDANCE-STRAWMAN
                 let (ty_override, mut_override) =
-                    if guided_type == Some(syn::parse_str("String").unwrap()) {
+                    if guided_type.is_some_and(|g| g.pretty == "String") {
                         (
                             Some(mk().path_ty(vec!["String"])),
                             Some(Mutability::Immutable),
@@ -3589,6 +3589,10 @@ impl<'c> Translation<'c> {
                     let mut decl_and_assign = stmts;
                     decl_and_assign.push(mk().local_stmt(Box::new(local)));
 
+                    log::trace!(
+                        "TENJIN TRACE: returning local_stmt / DeclStmtInfo line {}",
+                        line!(),
+                    );
                     Ok(cfg::DeclStmtInfo::new(
                         vec![mk().local_stmt(Box::new(local_mut))],
                         assign_stmts,
@@ -3725,7 +3729,7 @@ impl<'c> Translation<'c> {
         ctx: ExprContext,
         initializer: Option<CExprId>,
         typ: CQualTypeId,
-        guided_type: &Option<Type>,
+        guided_type: &Option<tenjin::GuidedType>,
     ) -> TranslationResult<ConvertedVariable> {
         let init = match initializer {
             Some(x) => self.convert_expr_guided(ctx.used(), x, guided_type),
@@ -4076,7 +4080,7 @@ impl<'c> Translation<'c> {
         &self,
         mut ctx: ExprContext,
         expr_id: CExprId,
-        guided_type: &Option<Type>,
+        guided_type: &Option<tenjin::GuidedType>,
     ) -> TranslationResult<WithStmts<Box<Expr>>> {
         let Located {
             loc: src_loc,
@@ -4857,7 +4861,7 @@ impl<'c> Translation<'c> {
                     .parsed_guidance
                     .borrow_mut()
                     .query_decl_type(self, var_cdecl_id)
-                    == Some(syn::parse_str("String").unwrap())
+                    .is_some_and(|g| g.pretty == "String")
                 {
                     let expr = self.convert_expr(ctx.used(), cargs[0])?;
                     let len_call = mk().method_call_expr(expr.to_expr(), "len", vec![]);
@@ -4890,15 +4894,15 @@ impl<'c> Translation<'c> {
                     .parsed_guidance
                     .borrow_mut()
                     .query_decl_type(self, var_cdecl_id_foo)
-                    == Some(syn::parse_str("String").unwrap())
+                    .is_some_and(|g| g.pretty == "String")
                     && self
                         .parsed_guidance
                         .borrow_mut()
                         .query_decl_type(self, var_cdecl_id_bar)
-                        == Some(syn::parse_str("String").unwrap())
+                        .is_some_and(|g| g.pretty == "String")
                 {
                     self.with_cur_file_item_store(|item_store| {
-                        item_store.add_item_str_once(   "fn strcspn_str(s: &str, chars: &str) -> usize { s.chars().take_while(|c| !chars.contains(*c)).count() }",
+                        item_store.add_item_str_once("fn strcspn_str(s: &str, chars: &str) -> usize { s.chars().take_while(|c| !chars.contains(*c)).count() }",
                         );
                     });
 
@@ -4952,7 +4956,7 @@ impl<'c> Translation<'c> {
                     .parsed_guidance
                     .borrow_mut()
                     .query_decl_type(self, var_cdecl_id)
-                    == Some(syn::parse_str("String").unwrap())
+                    .is_some_and(|g| g.pretty == "String")
                 {
                     self.with_cur_file_item_store(|item_store| {
                         item_store.add_use(vec!["std".into(), "io".into()], "Read");
@@ -5485,7 +5489,7 @@ impl<'c> Translation<'c> {
                                     .parsed_guidance
                                     .borrow_mut()
                                     .query_decl_type(self, *decl_id)
-                                    == Some(syn::parse_str("String").unwrap())
+                                    .is_some_and(|g| g.pretty == "String")
                                 {
                                     return Ok(val);
                                 }

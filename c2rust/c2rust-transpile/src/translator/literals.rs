@@ -77,7 +77,7 @@ impl Translation<'_> {
         _ctx: ExprContext,
         ty: CQualTypeId,
         kind: &CLiteral,
-        guided_type: &Option<Type>,
+        guided_type: &Option<tenjin::GuidedType>,
     ) -> TranslationResult<WithStmts<Box<Expr>>> {
         match *kind {
             CLiteral::Integer(val, base) => Ok(WithStmts::new_val(self.mk_int_lit(ty, val, base)?)),
@@ -141,7 +141,7 @@ impl Translation<'_> {
         ty: CQualTypeId,
         val: &Vec<u8>,
         width: u8,
-        guided_type: &Option<Type>,
+        guided_type: &Option<tenjin::GuidedType>,
     ) -> TranslationResult<WithStmts<Box<Expr>>> {
         let mut val = val.to_owned();
 
@@ -159,12 +159,10 @@ impl Translation<'_> {
         );
 
         // XREF:TENJIN-GUIDANCE-STRAWMAN
-        if let Some(guided_type) = guided_type {
-            if guided_type == &*mk().path_ty(vec!["String"]) {
-                return Ok(WithStmts::new_val(
-                    self.convert_literal_to_rust_string(&val, width),
-                ));
-            }
+        if guided_type.as_ref().is_some_and(|g| g.pretty == "String") {
+            return Ok(WithStmts::new_val(
+                self.convert_literal_to_rust_string(&val, width),
+            ));
         }
 
         let size = num_elems * (width as usize);
