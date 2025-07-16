@@ -4389,6 +4389,7 @@ impl<'c> Translation<'c> {
                     Some(kind),
                     opt_field_id,
                     guided_type,
+                    is_explicit,
                 )
             }
 
@@ -5135,6 +5136,7 @@ impl<'c> Translation<'c> {
                             None,
                             None,
                             &None,
+                            false,
                         )
                         .map(Some);
                 } else {
@@ -5285,6 +5287,7 @@ impl<'c> Translation<'c> {
         kind: Option<CastKind>,
         opt_field_id: Option<CFieldId>,
         guided_type: &Option<tenjin::GuidedType>,
+        is_explicit: bool,
     ) -> TranslationResult<WithStmts<Box<Expr>>> {
         let source_ty_kind = &self.ast_context.resolve_type(source_ty.ctype).kind;
         let target_ty_kind = &self.ast_context.resolve_type(ty.ctype).kind;
@@ -5378,6 +5381,9 @@ impl<'c> Translation<'c> {
                         )))
                     } else {
                         // Normal case
+                        if !is_explicit && guided_type.is_some() {
+                            return Ok(WithStmts::new_val(x));
+                        }
                         let target_ty = self.convert_type(ty.ctype)?;
                         Ok(WithStmts::new_val(mk().cast_expr(x, target_ty)))
                     }
