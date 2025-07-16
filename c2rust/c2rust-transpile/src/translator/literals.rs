@@ -186,7 +186,22 @@ impl Translation<'_> {
 
     /// Convert a C string literal to a Rust expression of type `String`
     pub fn convert_literal_to_rust_string(&self, val: &Vec<u8>, width: u8) -> Box<Expr> {
-        mk().call_expr(mk().path_expr(vec!["String", "new"]), vec![])
+        log::trace!(
+            "TENJIN TRACE: converting C string literal to Rust String via String::from/new() for: {:?}",
+            val
+        );
+        if val.is_empty() {
+            return mk().call_expr(mk().path_expr(vec!["String", "new"]), vec![]);
+        }
+        if let Some(s) = self.convert_literal_to_rust_str(val, width) {
+            mk().call_expr(mk().path_expr(vec!["String", "from"]), vec![s])
+        } else {
+            log::warn!("TENJIN failed to losslessly convert C string literal to Rust str");
+            mk().call_expr(
+                mk().path_expr(vec!["String", "new"]),
+                vec![mk().lit_expr(String::from_utf8_lossy(val).as_ref())],
+            )
+        }
     }
 
     /// Convert a C string literal to a Rust expression of type `&str`
