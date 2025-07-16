@@ -224,7 +224,7 @@ impl Translation<'_> {
                         .borrow_mut()
                         .query_decl_type(self, base_decl_id);
 
-                    if !guided_type.is_some_and(|g| g.pretty == "String") {
+                    if guided_type.is_none_or(|g| g.pretty != "String") {
                         log::trace!("target variable not guided to be of type String");
                         return Ok(None);
                     }

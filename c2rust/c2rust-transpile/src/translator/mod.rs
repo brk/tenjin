@@ -5035,7 +5035,7 @@ impl<'c> Translation<'c> {
                     .ast_context
                     .display_loc(&self.ast_context[fmt_carg].loc);
                 mk().mac_expr(refactor_format::build_format_macro(
-                    &self,
+                    self,
                     "print",
                     "println",
                     &args,
@@ -5049,7 +5049,7 @@ impl<'c> Translation<'c> {
                     .ast_context
                     .display_loc(&self.ast_context[fmt_carg].loc);
                 mk().mac_expr(refactor_format::build_format_macro(
-                    &self,
+                    self,
                     "eprint",
                     "eprintln",
                     &args,
@@ -5482,7 +5482,7 @@ impl<'c> Translation<'c> {
                     Some(&CExprKind::Literal(_, CLiteral::String(ref bytes, 1))) if is_const => {
                         if guided_type.as_ref().is_some_and(|g| g.pretty == "String") {
                             return Ok(WithStmts::new_val(
-                                self.convert_literal_to_rust_string(&bytes, 1),
+                                self.convert_literal_to_rust_string(bytes, 1),
                             ));
                         }
 

@@ -130,7 +130,7 @@ impl Translation<'_> {
                 Ok(WithStmts::new_val(val))
             }
             CLiteral::String(ref val, width) => {
-                self.convert_string_literal(ty, &val, width, guided_type)
+                self.convert_string_literal(ty, val, width, guided_type)
             }
         }
     }
@@ -205,7 +205,7 @@ impl Translation<'_> {
     }
 
     /// Convert a C string literal to a Rust expression of type `&str`
-    pub fn convert_literal_to_rust_str(&self, val: &Vec<u8>, _width: u8) -> Option<Box<Expr>> {
+    pub fn convert_literal_to_rust_str(&self, val: &[u8], _width: u8) -> Option<Box<Expr>> {
         if let Ok(s) = std::str::from_utf8(val) {
             return Some(mk().lit_expr(s));
         }
