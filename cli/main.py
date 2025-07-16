@@ -278,6 +278,10 @@ if __name__ == "__main__":
     # Here, `--` separator ensures that opam passes the `--help` argument to
     # dune. But Click unconditionally consumes the double-dash, resulting in
     # the `--help` argument being unhelpfully consumed by opam itself.
+    #
+    # Some of the commands below have placeholder `click` commands above,
+    # so that `10j --help` will show them in the help text. The ones without
+    # placeholders are effectively "hidden" commands.
     if len(sys.argv) > 1:
         if sys.argv[1] == "opam":
             sys.exit(hermetic.run_opam(sys.argv[2:]).returncode)
@@ -289,5 +293,15 @@ if __name__ == "__main__":
             sys.exit(hermetic.run_shell_cmd(sys.argv[2:]).returncode)
         if sys.argv[1] == "true":
             sys.exit(0)
+        if sys.argv[1] == "clang-ast-xml":
+            sys.exit(
+                hermetic.run_shell_cmd([
+                    "clang",
+                    "-fsyntax-only",
+                    "-Xclang",
+                    "-ast-dump",
+                    *sys.argv[2:],
+                ]).returncode
+            )
 
     cli()
