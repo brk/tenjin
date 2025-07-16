@@ -144,6 +144,12 @@ def tenjin_cargo_toolchain_specifier() -> str:
     return os.environ.get("XJ_CARGO_TOOLCHAIN_SPEC", "+" + spec)
 
 
+def tenjin_multitool_toolchain_specifier() -> str:
+    spec = provisioning.HAVE.query("10j-xj-improve-multitool-toolchain")
+    assert spec is not None, "10j-xj-improve-multitool-toolchain should have been provisioned!"
+    return os.environ.get("XJ_CARGO_TOOLCHAIN_SPEC", "+" + spec)
+
+
 def get_toolchain_for_directory(dir: Path) -> str:
     try:
         with open(dir / "rust-toolchain.toml", "rb") as f:
