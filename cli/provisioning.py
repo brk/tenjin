@@ -424,6 +424,7 @@ def provision_10j_rust_toolchain_with(version: str, keyname: str):
     cmd = ["rustup", "component", "add", "--toolchain", toolchain_spec, "clippy", "rustfmt"]
     if toolchain_spec.startswith("nightly"):
         cmd.append("rustc-dev")
+        cmd.append("llvm-tools")
 
     say(f"Installing Rust toolchain {toolchain_spec}...")
     log_path = repo_root.localdir() / "rustup.log.txt"
