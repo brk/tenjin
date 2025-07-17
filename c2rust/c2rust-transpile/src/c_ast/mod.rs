@@ -2101,6 +2101,7 @@ mod tests {
             let a = locs[i];
             for j in 0..n {
                 let b = locs[j];
+                #[allow(clippy::needless_range_loop)]
                 for k in 0..n {
                     let c = locs[k];
                     let ab = ctx.compare_src_locs(&a, &b);

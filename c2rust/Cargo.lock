@@ -356,6 +356,7 @@ dependencies = [
  "log-reroute",
  "pathdiff",
  "proc-macro2",
+ "quote",
  "regex",
  "serde",
  "serde_bencode",

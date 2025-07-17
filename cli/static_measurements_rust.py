@@ -3,6 +3,8 @@ import subprocess
 
 from pathlib import Path
 
+import hermetic
+
 
 def static_rust_metrics(cargo_project_dir: Path) -> dict[str, int | float]:
     """Compute static measurements for a Rust project."""
@@ -74,7 +76,7 @@ def count_rustc_and_clippy_lints(cargo_project_dir: Path) -> dict[str, int]:
     res = subprocess.run(
         [
             "cargo",
-            "+nightly-2025-03-03",
+            hermetic.tenjin_multitool_toolchain_specifier(),
             "clippy",
             "--message-format",
             "json",
@@ -85,6 +87,10 @@ def count_rustc_and_clippy_lints(cargo_project_dir: Path) -> dict[str, int]:
         capture_output=True,
         check=False,
     )
+
+    if res.returncode != 0:
+        rustc_errors += 1
+        print("Error running clippy:\n", res.stderr)
 
     for line in res.stdout.split("\n"):
         if line == "" or line[0] != "{":

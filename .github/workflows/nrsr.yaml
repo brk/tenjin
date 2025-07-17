@@ -2,7 +2,7 @@ name: not-rocket-science
 
 on:
   push:
-    branches: [ "test/**", "test-**", "push-**" ]
+    branches: [ "test/**", "test-**" ]
   pull_request:
     branches: [ "main" ]
 
@@ -30,7 +30,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        runner: [ubuntu-latest, macos-13, macos-14, macos-15]
+        runner: [ubuntu-latest, macos-14, macos-15]
     runs-on: ${{ matrix.runner }}
     env:
       C2RUST_TESTED_CRATES: "-p c2rust -p c2rust-transpile -p c2rust-ast-printer"

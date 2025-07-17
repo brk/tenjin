@@ -63,6 +63,23 @@ def do_check_rs():
     do_check_rs_fmt()
 
 
+def do_fix_rs():
+    root = repo_root.find_repo_root_dir_Path()
+    hermetic.run_cargo_in(
+        """clippy --locked -p c2rust -p c2rust-transpile
+                --fix --allow-no-vcs
+                -- -Aclippy::needless_lifetimes -Aclippy::uninlined_format_args""".split(),
+        cwd=root / "c2rust",
+        check=True,
+    )
+    hermetic.run_cargo_in(
+        "clippy --locked --fix --allow-no-vcs --workspace".split(),
+        cwd=root / "xj-improve-multitool",
+        check=True,
+    )
+    do_fmt_rs()
+
+
 def do_build_rs(root: Path):
     hermetic.run_cargo_in(
         "build --locked -p c2rust -p c2rust-transpile".split(),
@@ -192,6 +209,12 @@ def check_py():
 
 
 @cli.command()
+def fix_rs():
+    """Run `cargo clippy --fix` (+ flags) on our Rust code"""
+    do_fix_rs()
+
+
+@cli.command()
 def fmt_rs():
     do_fmt_rs()
 
@@ -278,6 +301,10 @@ if __name__ == "__main__":
     # Here, `--` separator ensures that opam passes the `--help` argument to
     # dune. But Click unconditionally consumes the double-dash, resulting in
     # the `--help` argument being unhelpfully consumed by opam itself.
+    #
+    # Some of the commands below have placeholder `click` commands above,
+    # so that `10j --help` will show them in the help text. The ones without
+    # placeholders are effectively "hidden" commands.
     if len(sys.argv) > 1:
         if sys.argv[1] == "opam":
             sys.exit(hermetic.run_opam(sys.argv[2:]).returncode)
@@ -289,5 +316,15 @@ if __name__ == "__main__":
             sys.exit(hermetic.run_shell_cmd(sys.argv[2:]).returncode)
         if sys.argv[1] == "true":
             sys.exit(0)
+        if sys.argv[1] == "clang-ast-xml":
+            sys.exit(
+                hermetic.run_shell_cmd([
+                    "clang",
+                    "-fsyntax-only",
+                    "-Xclang",
+                    "-ast-dump",
+                    *sys.argv[2:],
+                ]).returncode
+            )
 
     cli()

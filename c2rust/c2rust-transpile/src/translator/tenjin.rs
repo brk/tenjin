@@ -1,6 +1,33 @@
 use super::*;
 use syn::{Expr, Path, Type};
 
+#[derive(Debug, Clone)]
+pub struct GuidedType {
+    pub pretty: String,
+    pub parsed: Type,
+}
+
+impl GuidedType {
+    pub fn new(pretty: String, parsed: Type) -> Self {
+        GuidedType { pretty, parsed }
+    }
+
+    pub fn from_str(pretty: &str) -> Self {
+        let parsed = syn::parse_str(pretty).expect("Failed to parse type from string");
+        GuidedType {
+            pretty: pretty.to_string(),
+            parsed,
+        }
+    }
+
+    pub fn from_type(ty: Type) -> Self {
+        GuidedType {
+            pretty: quote::quote!(#ty).to_string(),
+            parsed: ty,
+        }
+    }
+}
+
 pub fn is_known_size_1_type(ty: &Type) -> bool {
     match ty {
         Type::Path(path) => path.qself.is_none() && is_known_size_1_path(&path.path),
@@ -102,6 +129,15 @@ impl Translation<'_> {
         }
     }
 
+    pub fn strip_implicit_array_to_pointer_cast(&self, expr: CExprId) -> CExprId {
+        let kind = &self.ast_context.index(expr).kind;
+        if let CExprKind::ImplicitCast(_, inner, CastKind::ArrayToPointerDecay, _, _) = kind {
+            *inner
+        } else {
+            expr
+        }
+    }
+
     fn is_integral_lit(&self, expr: CExprId, val: u64) -> bool {
         let kind = &self.ast_context.index(expr).kind;
         if let CExprKind::Literal(_, clit) = kind {
@@ -112,6 +148,18 @@ impl Translation<'_> {
             }
         } else {
             false
+        }
+    }
+
+    pub fn get_string_lit(&self, expr: CExprId) -> Option<&CLiteral> {
+        let kind = &self.ast_context.index(expr).kind;
+        if let CExprKind::Literal(_, clit) = kind {
+            match clit {
+                CLiteral::String(_, _) => Some(clit),
+                _ => None,
+            }
+        } else {
+            None
         }
     }
 
@@ -176,7 +224,7 @@ impl Translation<'_> {
                         .borrow_mut()
                         .query_decl_type(self, base_decl_id);
 
-                    if guided_type != Some(syn::parse_str("String").unwrap()) {
+                    if guided_type.is_none_or(|g| g.pretty != "String") {
                         log::trace!("target variable not guided to be of type String");
                         return Ok(None);
                     }

@@ -310,7 +310,7 @@ fn parse_tenjin_decl_specifier(s: &str) -> Option<TenjinDeclSpecifier> {
 struct ParsedGuidance {
     pub _raw: serde_json::Value,
     pub declspecs_of_type: HashMap<syn::Type, Vec<TenjinDeclSpecifier>>,
-    pub type_of_decl: HashMap<CDeclId, syn::Type>,
+    pub type_of_decl: HashMap<CDeclId, tenjin::GuidedType>,
     decls_without_type_guidance: HashSet<CDeclId>,
 }
 
@@ -319,7 +319,7 @@ impl ParsedGuidance {
         let mut declspecs_of_type: HashMap<syn::Type, Vec<TenjinDeclSpecifier>> = HashMap::new();
 
         // These map will be filled in lazily.
-        let type_of_decl: HashMap<CDeclId, syn::Type> = HashMap::new();
+        let type_of_decl: HashMap<CDeclId, tenjin::GuidedType> = HashMap::new();
 
         if let Some(decls) = raw.get("vars_of_type") {
             if let Some(decls) = decls.as_object() {
@@ -350,7 +350,7 @@ impl ParsedGuidance {
         }
     }
 
-    pub fn query_decl_type(&mut self, t: &Translation, id: CDeclId) -> Option<syn::Type> {
+    pub fn query_decl_type(&mut self, t: &Translation, id: CDeclId) -> Option<tenjin::GuidedType> {
         if self.decls_without_type_guidance.contains(&id) {
             return None;
         }
@@ -362,7 +362,7 @@ impl ParsedGuidance {
             .iter()
             .find(|(_, declspecs)| declspecs.iter().any(|d| t.matches_decl(d, id)))
         {
-            let ty = decl.0.clone();
+            let ty = tenjin::GuidedType::from_type(decl.0.clone());
             self.type_of_decl.insert(id, ty.clone());
             Some(ty)
         } else {
@@ -1368,9 +1368,11 @@ mod refactor_format {
     }
 
     pub fn build_format_macro(
+        x: &Translation,
         macro_name: &str,
         ln_macro_name: &str,
         fmt_args: &[Box<Expr>],
+        cargs: &[CExprId],
         span: Option<Span>,
         fmt_string_span: Option<DisplaySrcSpan>,
     ) -> Macro {
@@ -1449,7 +1451,10 @@ mod refactor_format {
         macro_tts.push(expr_tt(new_fmt_str_expr));
         for (i, arg) in fmt_args[1..].iter().enumerate() {
             if let Some(cast) = casts.get(&i) {
-                let tt = expr_tt(cast.apply(arg.clone(), &fmt_string_span));
+                let cexpr = cargs
+                    .get(i + 1)
+                    .expect("missing CExprId for format argument");
+                let tt = expr_tt(cast.apply(x, arg.clone(), *cexpr, &fmt_string_span));
                 //macro_tts.push(TokenTree::Token(Token {kind: TokenKind::Comma, span: DUMMY_SP}));
                 macro_tts.push(TokenTree::Punct(Punct::new(',', Alone)));
                 macro_tts.push(tt);
@@ -1479,7 +1484,13 @@ mod refactor_format {
     }
 
     impl CastType {
-        fn apply(&self, e: Box<Expr>, fmt_string_span: &Option<DisplaySrcSpan>) -> Box<Expr> {
+        fn apply(
+            &self,
+            x: &Translation,
+            e: Box<Expr>,
+            cexpr: CExprId,
+            fmt_string_span: &Option<DisplaySrcSpan>,
+        ) -> Box<Expr> {
             // Since these get passed to the new print! macros, they need to have spans,
             // and the spans need to match the original expressions
             // FIXME: should all the inner nodes have spans too???
@@ -1500,6 +1511,33 @@ mod refactor_format {
                     mk().span(span).cast_expr(e, mk().ident_ty("char"))
                 }
                 CastType::Str => {
+                    if let Some(CLiteral::String(ref val, width)) =
+                        x.get_string_lit(x.strip_implicit_array_to_pointer_cast(cexpr))
+                    {
+                        // If the expression is a string literal, we'll re-translate it directly,
+                        // without needing to have it start as a byte string.
+                        if let Some(str_expr) = x.convert_literal_to_rust_str(val, *width) {
+                            return str_expr;
+                        } else {
+                            log::warn!(
+                                "failed to convert string literal '{:?}' to Rust str @ {:?}",
+                                val,
+                                fmt_string_span
+                            );
+                        }
+                    }
+
+                    if let Some(cdecl) = x.c_expr_get_var_decl_id(cexpr) {
+                        if x.parsed_guidance
+                            .borrow_mut()
+                            .query_decl_type(x, cdecl)
+                            .is_some_and(|g| g.pretty == "String")
+                        {
+                            // For a variable that's already type String, we can leave it as is.
+                            return e;
+                        }
+                    }
+
                     // CStr::from_ptr(e as *const libc::c_char).to_str().unwrap()
                     let e = mk().cast_expr(e, mk().ptr_ty(mk().path_ty(vec!["libc", "c_char"])));
                     let cs = mk().call_expr(
@@ -2966,7 +3004,7 @@ impl<'c> Translation<'c> {
 
                 // XREF:TENJIN-GUIDANCE-STRAWMAN
                 let (ty_override, mut_override) =
-                    if guided_type == Some(syn::parse_str("String").unwrap()) {
+                    if guided_type.is_some_and(|g| g.pretty == "String") {
                         (
                             Some(mk().path_ty(vec!["String"])),
                             Some(Mutability::Immutable),
@@ -3563,6 +3601,10 @@ impl<'c> Translation<'c> {
                     let mut decl_and_assign = stmts;
                     decl_and_assign.push(mk().local_stmt(Box::new(local)));
 
+                    log::trace!(
+                        "TENJIN TRACE: returning local_stmt / DeclStmtInfo line {}",
+                        line!(),
+                    );
                     Ok(cfg::DeclStmtInfo::new(
                         vec![mk().local_stmt(Box::new(local_mut))],
                         assign_stmts,
@@ -3699,7 +3741,7 @@ impl<'c> Translation<'c> {
         ctx: ExprContext,
         initializer: Option<CExprId>,
         typ: CQualTypeId,
-        guided_type: &Option<Type>,
+        guided_type: &Option<tenjin::GuidedType>,
     ) -> TranslationResult<ConvertedVariable> {
         let init = match initializer {
             Some(x) => self.convert_expr_guided(ctx.used(), x, guided_type),
@@ -4050,7 +4092,7 @@ impl<'c> Translation<'c> {
         &self,
         mut ctx: ExprContext,
         expr_id: CExprId,
-        guided_type: &Option<Type>,
+        guided_type: &Option<tenjin::GuidedType>,
     ) -> TranslationResult<WithStmts<Box<Expr>>> {
         let Located {
             loc: src_loc,
@@ -4331,7 +4373,7 @@ impl<'c> Translation<'c> {
                     val.prepend_stmts(stmts);
                     val
                 } else {
-                    self.convert_expr(ctx, expr)?
+                    self.convert_expr_guided(ctx, expr, guided_type)?
                 };
                 // Shuffle Vector "function" builtins will add a cast to the output of the
                 // builtin call which is unnecessary for translation purposes
@@ -4346,6 +4388,8 @@ impl<'c> Translation<'c> {
                     Some(expr),
                     Some(kind),
                     opt_field_id,
+                    guided_type,
+                    is_explicit,
                 )
             }
 
@@ -4831,7 +4875,7 @@ impl<'c> Translation<'c> {
                     .parsed_guidance
                     .borrow_mut()
                     .query_decl_type(self, var_cdecl_id)
-                    == Some(syn::parse_str("String").unwrap())
+                    .is_some_and(|g| g.pretty == "String")
                 {
                     let expr = self.convert_expr(ctx.used(), cargs[0])?;
                     let len_call = mk().method_call_expr(expr.to_expr(), "len", vec![]);
@@ -4864,15 +4908,15 @@ impl<'c> Translation<'c> {
                     .parsed_guidance
                     .borrow_mut()
                     .query_decl_type(self, var_cdecl_id_foo)
-                    == Some(syn::parse_str("String").unwrap())
+                    .is_some_and(|g| g.pretty == "String")
                     && self
                         .parsed_guidance
                         .borrow_mut()
                         .query_decl_type(self, var_cdecl_id_bar)
-                        == Some(syn::parse_str("String").unwrap())
+                        .is_some_and(|g| g.pretty == "String")
                 {
                     self.with_cur_file_item_store(|item_store| {
-                        item_store.add_item_str_once(   "fn strcspn_str(s: &str, chars: &str) -> usize { s.chars().take_while(|c| !chars.contains(*c)).count() }",
+                        item_store.add_item_str_once("fn strcspn_str(s: &str, chars: &str) -> usize { s.chars().take_while(|c| !chars.contains(*c)).count() }",
                         );
                     });
 
@@ -4926,7 +4970,7 @@ impl<'c> Translation<'c> {
                     .parsed_guidance
                     .borrow_mut()
                     .query_decl_type(self, var_cdecl_id)
-                    == Some(syn::parse_str("String").unwrap())
+                    .is_some_and(|g| g.pretty == "String")
                 {
                     self.with_cur_file_item_store(|item_store| {
                         item_store.add_use(vec!["std".into(), "io".into()], "Read");
@@ -4991,9 +5035,11 @@ impl<'c> Translation<'c> {
                     .ast_context
                     .display_loc(&self.ast_context[fmt_carg].loc);
                 mk().mac_expr(refactor_format::build_format_macro(
+                    self,
                     "print",
                     "println",
                     &args,
+                    cargs,
                     None,
                     fmt_string_span,
                 ))
@@ -5003,9 +5049,11 @@ impl<'c> Translation<'c> {
                     .ast_context
                     .display_loc(&self.ast_context[fmt_carg].loc);
                 mk().mac_expr(refactor_format::build_format_macro(
+                    self,
                     "eprint",
                     "eprintln",
                     &args,
+                    cargs,
                     None,
                     fmt_string_span,
                 ))
@@ -5087,6 +5135,8 @@ impl<'c> Translation<'c> {
                             None,
                             None,
                             None,
+                            &None,
+                            false,
                         )
                         .map(Some);
                 } else {
@@ -5236,6 +5286,8 @@ impl<'c> Translation<'c> {
         expr: Option<CExprId>,
         kind: Option<CastKind>,
         opt_field_id: Option<CFieldId>,
+        guided_type: &Option<tenjin::GuidedType>,
+        is_explicit: bool,
     ) -> TranslationResult<WithStmts<Box<Expr>>> {
         let source_ty_kind = &self.ast_context.resolve_type(source_ty.ctype).kind;
         let target_ty_kind = &self.ast_context.resolve_type(ty.ctype).kind;
@@ -5329,6 +5381,9 @@ impl<'c> Translation<'c> {
                         )))
                     } else {
                         // Normal case
+                        if !is_explicit && guided_type.is_some() {
+                            return Ok(WithStmts::new_val(x));
+                        }
                         let target_ty = self.convert_type(ty.ctype)?;
                         Ok(WithStmts::new_val(mk().cast_expr(x, target_ty)))
                     }
@@ -5425,6 +5480,12 @@ impl<'c> Translation<'c> {
                 let expr_kind = expr.map(|e| &self.ast_context.index(e).kind);
                 match expr_kind {
                     Some(&CExprKind::Literal(_, CLiteral::String(ref bytes, 1))) if is_const => {
+                        if guided_type.as_ref().is_some_and(|g| g.pretty == "String") {
+                            return Ok(WithStmts::new_val(
+                                self.convert_literal_to_rust_string(bytes, 1),
+                            ));
+                        }
+
                         let target_ty = self.convert_type(ty.ctype)?;
 
                         let mut bytes = bytes.to_owned();
@@ -5455,7 +5516,7 @@ impl<'c> Translation<'c> {
                                     .parsed_guidance
                                     .borrow_mut()
                                     .query_decl_type(self, *decl_id)
-                                    == Some(syn::parse_str("String").unwrap())
+                                    .is_some_and(|g| g.pretty == "String")
                                 {
                                     return Ok(val);
                                 }

@@ -263,6 +263,9 @@ def do_translate(
     if not c_main_in and (codebase / "main.c").is_file():
         c_main_in = "main.c"
 
+    if not c_main_in and (codebase / "src" / "main.c").is_file():
+        c_main_in = "main.c"
+
     if c_main_in:
         c2rust_transpile_flags.extend(["--binary", c_main_in.removesuffix(".c")])
 
@@ -321,9 +324,9 @@ def do_translate(
     # If it has errors, we won't be able to run the improvement passes.
     initial_cp = hermetic.run_cargo_in(["check"], cwd=output, check=False)
     # Ensure that subsequent passes start with a clean slate.
-    hermetic.run_cargo_in(["clean", "-p", cratename], cwd=output, check=True)
+    clean_p_cp = hermetic.run_cargo_in(["clean", "-p", cratename], cwd=output, check=False)
 
-    if initial_cp.returncode == 0:
+    if initial_cp.returncode == 0 and clean_p_cp.returncode == 0:
         run_improvement_passes(root, output, resultsdir, cratename, tracker)
 
     # Find the highest numbered output directory and copy its contents
