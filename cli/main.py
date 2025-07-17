@@ -63,6 +63,23 @@ def do_check_rs():
     do_check_rs_fmt()
 
 
+def do_fix_rs():
+    root = repo_root.find_repo_root_dir_Path()
+    hermetic.run_cargo_in(
+        """clippy --locked -p c2rust -p c2rust-transpile
+                --fix --allow-no-vcs
+                -- -Aclippy::needless_lifetimes -Aclippy::uninlined_format_args""".split(),
+        cwd=root / "c2rust",
+        check=True,
+    )
+    hermetic.run_cargo_in(
+        "clippy --locked --fix --allow-no-vcs --workspace".split(),
+        cwd=root / "xj-improve-multitool",
+        check=True,
+    )
+    do_fmt_rs()
+
+
 def do_build_rs(root: Path):
     hermetic.run_cargo_in(
         "build --locked -p c2rust -p c2rust-transpile".split(),
@@ -189,6 +206,12 @@ def check_py():
         do_check_py()
     except subprocess.CalledProcessError:
         sys.exit(1)
+
+
+@cli.command()
+def fix_rs():
+    """Run `cargo clippy --fix` (+ flags) on our Rust code"""
+    do_fix_rs()
 
 
 @cli.command()
