@@ -60,7 +60,7 @@ def mk_env_for(localdir: Path, with_tenjin_deps=True, env_ext=None, **kwargs) ->
 
 
 def run_command_with_progress(
-    command, stdout_file, stderr_file, cwd=None, shell=False, suppress_helper=False
+    command, stdout_file, stderr_file, cwd=None, shell=False, env_ext=None, suppress_helper=False
 ) -> None:
     """
     Run a command, redirecting stdout/stderr to files, and print dots while waiting.
@@ -75,7 +75,7 @@ def run_command_with_progress(
             stderr=err_f,
             shell=shell,
             cwd=cwd,
-            env=mk_env_for(repo_root.localdir(), with_tenjin_deps=True, env_ext=None),
+            env=mk_env_for(repo_root.localdir(), with_tenjin_deps=True, env_ext=env_ext),
         )
 
         while proc.poll() is None:
