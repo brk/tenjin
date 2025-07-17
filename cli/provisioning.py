@@ -121,14 +121,13 @@ def provision_desires(wanted: str):
     assert HAVE.provisioning_depth == 0, "Re-provisioning loop detected!"
     HAVE.provisioning_depth += 1
 
-    # Rust first because unlike the other stuff, we won't provision rustup
-    # ourselves, so if it's not available, we should inform the user ASAP.
+    # Unlike the other stuff, we won't provision rustup ourselves,
+    # so if it's not available, we should inform the user ASAP.
     if wanted in ("all", "rust"):
-        require_rust_stuff()
+        require_rustup()
 
-    # Wanting it all but lacking dune means this is a first-time install,
-    # so give a heads up about what it will involve.
-    if wanted == "all" and HAVE.query("10j-dune") is None:
+    # First time install?
+    if wanted == "all" and HAVE.query("10j-reference-c2rust-tag") is None:
 
         def say(msg: str):
             sez(msg, ctx="(overall-provisioning) ")
@@ -145,6 +144,9 @@ def provision_desires(wanted: str):
     want_10j_sysroot_extras()
     want_cmake()
 
+    if wanted in ("all", "rust"):
+        want_10j_rust_toolchains()
+
     if wanted in ("all", "ocaml"):
         want_dune()
 
@@ -154,7 +156,7 @@ def provision_desires(wanted: str):
     HAVE.provisioning_depth -= 1
 
 
-def require_rust_stuff():
+def require_rustup():
     def say(msg: str):
         sez(msg, ctx="(rust) ")
 
@@ -205,8 +207,6 @@ def require_rust_stuff():
         complain_about_tool_then_die("cargo")
     if shutil.which("rustup") is None:
         complain_about_tool_then_die("rustup")
-
-    want_10j_rust_toolchains()
 
     # At this point, the installer's job is done.
     if Path(rustup_installer).is_file():
