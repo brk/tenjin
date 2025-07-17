@@ -731,6 +731,9 @@ def provision_cmake_with(version: str, keyname: str):
                 )
 
     cmake_dir = HAVE.localdir / "cmake"
+    if cmake_dir.is_dir():
+        # Clear prior installation to avoid tarball unpacking conflicts
+        shutil.rmtree(cmake_dir)
     download_and_extract_tarball(mk_url(), cmake_dir, ctx="(cmake) ")
 
     if platform.system() == "Darwin" and (cmake_dir / "CMake.app").is_dir():
