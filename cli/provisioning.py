@@ -410,6 +410,9 @@ def provision_10j_rust_toolchain_with(version: str, keyname: str):
     assert not toolchain_spec.startswith("+")
     assert not toolchain_spec == "stable"
 
+    def say(msg: str):
+        sez(msg, ctx="(rust) ")
+
     # The rustup.sh installer defaults to the 'default' profile, which provides clippy,
     # but the 'minimal' profile (as used in official Rust docker images) does not.
     # The easiest thing to do is unconditionally add the clippy component.
@@ -417,8 +420,11 @@ def provision_10j_rust_toolchain_with(version: str, keyname: str):
     cmd = ["rustup", "component", "add", "--toolchain", toolchain_spec, "clippy", "rustfmt"]
     if toolchain_spec.startswith("nightly"):
         cmd.append("rustc-dev")
-    # Using subprocess instead of hermetic avoid reprovisioning loops.
-    subprocess.check_call(cmd)
+
+    say(f"Installing Rust toolchain {toolchain_spec}...")
+    hermetic.run_command_with_progress(
+        cmd, stdout_file="rustup.log.txt", stderr_file="rustup.log.err", suppress_helper=True
+    )
 
     HAVE.note_we_have(keyname, specifier=toolchain_spec)
 
