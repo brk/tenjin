@@ -59,6 +59,10 @@ class TrackingWhatWeHave:
         if had != now:
             self.save()
 
+    def note_removed(self, name: str):
+        del self._have[name]
+        self.save()
+
     def query(self, name: str) -> str | None:
         return self._have.get(name)
 
@@ -141,7 +145,6 @@ def provision_desires(wanted: str):
     # projects in those languages) end up needing them.
     want_10j_deps()
     want_10j_llvm()
-    want_10j_sysroot_extras()
     want_cmake()
 
     if wanted in ("all", "rust"):
@@ -254,6 +257,7 @@ def want_ocaml():
 
 def want_10j_llvm():
     want("10j-llvm", "llvm", "LLVM", provision_10j_llvm_with)
+    want_10j_sysroot_extras()
 
 
 def want_10j_rust_toolchains():
@@ -887,6 +891,8 @@ def provision_10j_llvm_with(version: str, keyname: str):
     target_dir_existed = target.is_dir()
     if target.is_dir():
         shutil.rmtree(target)
+        # In nuking the prior LLVM installation, we also lose the prior sysroot's extras.
+        HAVE.note_removed("10j-bullseye-sysroot-extras")
 
     tarball_name = f"LLVM-{llvm_version}-{platform.system()}-{machine_normalized()}.tar.xz"
     if Path(tarball_name).is_file():
