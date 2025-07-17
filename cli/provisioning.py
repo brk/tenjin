@@ -157,7 +157,9 @@ def provision_desires(wanted: str):
 
 
 def require_rustup():
-    def say(msg: str):
+    def say(msg: str, fg: str = ""):
+        if fg:
+            msg = click.style(msg, fg=fg)
         sez(msg, ctx="(rust) ")
 
     rustup_installer = "rustup-installer.sh"
@@ -176,14 +178,14 @@ def require_rustup():
     # and also things like `rustup +nightly component add miri`, always) must be
     # run via 10j.
     def complain_about_tool_then_die(tool: str):
-        say(f"{tool} is not installed, or is not available on your $PATH")
+        say(f"{tool} is not installed, or is not available on your $PATH", fg="red")
         match platform.system():
             case "Linux":
-                say("Please install Rust using rustup (or via your package manager).")
+                say("Please install Rust using rustup (or via your package manager).", fg="red")
             case "Darwin":
-                say("Please install Rust using rustup (or via Homebrew).")
+                say("Please install Rust using rustup (or via Homebrew).", fg="red")
             case sysname:
-                say(f"Tenjin doesn't yet support {sysname}, sorry!")
+                say(f"Tenjin doesn't yet support {sysname}, sorry!", fg="red")
                 sys.exit(1)
 
         download("https://sh.rustup.rs", Path(rustup_installer))
@@ -192,13 +194,13 @@ def require_rustup():
         say("")
         say("For your convenience, I've downloaded the rustup installer script,")
         say("so you can just run")
-        say(f"                  ./{rustup_installer}")
+        say(f"                  ./{rustup_installer}", fg="blue")
         say("")
         say("It will interactively prompt you for the details of how and where")
         say("to install Rust. Most people choose the default options.")
         say("")
-        say("Once you can run `cargo --version`,")
-        say("   please re-run `10j provision`")
+        say("Once you can run `cargo --version`,", fg="green")
+        say("   please re-run `10j provision`", fg="green")
         sys.exit(1)
 
     if shutil.which("rustc") is None:
