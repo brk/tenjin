@@ -422,8 +422,9 @@ def provision_10j_rust_toolchain_with(version: str, keyname: str):
         cmd.append("rustc-dev")
 
     say(f"Installing Rust toolchain {toolchain_spec}...")
+    log_path = repo_root.localdir() / "rustup.log.txt"
     hermetic.run_command_with_progress(
-        cmd, stdout_file="rustup.log.txt", stderr_file="rustup.log.err", suppress_helper=True
+        cmd, stdout_file=log_path, stderr_file=log_path.with_suffix(".err"), suppress_helper=True
     )
 
     HAVE.note_we_have(keyname, specifier=toolchain_spec)
