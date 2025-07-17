@@ -62,20 +62,9 @@ EOF
   "$LOCALDIR/uv" --version
 fi
 
-# Now that we can reliably run Python,
-# continue provisioning steps in a nicer language than shell.
-wanted="${1:-all}"
-if [ "$wanted" = "uv" ]; then
-    # CI will provision pieces piecemeal in parallel jobs.
-    sez 'Please run `10j provision` to continue setup.'
-else
-    $REPOROOT/cli/10j provision "$wanted"
-fi
-
-
 if ! command -v 10j >/dev/null 2>&1
 then
-  sez "Last thing, adding  $REPOROOT/cli  to your PATH"
-  sez "             will let you run 10j from anywhere."
+  sez "Adding  $REPOROOT/cli  to your PATH"
+  sez "         will let you run 10j from anywhere."
 fi
 sez "Cheers!"
