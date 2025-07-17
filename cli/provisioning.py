@@ -121,6 +121,8 @@ def provision_desires(wanted: str):
     It is designed to be very fast when nothing needs updating:
     `provision_desires("all")` takes less than 1 ms.
     """
+    if wanted == "uv":
+        return
     assert wanted in "all llvm ocaml rust".split()
     assert HAVE.provisioning_depth == 0, "Re-provisioning loop detected!"
     HAVE.provisioning_depth += 1
