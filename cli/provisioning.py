@@ -921,8 +921,10 @@ def provision_10j_llvm_with(version: str, keyname: str):
         hermetic.run_cargo_in(["clean"], repo_root.find_repo_root_dir_Path() / "c2rust")
 
         # Upstream c2rust is not rebuilt automatically, so we need to do it here.
-        hermetic.run_cargo_in(["clean"], hermetic.xj_upstream_c2rust(localdir))
-        rebuild_10j_upstream_c2rust(hermetic.xj_upstream_c2rust(localdir))
+        upstream_c2rust_dir = hermetic.xj_upstream_c2rust(localdir)
+        if upstream_c2rust_dir.is_dir():
+            hermetic.run_cargo_in(["clean"], upstream_c2rust_dir)
+            rebuild_10j_upstream_c2rust(upstream_c2rust_dir)
 
     update_10j_llvm_have(keyname, version, llvm_version)
 
