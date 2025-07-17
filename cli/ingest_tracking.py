@@ -98,6 +98,7 @@ class TimingRepo:
             raise RuntimeError("Current step is not finalized")
 
         if self._translation_record is None:
+            print("WARNING: No translation record to finalize -- maybe due to no Git repository?")
             return None
 
         self._translation_record.results.transformations = list(self._results)

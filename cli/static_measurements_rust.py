@@ -1,5 +1,4 @@
 import json
-import subprocess
 
 from pathlib import Path
 
@@ -73,9 +72,8 @@ def count_rustc_and_clippy_lints(cargo_project_dir: Path) -> dict[str, int]:
     rustc_warnings = 0
     clippy_lints = 0
 
-    res = subprocess.run(
+    res = hermetic.run_cargo_in(
         [
-            "cargo",
             hermetic.tenjin_multitool_toolchain_specifier(),
             "clippy",
             "--message-format",
@@ -83,6 +81,7 @@ def count_rustc_and_clippy_lints(cargo_project_dir: Path) -> dict[str, int]:
             "--manifest-path",
             (cargo_project_dir / "Cargo.toml").resolve().as_posix(),
         ],
+        cwd=cargo_project_dir,
         text=True,
         capture_output=True,
         check=False,

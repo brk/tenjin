@@ -59,6 +59,10 @@ class TrackingWhatWeHave:
         if had != now:
             self.save()
 
+    def note_removed(self, name: str):
+        del self._have[name]
+        self.save()
+
     def query(self, name: str) -> str | None:
         return self._have.get(name)
 
@@ -117,18 +121,19 @@ def provision_desires(wanted: str):
     It is designed to be very fast when nothing needs updating:
     `provision_desires("all")` takes less than 1 ms.
     """
+    if wanted == "uv":
+        return
     assert wanted in "all llvm ocaml rust".split()
     assert HAVE.provisioning_depth == 0, "Re-provisioning loop detected!"
     HAVE.provisioning_depth += 1
 
-    # Rust first because unlike the other stuff, we won't provision rustup
-    # ourselves, so if it's not available, we should inform the user ASAP.
+    # Unlike the other stuff, we won't provision rustup ourselves,
+    # so if it's not available, we should inform the user ASAP.
     if wanted in ("all", "rust"):
-        require_rust_stuff()
+        require_rustup()
 
-    # Wanting it all but lacking dune means this is a first-time install,
-    # so give a heads up about what it will involve.
-    if wanted == "all" and HAVE.query("10j-dune") is None:
+    # First time install?
+    if wanted == "all" and HAVE.query("10j-reference-c2rust-tag") is None:
 
         def say(msg: str):
             sez(msg, ctx="(overall-provisioning) ")
@@ -142,8 +147,10 @@ def provision_desires(wanted: str):
     # projects in those languages) end up needing them.
     want_10j_deps()
     want_10j_llvm()
-    want_10j_sysroot_extras()
     want_cmake()
+
+    if wanted in ("all", "rust"):
+        want_10j_rust_toolchains()
 
     if wanted in ("all", "ocaml"):
         want_dune()
@@ -154,8 +161,10 @@ def provision_desires(wanted: str):
     HAVE.provisioning_depth -= 1
 
 
-def require_rust_stuff():
-    def say(msg: str):
+def require_rustup():
+    def say(msg: str, fg: str = ""):
+        if fg:
+            msg = click.style(msg, fg=fg)
         sez(msg, ctx="(rust) ")
 
     rustup_installer = "rustup-installer.sh"
@@ -174,14 +183,14 @@ def require_rust_stuff():
     # and also things like `rustup +nightly component add miri`, always) must be
     # run via 10j.
     def complain_about_tool_then_die(tool: str):
-        say(f"{tool} is not installed, or is not available on your $PATH")
+        say(f"{tool} is not installed, or is not available on your $PATH", fg="red")
         match platform.system():
             case "Linux":
                 say("Please install Rust using rustup (or via your package manager).")
             case "Darwin":
                 say("Please install Rust using rustup (or via Homebrew).")
             case sysname:
-                say(f"Tenjin doesn't yet support {sysname}, sorry!")
+                say(f"Tenjin doesn't yet support {sysname}, sorry!", fg="red")
                 sys.exit(1)
 
         download("https://sh.rustup.rs", Path(rustup_installer))
@@ -190,13 +199,12 @@ def require_rust_stuff():
         say("")
         say("For your convenience, I've downloaded the rustup installer script,")
         say("so you can just run")
-        say(f"                  ./{rustup_installer}")
+        say(click.style(f"                  ./{rustup_installer}", bold=True))
         say("")
         say("It will interactively prompt you for the details of how and where")
         say("to install Rust. Most people choose the default options.")
         say("")
-        say("Once you can run `cargo --version`,")
-        say("   please re-run `10j provision`")
+        say("Once you can run `cargo --version`, please re-run provisioning", fg="green")
         sys.exit(1)
 
     if shutil.which("rustc") is None:
@@ -205,8 +213,6 @@ def require_rust_stuff():
         complain_about_tool_then_die("cargo")
     if shutil.which("rustup") is None:
         complain_about_tool_then_die("rustup")
-
-    want_10j_rust_toolchains()
 
     # At this point, the installer's job is done.
     if Path(rustup_installer).is_file():
@@ -252,6 +258,7 @@ def want_ocaml():
 
 def want_10j_llvm():
     want("10j-llvm", "llvm", "LLVM", provision_10j_llvm_with)
+    want_10j_sysroot_extras()
 
 
 def want_10j_rust_toolchains():
@@ -325,6 +332,7 @@ def rebuild_10j_upstream_c2rust(xj_upstream_c2rust: Path):
         stdout_file=stdout_path,
         stderr_file=stderr_path,
         cwd=xj_upstream_c2rust,
+        env_ext=hermetic.cargo_encoded_rustflags_env_ext(),
     )
     # Ensure a clean checkout for future updates
     stdout_path.unlink(missing_ok=True)
@@ -408,6 +416,9 @@ def provision_10j_rust_toolchain_with(version: str, keyname: str):
     assert not toolchain_spec.startswith("+")
     assert not toolchain_spec == "stable"
 
+    def say(msg: str):
+        sez(msg, ctx="(rust) ")
+
     # The rustup.sh installer defaults to the 'default' profile, which provides clippy,
     # but the 'minimal' profile (as used in official Rust docker images) does not.
     # The easiest thing to do is unconditionally add the clippy component.
@@ -415,8 +426,13 @@ def provision_10j_rust_toolchain_with(version: str, keyname: str):
     cmd = ["rustup", "component", "add", "--toolchain", toolchain_spec, "clippy", "rustfmt"]
     if toolchain_spec.startswith("nightly"):
         cmd.append("rustc-dev")
-    # Using subprocess instead of hermetic avoid reprovisioning loops.
-    subprocess.check_call(cmd)
+        cmd.append("llvm-tools")
+
+    say(f"Installing Rust toolchain {toolchain_spec}...")
+    log_path = repo_root.localdir() / "rustup.log.txt"
+    hermetic.run_command_with_progress(
+        cmd, stdout_file=log_path, stderr_file=log_path.with_suffix(".err"), suppress_helper=True
+    )
 
     HAVE.note_we_have(keyname, specifier=toolchain_spec)
 
@@ -641,7 +657,7 @@ def infer_bwrap_sandboxing_args() -> list[str]:
 
         subprocess.check_call([bwrap_path, "--ro-bind", Path.cwd(), "/", "/tru"])
     except subprocess.CalledProcessError as e:
-        print(f"Compilation failed with error: {e.stderr}")
+        print(f"TENJIN: Compilation of bubblewrap-able static binary failed with error: {e.stderr}")
     except Exception as e:
         print(f"An error occurred: {str(e)}")
     else:
@@ -731,6 +747,9 @@ def provision_cmake_with(version: str, keyname: str):
                 )
 
     cmake_dir = HAVE.localdir / "cmake"
+    if cmake_dir.is_dir():
+        # Clear prior installation to avoid tarball unpacking conflicts
+        shutil.rmtree(cmake_dir)
     download_and_extract_tarball(mk_url(), cmake_dir, ctx="(cmake) ")
 
     if platform.system() == "Darwin" and (cmake_dir / "CMake.app").is_dir():
@@ -874,6 +893,8 @@ def provision_10j_llvm_with(version: str, keyname: str):
     target_dir_existed = target.is_dir()
     if target.is_dir():
         shutil.rmtree(target)
+        # In nuking the prior LLVM installation, we also lose the prior sysroot's extras.
+        HAVE.note_removed("10j-bullseye-sysroot-extras")
 
     tarball_name = f"LLVM-{llvm_version}-{platform.system()}-{machine_normalized()}.tar.xz"
     if Path(tarball_name).is_file():
@@ -902,8 +923,10 @@ def provision_10j_llvm_with(version: str, keyname: str):
         hermetic.run_cargo_in(["clean"], repo_root.find_repo_root_dir_Path() / "c2rust")
 
         # Upstream c2rust is not rebuilt automatically, so we need to do it here.
-        hermetic.run_cargo_in(["clean"], hermetic.xj_upstream_c2rust(localdir))
-        rebuild_10j_upstream_c2rust(hermetic.xj_upstream_c2rust(localdir))
+        upstream_c2rust_dir = hermetic.xj_upstream_c2rust(localdir)
+        if upstream_c2rust_dir.is_dir():
+            hermetic.run_cargo_in(["clean"], upstream_c2rust_dir)
+            rebuild_10j_upstream_c2rust(upstream_c2rust_dir)
 
     update_10j_llvm_have(keyname, version, llvm_version)
 

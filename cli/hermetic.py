@@ -59,11 +59,14 @@ def mk_env_for(localdir: Path, with_tenjin_deps=True, env_ext=None, **kwargs) ->
     return env
 
 
-def run_command_with_progress(command, stdout_file, stderr_file, cwd=None, shell=False) -> None:
+def run_command_with_progress(
+    command, stdout_file, stderr_file, cwd=None, shell=False, env_ext=None, suppress_helper=False
+) -> None:
     """
     Run a command, redirecting stdout/stderr to files, and print dots while waiting.
     """
-    common_helper_for_run(command)
+    if not suppress_helper:
+        common_helper_for_run(command)
 
     with open(stdout_file, "wb") as out_f, open(stderr_file, "wb") as err_f:
         proc = subprocess.Popen(
@@ -72,7 +75,7 @@ def run_command_with_progress(command, stdout_file, stderr_file, cwd=None, shell
             stderr=err_f,
             shell=shell,
             cwd=cwd,
-            env=mk_env_for(repo_root.localdir(), with_tenjin_deps=True, env_ext=None),
+            env=mk_env_for(repo_root.localdir(), with_tenjin_deps=True, env_ext=env_ext),
         )
 
         while proc.poll() is None:
