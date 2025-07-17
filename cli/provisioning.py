@@ -184,9 +184,9 @@ def require_rustup():
         say(f"{tool} is not installed, or is not available on your $PATH", fg="red")
         match platform.system():
             case "Linux":
-                say("Please install Rust using rustup (or via your package manager).", fg="red")
+                say("Please install Rust using rustup (or via your package manager).")
             case "Darwin":
-                say("Please install Rust using rustup (or via Homebrew).", fg="red")
+                say("Please install Rust using rustup (or via Homebrew).")
             case sysname:
                 say(f"Tenjin doesn't yet support {sysname}, sorry!", fg="red")
                 sys.exit(1)
@@ -197,13 +197,12 @@ def require_rustup():
         say("")
         say("For your convenience, I've downloaded the rustup installer script,")
         say("so you can just run")
-        say(f"                  ./{rustup_installer}", fg="blue")
+        say(click.style(f"                  ./{rustup_installer}", bold=True))
         say("")
         say("It will interactively prompt you for the details of how and where")
         say("to install Rust. Most people choose the default options.")
         say("")
-        say("Once you can run `cargo --version`,", fg="green")
-        say("   please re-run `10j provision`", fg="green")
+        say("Once you can run `cargo --version`, please re-run provisioning", fg="green")
         sys.exit(1)
 
     if shutil.which("rustc") is None:
