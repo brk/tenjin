@@ -651,7 +651,7 @@ def infer_bwrap_sandboxing_args() -> list[str]:
 
         subprocess.check_call([bwrap_path, "--ro-bind", Path.cwd(), "/", "/tru"])
     except subprocess.CalledProcessError as e:
-        print(f"Compilation failed with error: {e.stderr}")
+        print(f"TENJIN: Compilation of bubblewrap-able static binary failed with error: {e.stderr}")
     except Exception as e:
         print(f"An error occurred: {str(e)}")
     else:
