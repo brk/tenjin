@@ -23,6 +23,8 @@ if [ ! -e "$localuv" ] || [ ! -e "$localcg" ]; then
     fi
 fi
 
+# If/when we want to update the uv binary, we should do that here.
+
 if [ -e "$localuv" ] && [ -e "$localcg" ]; then
     exec "$localuv" run --project "$tenjdir" --config-file "$localcg" $tenjdir/main.py "$@"
 else

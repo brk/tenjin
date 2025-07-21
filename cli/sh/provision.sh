@@ -47,14 +47,15 @@ then
   sez "Downloading and installing uv to $LOCALDIR"
 
   mkdir -p "$LOCALDIR"
-  download "https://astral.sh/uv/install.sh" "$LOCALDIR/uv-installer.sh"
+  download \
+    "https://github.com/astral-sh/uv/releases/download/0.8.0/uv-installer.sh" \
+    "$LOCALDIR/uv-installer.sh"
   env UV_UNMANAGED_INSTALL="$LOCALDIR" INSTALLER_PRINT_QUIET=1 \
                         sh "$LOCALDIR"/uv-installer.sh
 
   # Write out an initial configuration file
   cat > "$LOCALDIR/uv.toml" <<EOF
-  # See also https://docs.astral.sh/uv/configuration/files/
-  package = false
+  # See also https://docs.astral.sh/uv/concepts/configuration-files/
   # Ensure that Tenjin's uv cache directory is kept separated
   cache-dir = "$LOCALDIR/uv_cache"
 EOF
