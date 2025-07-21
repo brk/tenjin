@@ -90,12 +90,37 @@ def sez(msg: str, ctx: str, err=False):
     click.echo("TENJIN SEZ: " + ctx + msg, err=err)
 
 
-def download(url: str, filename: Path) -> None:
+def download(url: str, filename: Path, first_attempt=True) -> None:
     # This import is relatively expensive (20 ms) and is rarely needed,
     # so it is imported here to avoid slowing down the common case.
     from urllib.request import urlretrieve  # noqa: PLC0415
+    from urllib.error import HTTPError  # noqa: PLC0415
 
-    urlretrieve(url, filename)
+    try:
+        urlretrieve(url, filename)
+    except HTTPError as e:
+        if first_attempt and e.code in (500, 502, 503, 504):
+            # These are HTTP error codes for (at least potentially) transient issues.
+            sez(f"Server returned error {e} when downloading {url}", ctx="(download) ", err=True)
+            sez(
+                "Hopefully this is a temporary issue and will resolve itself.",
+                ctx="(download) ",
+                err=True,
+            )
+            sez("I will wait for a few seconds then re-try, once.", ctx="(download) ", err=True)
+            import time  # noqa: PLC0415
+
+            time.sleep(6)
+            download(url, filename, first_attempt=False)
+            return
+
+        sez(f"Failed to download {url}: {e}", ctx="(download) ", err=True)
+        sez(
+            "You might try deleting the `_local` directory and re-provisioning?",
+            ctx="(download) ",
+            err=True,
+        )
+        sys.exit(1)
 
 
 # platform.system() in ["Linux", "Darwin"]
