@@ -47,7 +47,9 @@ then
   sez "Downloading and installing uv to $LOCALDIR"
 
   mkdir -p "$LOCALDIR"
-  download "https://astral.sh/uv/install.sh" "$LOCALDIR/uv-installer.sh"
+  download \
+    "https://github.com/astral-sh/uv/releases/download/0.8.0/uv-installer.sh" \
+    "$LOCALDIR/uv-installer.sh"
   env UV_UNMANAGED_INSTALL="$LOCALDIR" INSTALLER_PRINT_QUIET=1 \
                         sh "$LOCALDIR"/uv-installer.sh
 
