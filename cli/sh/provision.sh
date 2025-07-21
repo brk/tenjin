@@ -53,8 +53,7 @@ then
 
   # Write out an initial configuration file
   cat > "$LOCALDIR/uv.toml" <<EOF
-  # See also https://docs.astral.sh/uv/configuration/files/
-  package = false
+  # See also https://docs.astral.sh/uv/concepts/configuration-files/
   # Ensure that Tenjin's uv cache directory is kept separated
   cache-dir = "$LOCALDIR/uv_cache"
 EOF
