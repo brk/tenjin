@@ -3771,8 +3771,21 @@ impl<'c> Translation<'c> {
     ) -> TranslationResult<ConvertedVariable> {
         let init = match initializer {
             Some(x) => self.convert_expr_guided(ctx.used(), x, guided_type),
-            None => self.implicit_default_expr(typ.ctype, ctx.is_static),
+            None => self.implicit_default_expr_guided(guided_type, typ.ctype, ctx.is_static),
         };
+
+        if let Some(guided_type) = guided_type {
+            // If we have a type override, we use it instead of the converted type
+            return Ok(ConvertedVariable {
+                ty: Box::new(guided_type.parsed.clone()),
+                mutbl: if typ.qualifiers.is_const {
+                    Mutability::Immutable
+                } else {
+                    Mutability::Mutable
+                },
+                init,
+            });
+        }
 
         // Variable declarations for variable-length arrays use the type of a pointer to the
         // underlying array element
@@ -4795,7 +4808,9 @@ impl<'c> Translation<'c> {
                 self.convert_init_list(ctx, ty, ids, opt_union_field_id)
             }
 
-            ImplicitValueInit(ty) => self.implicit_default_expr(ty.ctype, ctx.is_static),
+            ImplicitValueInit(ty) => {
+                self.implicit_default_expr_guided(guided_type, ty.ctype, ctx.is_static)
+            }
 
             Predefined(_, val_id) => self.convert_expr(ctx, val_id),
 
@@ -5494,6 +5509,25 @@ impl<'c> Translation<'c> {
         }
 
         val.map(|x| mk().cast_expr(x, target_ty))
+    }
+
+    pub fn implicit_default_expr_guided(
+        &self,
+        guided_type: &Option<tenjin::GuidedType>,
+        ty_id: CTypeId,
+        is_static: bool,
+    ) -> TranslationResult<WithStmts<Box<Expr>>> {
+        // XREF:TENJIN-GUIDANCE-STRAWMAN
+        if let Some(guided_type) = guided_type {
+            if guided_type.pretty == "String" {
+                // If the type is a String, we can just return an empty string
+                return Ok(WithStmts::new_val(
+                    mk().call_expr(mk().path_expr(vec!["String", "new"]), vec![]),
+                ));
+            }
+        }
+
+        self.implicit_default_expr(ty_id, is_static)
     }
 
     pub fn implicit_default_expr(
