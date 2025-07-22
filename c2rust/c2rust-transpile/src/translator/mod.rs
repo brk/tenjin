@@ -1396,10 +1396,10 @@ mod refactor_format {
             s,
             macro_name,
             ln_macro_name,
-            fmt_args,
+            &fmt_args[1..],
             cargs,
             span,
-            old_fmt_str_expr.span(),
+            Some(old_fmt_str_expr.span()),
             fmt_string_span,
         );
     }
@@ -1409,10 +1409,10 @@ mod refactor_format {
         fmt_literal: String,
         macro_name: &str,
         ln_macro_name: &str,
-        fmt_args: &[Box<Expr>],
+        args_after_fmt: &[Box<Expr>],
         cargs: &[CExprId],
         span: Option<Span>,
-        old_fmt_str_span: Span,
+        old_fmt_str_span: Option<Span>,
         fmt_string_span: Option<DisplaySrcSpan>,
     ) -> Macro {
         let mut new_s = String::with_capacity(fmt_literal.len());
@@ -1460,7 +1460,10 @@ mod refactor_format {
             macro_name
         };
 
-        let new_fmt_str_expr = mk().span(old_fmt_str_span).lit_expr(&new_s);
+        let new_fmt_str_expr = match old_fmt_str_span {
+            Some(span) => mk().span(span).lit_expr(&new_s),
+            None => mk().lit_expr(&new_s),
+        };
 
         trace!("new fmt str expr: {:?}", new_fmt_str_expr);
 
@@ -1472,11 +1475,9 @@ mod refactor_format {
             ))
         };
         macro_tts.push(expr_tt(new_fmt_str_expr));
-        for (i, arg) in fmt_args[1..].iter().enumerate() {
+        for (i, arg) in args_after_fmt.iter().enumerate() {
             if let Some(cast) = casts.get(&i) {
-                let cexpr = cargs
-                    .get(i + 1)
-                    .expect("missing CExprId for format argument");
+                let cexpr = cargs.get(i).expect("missing CExprId for format argument");
                 let tt = expr_tt(cast.apply(x, arg.clone(), *cexpr, &fmt_string_span));
                 //macro_tts.push(TokenTree::Token(Token {kind: TokenKind::Comma, span: DUMMY_SP}));
                 macro_tts.push(TokenTree::Punct(Punct::new(',', Alone)));
