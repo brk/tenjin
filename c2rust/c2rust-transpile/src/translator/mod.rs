@@ -1391,7 +1391,7 @@ mod refactor_format {
                 ep
             ),
         };
-        return build_format_macro_from(
+        build_format_macro_from(
             x,
             s,
             macro_name,
@@ -1401,7 +1401,7 @@ mod refactor_format {
             span,
             Some(old_fmt_str_expr.span()),
             fmt_string_span,
-        );
+        )
     }
 
     pub fn build_format_macro_from(

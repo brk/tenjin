@@ -351,6 +351,9 @@ impl Translation<'_> {
     ) -> TranslationResult<Option<WithStmts<Box<Expr>>>> {
         if let Some(path) = tenjin::expr_get_path(func) {
             match () {
+                _ if tenjin::is_path_exactly_1(path, "fputs") => {
+                    self.recognize_preconversion_call_fputs_stdout_guided(ctx, func, cargs)
+                }
                 _ if tenjin::is_path_exactly_1(path, "fgets") => {
                     self.recognize_preconversion_call_fgets_stdin(ctx, func, cargs)
                 }
@@ -365,6 +368,52 @@ impl Translation<'_> {
         } else {
             Ok(None)
         }
+    }
+
+    #[allow(clippy::borrowed_box)]
+    fn recognize_preconversion_call_fputs_stdout_guided(
+        &self,
+        ctx: ExprContext,
+        func: &Box<Expr>,
+        cargs: &[CExprId],
+    ) -> TranslationResult<Option<WithStmts<Box<Expr>>>> {
+        if tenjin::expr_is_ident(func, "fputs") && cargs.len() == 2 {
+            // fputs(FOO, stdout)
+            //    when FOO is a simple variable with type String
+            // should be translated to
+            // println!(FOO)
+            if !(self.c_expr_is_var_ident(cargs[1], "stdout")
+                || self.c_expr_is_var_ident(cargs[1], "__stdoutp"))
+            {
+                return Ok(None);
+            }
+
+            if let Some(var_cdecl_id) = self.c_expr_get_var_decl_id(cargs[0]) {
+                if self
+                    .parsed_guidance
+                    .borrow_mut()
+                    .query_decl_type(self, var_cdecl_id)
+                    .is_some_and(|g| g.pretty == "String")
+                {
+                    let expr = self.convert_expr(ctx.used(), cargs[0])?;
+                    let print_call = mk().mac_expr(refactor_format::build_format_macro_from(
+                        self,
+                        "%s".to_string(),
+                        "print",
+                        "println",
+                        &[expr.to_expr()],
+                        &[cargs[0]],
+                        None,
+                        None,
+                        self.ast_context
+                            .display_loc(&self.ast_context[cargs[0]].loc),
+                    ));
+                    return Ok(Some(WithStmts::new_val(print_call)));
+                }
+            }
+        }
+
+        Ok(None)
     }
 
     #[allow(clippy::borrowed_box)]
