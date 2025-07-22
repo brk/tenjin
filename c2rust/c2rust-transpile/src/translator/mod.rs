@@ -1391,6 +1391,30 @@ mod refactor_format {
                 ep
             ),
         };
+        return build_format_macro_from(
+            x,
+            s,
+            macro_name,
+            ln_macro_name,
+            fmt_args,
+            cargs,
+            span,
+            old_fmt_str_expr.span(),
+            fmt_string_span,
+        );
+    }
+
+    pub fn build_format_macro_from(
+        x: &Translation,
+        s: String,
+        macro_name: &str,
+        ln_macro_name: &str,
+        fmt_args: &[Box<Expr>],
+        cargs: &[CExprId],
+        span: Option<Span>,
+        old_fmt_str_span: Span,
+        fmt_string_span: Option<DisplaySrcSpan>,
+    ) -> Macro {
         let mut new_s = String::with_capacity(s.len());
         let mut casts = HashMap::new();
 
@@ -1436,9 +1460,8 @@ mod refactor_format {
             macro_name
         };
 
-        let new_fmt_str_expr = mk().span(old_fmt_str_expr.span()).lit_expr(&new_s);
+        let new_fmt_str_expr = mk().span(old_fmt_str_span).lit_expr(&new_s);
 
-        trace!("old fmt str expr: {:?}", old_fmt_str_expr);
         trace!("new fmt str expr: {:?}", new_fmt_str_expr);
 
         let mut macro_tts: Vec<TokenTree> = Vec::new();
