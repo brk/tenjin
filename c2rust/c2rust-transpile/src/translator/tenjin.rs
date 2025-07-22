@@ -305,6 +305,7 @@ impl Translation<'_> {
     #[allow(clippy::vec_box)]
     pub fn convert_call_with_args(
         &self,
+        _call_type_id: CTypeId,
         func: Box<Expr>,
         args: Vec<Box<Expr>>,
         cargs: &[CExprId],
@@ -345,6 +346,7 @@ impl Translation<'_> {
     #[allow(clippy::borrowed_box)]
     pub fn call_form_cases_preconversion(
         &self,
+        call_type_id: CTypeId,
         ctx: ExprContext,
         func: &Box<Expr>,
         cargs: &[CExprId],
@@ -355,7 +357,7 @@ impl Translation<'_> {
                     self.recognize_preconversion_call_fputs_stdout_guided(ctx, func, cargs)
                 }
                 _ if tenjin::is_path_exactly_1(path, "fgets") => {
-                    self.recognize_preconversion_call_fgets_stdin(ctx, func, cargs)
+                    self.recognize_preconversion_call_fgets_stdin(call_type_id, ctx, func, cargs)
                 }
                 _ if tenjin::is_path_exactly_1(path, "strlen") => {
                     self.recognize_preconversion_call_strlen_guided(ctx, func, cargs)
@@ -498,6 +500,7 @@ impl Translation<'_> {
     #[allow(clippy::borrowed_box)]
     fn recognize_preconversion_call_fgets_stdin(
         &self,
+        call_type_id: CTypeId,
         ctx: ExprContext,
         func: &Box<Expr>,
         cargs: &[CExprId],
@@ -559,6 +562,10 @@ impl Translation<'_> {
                             tenjin::expr_in_u64(lim.to_expr()),
                         ],
                     );
+
+                    self.type_overrides
+                        .borrow_mut()
+                        .insert(call_type_id, GuidedType::from_str("bool"));
 
                     return Ok(Some(WithStmts::new_val(fgets_stdin_bool_call)));
                 }
