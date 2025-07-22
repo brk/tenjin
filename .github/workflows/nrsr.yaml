@@ -49,6 +49,8 @@ jobs:
         with:
           workspaces: c2rust
           prefix-key: release-
+          key: ${{ matrix.runner }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Provision Rust
         run: cli/10j provision rust
@@ -69,6 +71,8 @@ jobs:
       - uses: Swatinem/rust-cache@9d47c6ad4b02e050fd481d890b2ea34778fd09d6 # v2.7.8
         with:
           workspaces: c2rust
+          # No need for key since we only run this on one runner.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Install tss utility for showing timestamps
         run: curl --silent --location --output tss https://github.com/kevinburke/tss/releases/download/1.3/tss-linux-amd64 && chmod +x tss
