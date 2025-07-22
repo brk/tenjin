@@ -1406,7 +1406,7 @@ mod refactor_format {
 
     pub fn build_format_macro_from(
         x: &Translation,
-        s: String,
+        fmt_literal: String,
         macro_name: &str,
         ln_macro_name: &str,
         fmt_args: &[Box<Expr>],
@@ -1415,11 +1415,11 @@ mod refactor_format {
         old_fmt_str_span: Span,
         fmt_string_span: Option<DisplaySrcSpan>,
     ) -> Macro {
-        let mut new_s = String::with_capacity(s.len());
+        let mut new_s = String::with_capacity(fmt_literal.len());
         let mut casts = HashMap::new();
 
         let mut idx = 0;
-        Parser::new(&s, |piece| match piece {
+        Parser::new(&fmt_literal, |piece| match piece {
             Piece::Text(s) => {
                 // Find all occurrences of brace characters in `s`
                 let mut brace_indices = s
