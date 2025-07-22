@@ -305,6 +305,7 @@ impl Translation<'_> {
     #[allow(clippy::vec_box)]
     pub fn convert_call_with_args(
         &self,
+        _call_type_id: CTypeId,
         func: Box<Expr>,
         args: Vec<Box<Expr>>,
         cargs: &[CExprId],
@@ -345,6 +346,7 @@ impl Translation<'_> {
     #[allow(clippy::borrowed_box)]
     pub fn call_form_cases_preconversion(
         &self,
+        call_type_id: CTypeId,
         ctx: ExprContext,
         func: &Box<Expr>,
         cargs: &[CExprId],
@@ -355,7 +357,7 @@ impl Translation<'_> {
                     self.recognize_preconversion_call_fputs_stdout_guided(ctx, func, cargs)
                 }
                 _ if tenjin::is_path_exactly_1(path, "fgets") => {
-                    self.recognize_preconversion_call_fgets_stdin(ctx, func, cargs)
+                    self.recognize_preconversion_call_fgets_stdin(call_type_id, ctx, func, cargs)
                 }
                 _ if tenjin::is_path_exactly_1(path, "strlen") => {
                     self.recognize_preconversion_call_strlen_guided(ctx, func, cargs)
@@ -498,6 +500,7 @@ impl Translation<'_> {
     #[allow(clippy::borrowed_box)]
     fn recognize_preconversion_call_fgets_stdin(
         &self,
+        call_type_id: CTypeId,
         ctx: ExprContext,
         func: &Box<Expr>,
         cargs: &[CExprId],
@@ -506,7 +509,15 @@ impl Translation<'_> {
             // fgets(FOO, limit_expr, stdin)
             //    when FOO is a simple variable with type String
             // should be translated to
-            // io::stdin().lock().take(limit_expr - 1).read_line(&mut FOO).unwrap();
+            // fgets_stdin_bool(&mut FOO, limit_expr, io::stdin())
+            //
+            // where fgets_stdin_bool is a wrapper around
+            // io::stdin().lock().take(limit_expr - 1).read_line(&mut FOO)
+            //
+            // The awkward name reflects that this is not a generally-correct translation,
+            // since we're not accounting for code that does anything non-trivial with the
+            // return value of fgets(), nor for code that checks
+            // errno, etc. But it's a useful strawman for the time being.
             //
             // Because take() expects a u64, we may be able to elide unnecessary casts from limit_expr.
             //
@@ -533,20 +544,30 @@ impl Translation<'_> {
                     self.with_cur_file_item_store(|item_store| {
                         item_store.add_use(vec!["std".into(), "io".into()], "Read");
                         item_store.add_use(vec!["std".into(), "io".into()], "BufRead");
+                        item_store.add_item_str_once(
+                            "fn fgets_stdin_bool(buf: &mut String, limit: u64) -> bool {
+                            let handle = std::io::stdin().lock();
+                            let res = handle.take(limit - 1).read_line(buf);
+                            res.is_ok() && res.unwrap() > 0
+                        }",
+                        );
                     });
 
-                    let dst = self.convert_expr(ctx.used(), cargs[0])?;
-                    let ref_mut_dst = mk().mutbl().addr_of_expr(dst.to_expr());
-                    let expr = self.convert_expr(ctx.used(), cargs[1])?;
-                    let expr_u64 = tenjin::expr_in_u64(expr.to_expr());
-                    let std_io_path: Box<Expr> = mk().path_expr(vec!["std", "io", "stdin"]);
-                    let stdin_call = mk().call_expr(std_io_path, vec![]);
-                    let lock_call = mk().method_call_expr(stdin_call.clone(), "lock", vec![]);
-                    let take_call = mk().method_call_expr(lock_call, "take", vec![expr_u64]);
-                    let read_line =
-                        mk().method_call_expr(take_call, "read_line", vec![ref_mut_dst]);
-                    let unwrap_call = mk().method_call_expr(read_line, "unwrap", vec![]);
-                    return Ok(Some(WithStmts::new_val(unwrap_call)));
+                    let buf = self.convert_expr(ctx.used(), cargs[0])?;
+                    let lim = self.convert_expr(ctx.used(), cargs[1])?;
+                    let fgets_stdin_bool_call = mk().call_expr(
+                        mk().path_expr(vec!["fgets_stdin_bool"]),
+                        vec![
+                            mk().mutbl().addr_of_expr(buf.to_expr()),
+                            tenjin::expr_in_u64(lim.to_expr()),
+                        ],
+                    );
+
+                    self.type_overrides
+                        .borrow_mut()
+                        .insert(call_type_id, GuidedType::from_str("bool"));
+
+                    return Ok(Some(WithStmts::new_val(fgets_stdin_bool_call)));
                 }
             }
         }

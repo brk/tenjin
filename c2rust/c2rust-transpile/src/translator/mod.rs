@@ -377,6 +377,7 @@ pub struct Translation<'c> {
     pub ast_context: TypedAstContext,
     pub tcfg: &'c TranspilerConfig,
     parsed_guidance: RefCell<ParsedGuidance>,
+    type_overrides: RefCell<HashMap<CTypeId, tenjin::GuidedType>>,
 
     // Accumulated outputs
     pub features: RefCell<IndexSet<&'static str>>,
@@ -1878,6 +1879,7 @@ impl<'c> Translation<'c> {
             ast_context,
             tcfg,
             parsed_guidance: RefCell::new(ParsedGuidance::new(tcfg.guidance_json.clone())),
+            type_overrides: RefCell::new(HashMap::new()),
             renamer: RefCell::new(Renamer::new(&[
                 // Keywords currently in use
                 "as", "break", "const", "continue", "crate", "else", "enum", "extern", "false",
@@ -3769,8 +3771,21 @@ impl<'c> Translation<'c> {
     ) -> TranslationResult<ConvertedVariable> {
         let init = match initializer {
             Some(x) => self.convert_expr_guided(ctx.used(), x, guided_type),
-            None => self.implicit_default_expr(typ.ctype, ctx.is_static),
+            None => self.implicit_default_expr_guided(guided_type, typ.ctype, ctx.is_static),
         };
+
+        if let Some(guided_type) = guided_type {
+            // If we have a type override, we use it instead of the converted type
+            return Ok(ConvertedVariable {
+                ty: Box::new(guided_type.parsed.clone()),
+                mutbl: if typ.qualifiers.is_const {
+                    Mutability::Immutable
+                } else {
+                    Mutability::Mutable
+                },
+                init,
+            });
+        }
 
         // Variable declarations for variable-length arrays use the type of a pointer to the
         // underlying array element
@@ -4707,7 +4722,7 @@ impl<'c> Translation<'c> {
                     // We want to decay refs only when function is variadic
                     ctx.decay_ref = DecayRef::from(is_variadic);
 
-                    self.convert_call(func, ctx, args)
+                    self.convert_call(call_expr_ty.ctype, func, ctx, args)
                 })?;
 
                 self.convert_side_effects_expr(
@@ -4793,7 +4808,9 @@ impl<'c> Translation<'c> {
                 self.convert_init_list(ctx, ty, ids, opt_union_field_id)
             }
 
-            ImplicitValueInit(ty) => self.implicit_default_expr(ty.ctype, ctx.is_static),
+            ImplicitValueInit(ty) => {
+                self.implicit_default_expr_guided(guided_type, ty.ctype, ctx.is_static)
+            }
 
             Predefined(_, val_id) => self.convert_expr(ctx, val_id),
 
@@ -4842,16 +4859,18 @@ impl<'c> Translation<'c> {
     #[allow(clippy::vec_box)]
     fn convert_call(
         &self,
+        call_type_id: CTypeId,
         func: Box<Expr>,
         ctx: ExprContext,
         cargs: &[CExprId],
     ) -> TranslationResult<WithStmts<Box<Expr>>> {
         // First do selective call conversion, which may not need to convert all subexpressions.
-        match self.call_form_cases_preconversion(ctx, &func, cargs)? {
+        match self.call_form_cases_preconversion(call_type_id, ctx, &func, cargs)? {
             Some(converted) => Ok(converted),
             None => {
                 let args = self.convert_exprs(ctx.used(), cargs)?;
-                let res = args.map(|args| self.convert_call_with_args(func, args, cargs));
+                let res =
+                    args.map(|args| self.convert_call_with_args(call_type_id, func, args, cargs));
                 Ok(res)
             }
         }
@@ -5492,6 +5511,25 @@ impl<'c> Translation<'c> {
         val.map(|x| mk().cast_expr(x, target_ty))
     }
 
+    pub fn implicit_default_expr_guided(
+        &self,
+        guided_type: &Option<tenjin::GuidedType>,
+        ty_id: CTypeId,
+        is_static: bool,
+    ) -> TranslationResult<WithStmts<Box<Expr>>> {
+        // XREF:TENJIN-GUIDANCE-STRAWMAN
+        if let Some(guided_type) = guided_type {
+            if guided_type.pretty == "String" {
+                // If the type is a String, we can just return an empty string
+                return Ok(WithStmts::new_val(
+                    mk().call_expr(mk().path_expr(vec!["String", "new"]), vec![]),
+                ));
+            }
+        }
+
+        self.implicit_default_expr(ty_id, is_static)
+    }
+
     pub fn implicit_default_expr(
         &self,
         ty_id: CTypeId,
@@ -5696,6 +5734,19 @@ impl<'c> Translation<'c> {
     /// Convert a boolean expression to a boolean for use in && or || or if
     #[allow(clippy::collapsible_match)]
     fn match_bool(&self, target: bool, ty_id: CTypeId, val: Box<Expr>) -> Box<Expr> {
+        if self.type_overrides.borrow().contains_key(&ty_id) {
+            // If we have a type override, use it
+            let ty = self.type_overrides.borrow()[&ty_id].clone();
+            if ty.pretty == "bool" {
+                return if target {
+                    val
+                } else {
+                    mk().unary_expr(UnOp::Not(Default::default()), val)
+                };
+            }
+            return mk().cast_expr(val, Box::new(ty.parsed));
+        }
+
         let ty = &self.ast_context.resolve_type(ty_id).kind;
 
         if self.ast_context.is_function_pointer(ty_id) {
