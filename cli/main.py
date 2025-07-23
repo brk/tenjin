@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 
 import click
+import requests
 
 import repo_root
 import provisioning
@@ -305,6 +306,65 @@ def exec():
 @click.argument("wanted", required=False, default="all")
 def provision(wanted: str):
     provisioning.provision_desires(wanted)
+
+
+@cli.command()
+@click.argument(
+    "directory", type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path)
+)
+@click.option(
+    "--to", "host_port", required=True, help="Host and port to upload to (e.g., localhost:8080)"
+)
+def upload_results(directory: Path, host_port: str):
+    """Upload translation_metadata.json and translation_snapshot.json to a Tenjin dashboard."""
+
+    # Check if required files exist
+    metadata_file = directory / "translation_metadata.json"
+    snapshot_file = directory / "translation_snapshot.json"
+
+    if not metadata_file.exists():
+        click.echo(f"Error: {metadata_file} does not exist", err=True)
+        sys.exit(1)
+
+    if not snapshot_file.exists():
+        click.echo(f"Error: {snapshot_file} does not exist", err=True)
+        sys.exit(1)
+
+    if host_port.startswith("http"):
+        url = f"{host_port}/ingest"
+    elif host_port.startswith("100."):  # Tailscale IP
+        url = f"http://{host_port}/ingest"
+    else:
+        url = f"https://{host_port}/ingest"
+
+    try:
+        with open(metadata_file, "rb") as metadata_fp, open(snapshot_file, "rb") as snapshot_fp:
+            files = {
+                "metadata": ("translation_metadata.json", metadata_fp, "application/json"),
+                "snapshot": ("translation_snapshot.json", snapshot_fp, "application/json"),
+            }
+
+            response = requests.post(url, files=files)
+            response.raise_for_status()
+
+            click.echo(f"Successfully uploaded files to {url}")
+            click.echo(f"Response status: {response.status_code}")
+            if response.text:
+                click.echo(f"Response: {response.text}")
+
+    except requests.exceptions.HTTPError as e:
+        click.echo(f"HTTP Error uploading files: {e}", err=True)
+        click.echo(f"Response status: {e.response.status_code}", err=True)
+        click.echo(f"Response headers: {dict(e.response.headers)}", err=True)
+        if e.response.text:
+            click.echo(f"Response body: {e.response.text}", err=True)
+        sys.exit(1)
+    except requests.exceptions.RequestException as e:
+        click.echo(f"Request error uploading files: {e}", err=True)
+        sys.exit(1)
+    except Exception as e:
+        click.echo(f"Unexpected error: {e}", err=True)
+        sys.exit(1)
 
 
 if __name__ == "__main__":
