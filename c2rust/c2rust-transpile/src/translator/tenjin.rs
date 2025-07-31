@@ -79,6 +79,17 @@ pub fn expr_is_ident(expr: &Expr, ident: &str) -> bool {
     }
 }
 
+pub fn expr_strip_casts(expr: &Expr) -> &Expr {
+    let mut ep = expr;
+    loop {
+        match ep {
+            Expr::Cast(ExprCast { expr, .. }) => ep = expr,
+            Expr::Type(ExprType { expr, .. }) => ep = expr,
+            _ => break ep,
+        }
+    }
+}
+
 /// The given expression is being used in a context expecting a u64 value.
 /// Builder::cast_expr() will strip value-preserving casts. Because we know
 /// the type imposed by the context, we can also entirely elide casts of

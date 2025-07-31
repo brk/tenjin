@@ -1349,17 +1349,6 @@ mod refactor_format {
     use super::*;
     use std::str::FromStr;
 
-    fn expr_strip_casts(expr: &Expr) -> &Expr {
-        let mut ep = expr;
-        loop {
-            match ep {
-                Expr::Cast(ExprCast { expr, .. }) => ep = expr,
-                Expr::Type(ExprType { expr, .. }) => ep = expr,
-                _ => break ep,
-            }
-        }
-    }
-
     fn expr_as_lit_str<'a>(expr: &'a Expr) -> Option<LitStrOrByteStr<'a>> {
         match *expr {
             Expr::Lit(ExprLit {
@@ -1388,7 +1377,7 @@ mod refactor_format {
         trace!("  found fmt str {:?}", old_fmt_str_expr);
 
         let ep = &old_fmt_str_expr;
-        let s = match expr_as_lit_str(expr_strip_casts(ep)) {
+        let s = match expr_as_lit_str(tenjin::expr_strip_casts(ep)) {
             Some(LitStrOrByteStr::LitStr(s)) => s.value(),
             Some(LitStrOrByteStr::ByteStr(b)) => std::str::from_utf8(b.value().as_slice())
                 .unwrap()
