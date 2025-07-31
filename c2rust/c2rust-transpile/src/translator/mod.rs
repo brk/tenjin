@@ -324,6 +324,12 @@ impl ParsedGuidance {
         if let Some(decls) = raw.get("vars_of_type") {
             if let Some(decls) = decls.as_object() {
                 for (unparsed_ty, decls) in decls {
+                    if decls.is_string() {
+                        log::error!(
+                            "Tenjin `vars_of_type` guidance for type {} is a string, expected an array of declspecs",
+                            unparsed_ty
+                        );
+                    }
                     let mut parsed_declspecs = Vec::new();
                     for decl in decls.as_array().unwrap_or(&vec![]) {
                         if let Some(declspec_str) = decl.as_str() {
