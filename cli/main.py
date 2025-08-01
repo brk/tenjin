@@ -331,6 +331,13 @@ if __name__ == "__main__":
             sys.exit(hermetic.run_shell_cmd(sys.argv[2:]).returncode)
         if sys.argv[1] == "true":
             sys.exit(0)
+        if sys.argv[1] == "uv":
+            try:
+                hermetic.check_call_uv(sys.argv[2:], cwd=Path.cwd())
+            except Exception as e:
+                click.echo(f"Error occurred while running uv: {e}", err=True)
+                sys.exit(1)
+            sys.exit(0)
         if sys.argv[1] == "clang-ast-xml":
             sys.exit(
                 hermetic.run_shell_cmd([
