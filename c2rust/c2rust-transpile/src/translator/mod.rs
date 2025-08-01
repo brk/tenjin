@@ -4720,11 +4720,14 @@ impl<'c> Translation<'c> {
                     }
                 };
 
+                let arg_guidances: Option<Vec<Option<tenjin::GuidedType>>> =
+                    self.get_callee_function_arg_guidances(func_id);
+
                 let call = func.and_then(|func| {
                     // We want to decay refs only when function is variadic
                     ctx.decay_ref = DecayRef::from(is_variadic);
 
-                    self.convert_call(call_expr_ty.ctype, func, ctx, args)
+                    self.convert_call(call_expr_ty.ctype, func, ctx, args, arg_guidances)
                 })?;
 
                 self.convert_side_effects_expr(
@@ -4865,12 +4868,17 @@ impl<'c> Translation<'c> {
         func: Box<Expr>,
         ctx: ExprContext,
         cargs: &[CExprId],
+        arg_guidances: Option<Vec<Option<tenjin::GuidedType>>>,
     ) -> TranslationResult<WithStmts<Box<Expr>>> {
         // First do selective call conversion, which may not need to convert all subexpressions.
         match self.call_form_cases_preconversion(call_type_id, ctx, &func, cargs)? {
             Some(converted) => Ok(converted),
             None => {
-                let args = self.convert_exprs(ctx.used(), cargs)?;
+                let args = if let Some(arg_guidances) = arg_guidances {
+                    self.convert_exprs_guided(ctx.used(), cargs, arg_guidances)?
+                } else {
+                    self.convert_exprs(ctx.used(), cargs)?
+                };
                 let res =
                     args.map(|args| self.convert_call_with_args(call_type_id, func, args, cargs));
                 Ok(res)

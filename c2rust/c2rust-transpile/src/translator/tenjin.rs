@@ -607,4 +607,33 @@ impl Translation<'_> {
         }
         Ok(None)
     }
+
+    pub fn get_callee_function_arg_guidances(
+        &self,
+        func_id: CExprId,
+    ) -> Option<Vec<Option<tenjin::GuidedType>>> {
+        match self.ast_context[func_id].kind {
+            CExprKind::ImplicitCast(_, fexp, CastKind::FunctionToPointerDecay, _, _) => {
+                match self.ast_context[fexp].kind {
+                    CExprKind::DeclRef(_qtyid, fndeclid, _lrvalue) => {
+                        match &self.ast_context[fndeclid].kind {
+                            CDeclKind::Function { parameters, .. } => Some(
+                                parameters
+                                    .iter()
+                                    .map(|param| {
+                                        self.parsed_guidance
+                                            .borrow_mut()
+                                            .query_decl_type(self, *param)
+                                    })
+                                    .collect(),
+                            ),
+                            _ => None,
+                        }
+                    }
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    }
 }
