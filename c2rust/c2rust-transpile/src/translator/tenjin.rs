@@ -399,6 +399,9 @@ impl Translation<'_> {
                 _ if tenjin::is_path_exactly_1(path, "strcspn") => {
                     self.recognize_preconversion_call_strcspn_guided(ctx, func, cargs)
                 }
+                _ if tenjin::is_path_exactly_1(path, "isblank") => {
+                    self.recognize_preconversion_call_isblank_guided(ctx, func, cargs)
+                }
                 _ => Ok(None),
             }
         } else {
@@ -524,6 +527,48 @@ impl Translation<'_> {
                         ],
                     );
                     return Ok(Some(WithStmts::new_val(strcspn_call)));
+                }
+            }
+        }
+
+        Ok(None)
+    }
+
+    #[allow(clippy::borrowed_box)]
+    fn recognize_preconversion_call_isblank_guided(
+        &self,
+        ctx: ExprContext,
+        func: &Box<Expr>,
+        cargs: &[CExprId],
+    ) -> TranslationResult<Option<WithStmts<Box<Expr>>>> {
+        if tenjin::expr_is_ident(func, "isblank") && cargs.len() == 1 {
+            // isblank(FOO)
+            //    when FOO is a simple variable with type char
+            // should be translated to
+            // isblank_char(FOO)
+            if let Some(var_cdecl_id_foo) = self.c_expr_get_var_decl_id(cargs[0]) {
+                if self
+                    .parsed_guidance
+                    .borrow_mut()
+                    .query_decl_type(self, var_cdecl_id_foo)
+                    .is_some_and(|g| g.pretty == "char")
+                {
+                    self.with_cur_file_item_store(|item_store| {
+                        // For now we return an integer code rather than a bool,
+                        // to better match the C function signature.
+                        item_store.add_item_str_once(
+                            "fn isblank_char_i(c: char) -> libc::c_int { (c == ' ' || c == '\\t') as libc::c_int }",
+                        );
+                    });
+
+                    let expr_foo = self.convert_expr(ctx.used(), cargs[0])?;
+                    // Stripping casts is correct because we know the underlying type is char,
+                    // which matches the argument of the function we're redirecting to.
+                    let bare_foo: Box<Expr> =
+                        Box::new(tenjin::expr_strip_casts(&*(expr_foo.to_expr())).clone());
+                    let isblank_call =
+                        mk().call_expr(mk().path_expr(vec!["isblank_char_i"]), vec![bare_foo]);
+                    return Ok(Some(WithStmts::new_val(isblank_call)));
                 }
             }
         }
