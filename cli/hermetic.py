@@ -13,12 +13,12 @@ import repo_root
 import provisioning
 
 
-def check_call_uv(args: Sequence[str | os.PathLike[str]]) -> None:
+def check_call_uv(args: Sequence[str | os.PathLike[str]], cwd: Path) -> None:
     # The args here should be kept in sync with the 10j script.
     localdir = repo_root.localdir()
     run(
         [localdir / "uv", "--config-file", localdir / "uv.toml", *args],
-        cwd=repo_root.find_repo_root_dir_Path(),
+        cwd=cwd,
         check=True,
         with_tenjin_deps=False,
     )

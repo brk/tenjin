@@ -12,26 +12,31 @@ import translation
 
 
 def do_fmt_py():
-    hermetic.check_call_uv("run ruff format".split())
+    hermetic.check_call_uv("run ruff format".split(), cwd=repo_root.find_repo_root_dir_Path())
 
 
 def do_check_py_fmt():
-    hermetic.check_call_uv("run ruff format --check".split())
+    hermetic.check_call_uv(
+        "run ruff format --check".split(), cwd=repo_root.find_repo_root_dir_Path()
+    )
 
 
 def do_check_py():
     root = repo_root.find_repo_root_dir_Path()
-    hermetic.check_call_uv("run ruff check --quiet".split())
-    hermetic.check_call_uv([
-        "run",
-        "mypy",
-        root / "cli" / "main.py",
-        root / "cli" / "repo_root.py",
-        root / "cli" / "constants.py",
-        root / "cli" / "sha256sum.py",
-        root / "cli" / "provisioning.py",
-        root / "cli" / "translation.py",
-    ])
+    hermetic.check_call_uv("run ruff check --quiet".split(), cwd=root)
+    hermetic.check_call_uv(
+        [
+            "run",
+            "mypy",
+            root / "cli" / "main.py",
+            root / "cli" / "repo_root.py",
+            root / "cli" / "constants.py",
+            root / "cli" / "sha256sum.py",
+            root / "cli" / "provisioning.py",
+            root / "cli" / "translation.py",
+        ],
+        cwd=root,
+    )
     do_check_py_fmt()
 
 
