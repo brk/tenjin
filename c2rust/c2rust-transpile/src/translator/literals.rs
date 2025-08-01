@@ -86,9 +86,15 @@ impl Translation<'_> {
                 let val = val as u32;
                 let expr = match char::from_u32(val) {
                     Some(c) => {
-                        let expr = mk().lit_expr(c);
-                        let i32_type = mk().path_ty(vec!["i32"]);
-                        mk().cast_expr(expr, i32_type)
+                        if guided_type.as_ref().is_some_and(|g| g.pretty == "char") {
+                            // If the guided type is `char`, we can return a char literal directly
+                            mk().lit_expr(c)
+                        } else {
+                            // Otherwise, we match the C semantics with a cast to i32
+                            let expr = mk().lit_expr(c);
+                            let i32_type = mk().path_ty(vec!["i32"]);
+                            mk().cast_expr(expr, i32_type)
+                        }
                     }
                     None => {
                         // Fallback for characters outside of the valid Unicode range
