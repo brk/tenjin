@@ -79,6 +79,26 @@ pub fn expr_is_ident(expr: &Expr, ident: &str) -> bool {
     }
 }
 
+pub fn expr_is_lit_char(expr: &Expr) -> bool {
+    if let Expr::Lit(ref lit) = *expr {
+        if let syn::Lit::Char(_) = lit.lit {
+            return true;
+        }
+    }
+    false
+}
+
+pub fn expr_strip_casts(expr: &Expr) -> &Expr {
+    let mut ep = expr;
+    loop {
+        match ep {
+            Expr::Cast(ExprCast { expr, .. }) => ep = expr,
+            Expr::Type(ExprType { expr, .. }) => ep = expr,
+            _ => break ep,
+        }
+    }
+}
+
 /// The given expression is being used in a context expecting a u64 value.
 /// Builder::cast_expr() will strip value-preserving casts. Because we know
 /// the type imposed by the context, we can also entirely elide casts of
@@ -104,6 +124,20 @@ pub fn expr_in_u64(expr: Box<Expr>) -> Box<Expr> {
         }
     }
     cast_box
+}
+
+pub fn cast_expr_guided(
+    e: Box<Expr>,
+    t: Box<Type>,
+    guided_type: &Option<tenjin::GuidedType>,
+) -> Box<Expr> {
+    if let Some(guided_type) = guided_type {
+        // If we want a char and have a character literal, we don't need a cast.
+        if guided_type.pretty == "char" && tenjin::expr_is_lit_char(&e) {
+            return e;
+        }
+    }
+    mk().cast_expr(e, t)
 }
 
 impl Translation<'_> {
@@ -365,6 +399,9 @@ impl Translation<'_> {
                 _ if tenjin::is_path_exactly_1(path, "strcspn") => {
                     self.recognize_preconversion_call_strcspn_guided(ctx, func, cargs)
                 }
+                _ if tenjin::is_path_exactly_1(path, "isblank") => {
+                    self.recognize_preconversion_call_isblank_guided(ctx, func, cargs)
+                }
                 _ => Ok(None),
             }
         } else {
@@ -498,6 +535,48 @@ impl Translation<'_> {
     }
 
     #[allow(clippy::borrowed_box)]
+    fn recognize_preconversion_call_isblank_guided(
+        &self,
+        ctx: ExprContext,
+        func: &Box<Expr>,
+        cargs: &[CExprId],
+    ) -> TranslationResult<Option<WithStmts<Box<Expr>>>> {
+        if tenjin::expr_is_ident(func, "isblank") && cargs.len() == 1 {
+            // isblank(FOO)
+            //    when FOO is a simple variable with type char
+            // should be translated to
+            // isblank_char(FOO)
+            if let Some(var_cdecl_id_foo) = self.c_expr_get_var_decl_id(cargs[0]) {
+                if self
+                    .parsed_guidance
+                    .borrow_mut()
+                    .query_decl_type(self, var_cdecl_id_foo)
+                    .is_some_and(|g| g.pretty == "char")
+                {
+                    self.with_cur_file_item_store(|item_store| {
+                        // For now we return an integer code rather than a bool,
+                        // to better match the C function signature.
+                        item_store.add_item_str_once(
+                            "fn isblank_char_i(c: char) -> libc::c_int { (c == ' ' || c == '\\t') as libc::c_int }",
+                        );
+                    });
+
+                    let expr_foo = self.convert_expr(ctx.used(), cargs[0])?;
+                    // Stripping casts is correct because we know the underlying type is char,
+                    // which matches the argument of the function we're redirecting to.
+                    let bare_foo: Box<Expr> =
+                        Box::new(tenjin::expr_strip_casts(&(expr_foo.to_expr())).clone());
+                    let isblank_call =
+                        mk().call_expr(mk().path_expr(vec!["isblank_char_i"]), vec![bare_foo]);
+                    return Ok(Some(WithStmts::new_val(isblank_call)));
+                }
+            }
+        }
+
+        Ok(None)
+    }
+
+    #[allow(clippy::borrowed_box)]
     fn recognize_preconversion_call_fgets_stdin(
         &self,
         call_type_id: CTypeId,
@@ -572,5 +651,34 @@ impl Translation<'_> {
             }
         }
         Ok(None)
+    }
+
+    pub fn get_callee_function_arg_guidances(
+        &self,
+        func_id: CExprId,
+    ) -> Option<Vec<Option<tenjin::GuidedType>>> {
+        match self.ast_context[func_id].kind {
+            CExprKind::ImplicitCast(_, fexp, CastKind::FunctionToPointerDecay, _, _) => {
+                match self.ast_context[fexp].kind {
+                    CExprKind::DeclRef(_qtyid, fndeclid, _lrvalue) => {
+                        match &self.ast_context[fndeclid].kind {
+                            CDeclKind::Function { parameters, .. } => Some(
+                                parameters
+                                    .iter()
+                                    .map(|param| {
+                                        self.parsed_guidance
+                                            .borrow_mut()
+                                            .query_decl_type(self, *param)
+                                    })
+                                    .collect(),
+                            ),
+                            _ => None,
+                        }
+                    }
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
     }
 }

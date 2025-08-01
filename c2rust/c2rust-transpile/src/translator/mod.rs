@@ -11,6 +11,7 @@ use dtoa;
 use failure::{err_msg, format_err, Fail};
 use indexmap::indexmap;
 use indexmap::{IndexMap, IndexSet};
+use itertools::Itertools; // for zip_eq
 use log::{error, info, trace, warn};
 use proc_macro2::{Punct, Spacing::*, Span, TokenStream, TokenTree};
 use syn::spanned::Spanned as _;
@@ -324,6 +325,12 @@ impl ParsedGuidance {
         if let Some(decls) = raw.get("vars_of_type") {
             if let Some(decls) = decls.as_object() {
                 for (unparsed_ty, decls) in decls {
+                    if decls.is_string() {
+                        log::error!(
+                            "Tenjin `vars_of_type` guidance for type {} is a string, expected an array of declspecs",
+                            unparsed_ty
+                        );
+                    }
                     let mut parsed_declspecs = Vec::new();
                     for decl in decls.as_array().unwrap_or(&vec![]) {
                         if let Some(declspec_str) = decl.as_str() {
@@ -1343,17 +1350,6 @@ mod refactor_format {
     use super::*;
     use std::str::FromStr;
 
-    fn expr_strip_casts(expr: &Expr) -> &Expr {
-        let mut ep = expr;
-        loop {
-            match ep {
-                Expr::Cast(ExprCast { expr, .. }) => ep = expr,
-                Expr::Type(ExprType { expr, .. }) => ep = expr,
-                _ => break ep,
-            }
-        }
-    }
-
     fn expr_as_lit_str<'a>(expr: &'a Expr) -> Option<LitStrOrByteStr<'a>> {
         match *expr {
             Expr::Lit(ExprLit {
@@ -1382,7 +1378,7 @@ mod refactor_format {
         trace!("  found fmt str {:?}", old_fmt_str_expr);
 
         let ep = &old_fmt_str_expr;
-        let s = match expr_as_lit_str(expr_strip_casts(ep)) {
+        let s = match expr_as_lit_str(tenjin::expr_strip_casts(ep)) {
             Some(LitStrOrByteStr::LitStr(s)) => s.value(),
             Some(LitStrOrByteStr::ByteStr(b)) => std::str::from_utf8(b.value().as_slice())
                 .unwrap()
@@ -3029,15 +3025,11 @@ impl<'c> Translation<'c> {
                 }
 
                 // XREF:TENJIN-GUIDANCE-STRAWMAN
-                let (ty_override, mut_override) =
-                    if guided_type.is_some_and(|g| g.pretty == "String") {
-                        (
-                            Some(mk().path_ty(vec!["String"])),
-                            Some(Mutability::Immutable),
-                        )
-                    } else {
-                        (None, None)
-                    };
+                let mut_override = if guided_type.is_some() {
+                    Some(Mutability::Immutable)
+                } else {
+                    None
+                };
 
                 let pat = if var.is_empty() {
                     mk().wild_pat()
@@ -3063,12 +3055,7 @@ impl<'c> Translation<'c> {
                     mk().set_mutbl(mutbl).ident_pat(new_var)
                 };
 
-                if let Some(ty_override) = ty_override {
-                    // If we have a type override, we use it instead of the converted type
-                    args.push(mk().arg(ty_override, pat));
-                } else {
-                    args.push(mk().arg(ty, pat))
-                }
+                args.push(mk().arg(ty, pat));
             }
 
             if is_variadic {
@@ -4110,6 +4097,21 @@ impl<'c> Translation<'c> {
             .collect()
     }
 
+    // Fixing this would require major refactors for marginal benefit.
+    #[allow(clippy::vec_box)]
+    fn convert_exprs_guided(
+        &self,
+        ctx: ExprContext,
+        exprs: &[CExprId],
+        arg_guidances: Vec<Option<tenjin::GuidedType>>,
+    ) -> TranslationResult<WithStmts<Vec<Box<Expr>>>> {
+        exprs
+            .iter()
+            .zip_eq(arg_guidances)
+            .map(|(arg, guidance)| self.convert_expr_guided(ctx, *arg, &guidance))
+            .collect()
+    }
+
     /// Translate a C expression into a Rust one, possibly collecting side-effecting statements
     /// to run before the expression.
     ///
@@ -4649,20 +4651,20 @@ impl<'c> Translation<'c> {
                 })
             }
 
-            Call(call_expr_ty, func, ref args) => {
-                let fn_ty =
-                    self.ast_context
-                        .get_pointee_qual_type(
-                            self.ast_context[func].kind.get_type().ok_or_else(|| {
-                                format_err!("Invalid callee expression {:?}", func)
-                            })?,
-                        )
-                        .map(|ty| &self.ast_context.resolve_type(ty.ctype).kind);
+            Call(call_expr_ty, func_id, ref args) => {
+                let fn_ty = self
+                    .ast_context
+                    .get_pointee_qual_type(
+                        self.ast_context[func_id].kind.get_type().ok_or_else(|| {
+                            format_err!("Invalid callee expression {:?}", func_id)
+                        })?,
+                    )
+                    .map(|ty| &self.ast_context.resolve_type(ty.ctype).kind);
                 let is_variadic = match fn_ty {
                     Some(CTypeKind::Function(_, _, is_variadic, _, _)) => *is_variadic,
                     _ => false,
                 };
-                let func = match self.ast_context[func].kind {
+                let func = match self.ast_context[func_id].kind {
                     // Direct function call
                     CExprKind::ImplicitCast(_, fexp, CastKind::FunctionToPointerDecay, _, _)
                     // Only a direct function call with pointer decay if the
@@ -4679,7 +4681,7 @@ impl<'c> Translation<'c> {
 
                     // Function pointer call
                     _ => {
-                        let callee = self.convert_expr(ctx.used(), func)?;
+                        let callee = self.convert_expr(ctx.used(), func_id)?;
                         let make_fn_ty = |ret_ty: Box<Type>| {
                             let ret_ty = match *ret_ty {
                                 Type::Tuple(TypeTuple { elems: ref v, .. }) if v.is_empty() => ReturnType::Default,
@@ -4718,11 +4720,14 @@ impl<'c> Translation<'c> {
                     }
                 };
 
+                let arg_guidances: Option<Vec<Option<tenjin::GuidedType>>> =
+                    self.get_callee_function_arg_guidances(func_id);
+
                 let call = func.and_then(|func| {
                     // We want to decay refs only when function is variadic
                     ctx.decay_ref = DecayRef::from(is_variadic);
 
-                    self.convert_call(call_expr_ty.ctype, func, ctx, args)
+                    self.convert_call(call_expr_ty.ctype, func, ctx, args, arg_guidances)
                 })?;
 
                 self.convert_side_effects_expr(
@@ -4863,12 +4868,17 @@ impl<'c> Translation<'c> {
         func: Box<Expr>,
         ctx: ExprContext,
         cargs: &[CExprId],
+        arg_guidances: Option<Vec<Option<tenjin::GuidedType>>>,
     ) -> TranslationResult<WithStmts<Box<Expr>>> {
         // First do selective call conversion, which may not need to convert all subexpressions.
         match self.call_form_cases_preconversion(call_type_id, ctx, &func, cargs)? {
             Some(converted) => Ok(converted),
             None => {
-                let args = self.convert_exprs(ctx.used(), cargs)?;
+                let args = if let Some(arg_guidances) = arg_guidances {
+                    self.convert_exprs_guided(ctx.used(), cargs, arg_guidances)?
+                } else {
+                    self.convert_exprs(ctx.used(), cargs)?
+                };
                 let res =
                     args.map(|args| self.convert_call_with_args(call_type_id, func, args, cargs));
                 Ok(res)
@@ -5262,7 +5272,11 @@ impl<'c> Translation<'c> {
                                 source_ty, target_ty, x,
                             )))
                         } else {
-                            Ok(WithStmts::new_val(mk().cast_expr(x, target_ty)))
+                            Ok(WithStmts::new_val(tenjin::cast_expr_guided(
+                                x,
+                                target_ty,
+                                guided_type,
+                            )))
                         }
                     })
                 }
