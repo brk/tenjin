@@ -3024,15 +3024,11 @@ impl<'c> Translation<'c> {
                 }
 
                 // XREF:TENJIN-GUIDANCE-STRAWMAN
-                let (ty_override, mut_override) =
-                    if guided_type.is_some_and(|g| g.pretty == "String") {
-                        (
-                            Some(mk().path_ty(vec!["String"])),
-                            Some(Mutability::Immutable),
-                        )
-                    } else {
-                        (None, None)
-                    };
+                let mut_override = if guided_type.is_some() {
+                    Some(Mutability::Immutable)
+                } else {
+                    None
+                };
 
                 let pat = if var.is_empty() {
                     mk().wild_pat()
@@ -3058,12 +3054,7 @@ impl<'c> Translation<'c> {
                     mk().set_mutbl(mutbl).ident_pat(new_var)
                 };
 
-                if let Some(ty_override) = ty_override {
-                    // If we have a type override, we use it instead of the converted type
-                    args.push(mk().arg(ty_override, pat));
-                } else {
-                    args.push(mk().arg(ty, pat))
-                }
+                args.push(mk().arg(ty, pat));
             }
 
             if is_variadic {
