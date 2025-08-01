@@ -133,11 +133,11 @@ pub fn cast_expr_guided(
 ) -> Box<Expr> {
     if let Some(guided_type) = guided_type {
         // If we want a char and have a character literal, we don't need a cast.
-        if guided_type.pretty == "char" && tenjin::expr_is_lit_char(&*e) {
+        if guided_type.pretty == "char" && tenjin::expr_is_lit_char(&e) {
             return e;
         }
     }
-    return mk().cast_expr(e, t);
+    mk().cast_expr(e, t)
 }
 
 impl Translation<'_> {
@@ -565,7 +565,7 @@ impl Translation<'_> {
                     // Stripping casts is correct because we know the underlying type is char,
                     // which matches the argument of the function we're redirecting to.
                     let bare_foo: Box<Expr> =
-                        Box::new(tenjin::expr_strip_casts(&*(expr_foo.to_expr())).clone());
+                        Box::new(tenjin::expr_strip_casts(&(expr_foo.to_expr())).clone());
                     let isblank_call =
                         mk().call_expr(mk().path_expr(vec!["isblank_char_i"]), vec![bare_foo]);
                     return Ok(Some(WithStmts::new_val(isblank_call)));
