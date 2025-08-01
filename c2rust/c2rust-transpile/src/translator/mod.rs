@@ -1338,6 +1338,7 @@ enum RecognizedCallForm {
     PrintfOut(Vec<Box<Expr>>, CExprId),
     PrintfErr(Vec<Box<Expr>>, CExprId),
     OtherCall(Box<Expr>, Vec<Box<Expr>>),
+    ScanfAddrTaken(Vec<tenjin_scanf::Directive>, Vec<CExprId>),
 }
 
 enum LitStrOrByteStr<'a> {
@@ -4061,6 +4062,15 @@ impl<'c> Translation<'c> {
         current
     }
 
+    fn c_expr_get_str_lit_bytes(&self, expr: CExprId) -> Option<Vec<u8>> {
+        if let CExprKind::Literal(_, CLiteral::String(ref s, _)) =
+            self.ast_context[self.c_strip_implicit_casts(expr)].kind
+        {
+            return Some(s.clone());
+        }
+        None
+    }
+
     fn c_expr_get_var_decl_id(&self, expr: CExprId) -> Option<CDeclId> {
         if let CExprKind::DeclRef(_, decl_id, _) =
             self.ast_context[self.c_strip_implicit_casts(expr)].kind
@@ -4085,6 +4095,15 @@ impl<'c> Translation<'c> {
             }
         }
         false
+    }
+
+    fn c_expr_get_addr_of(&self, expr: CExprId) -> Option<CExprId> {
+        if let CExprKind::Unary(_, c_ast::UnOp::AddressOf, inner, _) =
+            self.ast_context[self.c_strip_implicit_casts(expr)].kind
+        {
+            return Some(inner);
+        }
+        None
     }
 
     // Fixing this would require major refactors for marginal benefit.
@@ -4893,9 +4912,9 @@ impl<'c> Translation<'c> {
                 } else {
                     self.convert_exprs(ctx.used(), cargs)?
                 };
-                let res =
-                    args.map(|args| self.convert_call_with_args(call_type_id, func, args, cargs));
-                Ok(res)
+                args.result_map(|args| {
+                    self.convert_call_with_args(ctx, call_type_id, func, args, cargs)
+                })
             }
         }
     }

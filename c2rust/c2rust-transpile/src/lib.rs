@@ -142,6 +142,7 @@ pub enum ExternCrate {
     NumTraits,
     Memoffset,
     Libc,
+    Scanf,
 }
 
 #[derive(Serialize)]
@@ -172,6 +173,7 @@ impl From<ExternCrate> for ExternCrateDetails {
             ExternCrate::NumTraits => Self::new("num-traits", "0.2", true),
             ExternCrate::Memoffset => Self::new("memoffset", "0.5", true),
             ExternCrate::Libc => Self::new("libc", "0.2", false),
+            ExternCrate::Scanf => Self::new("scanf", "1.3.1", true),
         }
     }
 }
