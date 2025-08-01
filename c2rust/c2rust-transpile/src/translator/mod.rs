@@ -11,6 +11,7 @@ use dtoa;
 use failure::{err_msg, format_err, Fail};
 use indexmap::indexmap;
 use indexmap::{IndexMap, IndexSet};
+use itertools::Itertools; // for zip_eq
 use log::{error, info, trace, warn};
 use proc_macro2::{Punct, Spacing::*, Span, TokenStream, TokenTree};
 use syn::spanned::Spanned as _;
@@ -4093,6 +4094,21 @@ impl<'c> Translation<'c> {
         exprs
             .iter()
             .map(|arg| self.convert_expr(ctx, *arg))
+            .collect()
+    }
+
+    // Fixing this would require major refactors for marginal benefit.
+    #[allow(clippy::vec_box)]
+    fn convert_exprs_guided(
+        &self,
+        ctx: ExprContext,
+        exprs: &[CExprId],
+        arg_guidances: Vec<Option<tenjin::GuidedType>>,
+    ) -> TranslationResult<WithStmts<Vec<Box<Expr>>>> {
+        exprs
+            .iter()
+            .zip_eq(arg_guidances)
+            .map(|(arg, guidance)| self.convert_expr_guided(ctx, *arg, &guidance))
             .collect()
     }
 
