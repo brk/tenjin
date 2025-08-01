@@ -126,6 +126,20 @@ pub fn expr_in_u64(expr: Box<Expr>) -> Box<Expr> {
     cast_box
 }
 
+pub fn cast_expr_guided(
+    e: Box<Expr>,
+    t: Box<Type>,
+    guided_type: &Option<tenjin::GuidedType>,
+) -> Box<Expr> {
+    if let Some(guided_type) = guided_type {
+        // If we want a char and have a character literal, we don't need a cast.
+        if guided_type.pretty == "char" && tenjin::expr_is_lit_char(&*e) {
+            return e;
+        }
+    }
+    return mk().cast_expr(e, t);
+}
+
 impl Translation<'_> {
     pub fn recognize_c_assignment_cases(
         &self,
