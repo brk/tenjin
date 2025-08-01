@@ -4651,20 +4651,20 @@ impl<'c> Translation<'c> {
                 })
             }
 
-            Call(call_expr_ty, func, ref args) => {
-                let fn_ty =
-                    self.ast_context
-                        .get_pointee_qual_type(
-                            self.ast_context[func].kind.get_type().ok_or_else(|| {
-                                format_err!("Invalid callee expression {:?}", func)
-                            })?,
-                        )
-                        .map(|ty| &self.ast_context.resolve_type(ty.ctype).kind);
+            Call(call_expr_ty, func_id, ref args) => {
+                let fn_ty = self
+                    .ast_context
+                    .get_pointee_qual_type(
+                        self.ast_context[func_id].kind.get_type().ok_or_else(|| {
+                            format_err!("Invalid callee expression {:?}", func_id)
+                        })?,
+                    )
+                    .map(|ty| &self.ast_context.resolve_type(ty.ctype).kind);
                 let is_variadic = match fn_ty {
                     Some(CTypeKind::Function(_, _, is_variadic, _, _)) => *is_variadic,
                     _ => false,
                 };
-                let func = match self.ast_context[func].kind {
+                let func = match self.ast_context[func_id].kind {
                     // Direct function call
                     CExprKind::ImplicitCast(_, fexp, CastKind::FunctionToPointerDecay, _, _)
                     // Only a direct function call with pointer decay if the
@@ -4681,7 +4681,7 @@ impl<'c> Translation<'c> {
 
                     // Function pointer call
                     _ => {
-                        let callee = self.convert_expr(ctx.used(), func)?;
+                        let callee = self.convert_expr(ctx.used(), func_id)?;
                         let make_fn_ty = |ret_ty: Box<Type>| {
                             let ret_ty = match *ret_ty {
                                 Type::Tuple(TypeTuple { elems: ref v, .. }) if v.is_empty() => ReturnType::Default,
