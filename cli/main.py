@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 
 import click
+import requests
 
 import repo_root
 import provisioning
@@ -12,26 +13,31 @@ import translation
 
 
 def do_fmt_py():
-    hermetic.check_call_uv("run ruff format".split())
+    hermetic.check_call_uv("run ruff format".split(), cwd=repo_root.find_repo_root_dir_Path())
 
 
 def do_check_py_fmt():
-    hermetic.check_call_uv("run ruff format --check".split())
+    hermetic.check_call_uv(
+        "run ruff format --check".split(), cwd=repo_root.find_repo_root_dir_Path()
+    )
 
 
 def do_check_py():
     root = repo_root.find_repo_root_dir_Path()
-    hermetic.check_call_uv("run ruff check --quiet".split())
-    hermetic.check_call_uv([
-        "run",
-        "mypy",
-        root / "cli" / "main.py",
-        root / "cli" / "repo_root.py",
-        root / "cli" / "constants.py",
-        root / "cli" / "sha256sum.py",
-        root / "cli" / "provisioning.py",
-        root / "cli" / "translation.py",
-    ])
+    hermetic.check_call_uv("run ruff check --quiet".split(), cwd=root)
+    hermetic.check_call_uv(
+        [
+            "run",
+            "mypy",
+            root / "cli" / "main.py",
+            root / "cli" / "repo_root.py",
+            root / "cli" / "constants.py",
+            root / "cli" / "sha256sum.py",
+            root / "cli" / "provisioning.py",
+            root / "cli" / "translation.py",
+        ],
+        cwd=root,
+    )
     do_check_py_fmt()
 
 
@@ -302,6 +308,65 @@ def provision(wanted: str):
     provisioning.provision_desires(wanted)
 
 
+@cli.command()
+@click.argument(
+    "directory", type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path)
+)
+@click.option(
+    "--to", "host_port", required=True, help="Host and port to upload to (e.g., localhost:8080)"
+)
+def upload_results(directory: Path, host_port: str):
+    """Upload translation_metadata.json and translation_snapshot.json to a Tenjin dashboard."""
+
+    # Check if required files exist
+    metadata_file = directory / "translation_metadata.json"
+    snapshot_file = directory / "translation_snapshot.json"
+
+    if not metadata_file.exists():
+        click.echo(f"Error: {metadata_file} does not exist", err=True)
+        sys.exit(1)
+
+    if not snapshot_file.exists():
+        click.echo(f"Error: {snapshot_file} does not exist", err=True)
+        sys.exit(1)
+
+    if host_port.startswith("http"):
+        url = f"{host_port}/ingest"
+    elif host_port.startswith("100."):  # Tailscale IP
+        url = f"http://{host_port}/ingest"
+    else:
+        url = f"https://{host_port}/ingest"
+
+    try:
+        with open(metadata_file, "rb") as metadata_fp, open(snapshot_file, "rb") as snapshot_fp:
+            files = {
+                "metadata": ("translation_metadata.json", metadata_fp, "application/json"),
+                "snapshot": ("translation_snapshot.json", snapshot_fp, "application/json"),
+            }
+
+            response = requests.post(url, files=files)
+            response.raise_for_status()
+
+            click.echo(f"Successfully uploaded files to {url}")
+            click.echo(f"Response status: {response.status_code}")
+            if response.text:
+                click.echo(f"Response: {response.text}")
+
+    except requests.exceptions.HTTPError as e:
+        click.echo(f"HTTP Error uploading files: {e}", err=True)
+        click.echo(f"Response status: {e.response.status_code}", err=True)
+        click.echo(f"Response headers: {dict(e.response.headers)}", err=True)
+        if e.response.text:
+            click.echo(f"Response body: {e.response.text}", err=True)
+        sys.exit(1)
+    except requests.exceptions.RequestException as e:
+        click.echo(f"Request error uploading files: {e}", err=True)
+        sys.exit(1)
+    except Exception as e:
+        click.echo(f"Unexpected error: {e}", err=True)
+        sys.exit(1)
+
+
 if __name__ == "__main__":
     # Per its own documentation, Click does not support losslessly forwarding
     # command line arguments. So when we want to do that, we bypass Click.
@@ -325,6 +390,13 @@ if __name__ == "__main__":
         if sys.argv[1] == "exec":
             sys.exit(hermetic.run_shell_cmd(sys.argv[2:]).returncode)
         if sys.argv[1] == "true":
+            sys.exit(0)
+        if sys.argv[1] == "uv":
+            try:
+                hermetic.check_call_uv(sys.argv[2:], cwd=Path.cwd())
+            except Exception as e:
+                click.echo(f"Error occurred while running uv: {e}", err=True)
+                sys.exit(1)
             sys.exit(0)
         if sys.argv[1] == "clang-ast-xml":
             sys.exit(
