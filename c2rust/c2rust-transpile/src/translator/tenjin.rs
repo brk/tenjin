@@ -79,6 +79,15 @@ pub fn expr_is_ident(expr: &Expr, ident: &str) -> bool {
     }
 }
 
+pub fn expr_is_lit_char(expr: &Expr) -> bool {
+    if let Expr::Lit(ref lit) = *expr {
+        if let syn::Lit::Char(_) = lit.lit {
+            return true;
+        }
+    }
+    false
+}
+
 pub fn expr_strip_casts(expr: &Expr) -> &Expr {
     let mut ep = expr;
     loop {
