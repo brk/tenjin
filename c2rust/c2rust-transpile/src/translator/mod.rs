@@ -5257,7 +5257,11 @@ impl<'c> Translation<'c> {
                                 source_ty, target_ty, x,
                             )))
                         } else {
-                            Ok(WithStmts::new_val(mk().cast_expr(x, target_ty)))
+                            Ok(WithStmts::new_val(tenjin::cast_expr_guided(
+                                x,
+                                target_ty,
+                                guided_type,
+                            )))
                         }
                     })
                 }
