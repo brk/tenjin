@@ -261,7 +261,8 @@ impl Translation<'_> {
             }
         }
 
-        let rhs_translation = self.convert_expr(ctx, rhs)?;
+        let lhs_guidance = self.parsed_guidance.borrow_mut().query_expr_type(self, lhs);
+        let rhs_translation = self.convert_expr_guided(ctx, rhs, &lhs_guidance)?;
         self.convert_assignment_operator_with_rhs(
             ctx,
             op,

@@ -49,6 +49,7 @@ pub mod parent_fn;
 mod simd;
 mod structs;
 mod tenjin;
+mod tenjin_scanf;
 mod variadic;
 
 pub use crate::diagnostics::{TranslationError, TranslationErrorKind};
@@ -376,6 +377,13 @@ impl ParsedGuidance {
             self.decls_without_type_guidance.insert(id);
             None
         }
+    }
+
+    pub fn query_expr_type(&mut self, t: &Translation, id: CExprId) -> Option<tenjin::GuidedType> {
+        if let Some(decl_id) = t.c_expr_get_var_decl_id(id) {
+            return self.query_decl_type(t, decl_id);
+        }
+        None
     }
 }
 
@@ -1337,6 +1345,7 @@ enum RecognizedCallForm {
     PrintfOut(Vec<Box<Expr>>, CExprId),
     PrintfErr(Vec<Box<Expr>>, CExprId),
     OtherCall(Box<Expr>, Vec<Box<Expr>>),
+    ScanfAddrTaken(Vec<tenjin_scanf::Directive>, Vec<CExprId>),
 }
 
 enum LitStrOrByteStr<'a> {
@@ -3322,6 +3331,22 @@ impl<'c> Translation<'c> {
             .get_type()
             .ok_or_else(|| format_err!("bad condition type"))?;
 
+        let null_check_with_guidance = |e, negated, mb_guided_type: Option<tenjin::GuidedType>| {
+            if let Some(guided_type) = mb_guided_type {
+                if guided_type.pretty == "String" {
+                    // strings are never null, so the base value is false, which matches the value of negated.
+                    return mk().lit_expr(mk().bool_lit(negated));
+                }
+            }
+
+            let is_null = mk().method_call_expr(e, "is_null", vec![]);
+            if negated {
+                mk().unary_expr(UnOp::Not(Default::default()), is_null)
+            } else {
+                is_null
+            }
+        };
+
         let null_pointer_case =
             |negated: bool, ptr: CExprId| -> TranslationResult<WithStmts<Box<Expr>>> {
                 let val = self.convert_expr(ctx.used().decay_ref(), ptr)?;
@@ -3337,12 +3362,9 @@ impl<'c> Translation<'c> {
                             mk().method_call_expr(e, "is_none", vec![])
                         }
                     } else {
-                        let is_null = mk().method_call_expr(e, "is_null", vec![]);
-                        if negated {
-                            mk().unary_expr(UnOp::Not(Default::default()), is_null)
-                        } else {
-                            is_null
-                        }
+                        let mb_guided_type =
+                            self.parsed_guidance.borrow_mut().query_expr_type(self, ptr);
+                        null_check_with_guidance(e, negated, mb_guided_type)
                     }
                 }))
             };
@@ -4060,6 +4082,15 @@ impl<'c> Translation<'c> {
         current
     }
 
+    fn c_expr_get_str_lit_bytes(&self, expr: CExprId) -> Option<Vec<u8>> {
+        if let CExprKind::Literal(_, CLiteral::String(ref s, _)) =
+            self.ast_context[self.c_strip_implicit_casts(expr)].kind
+        {
+            return Some(s.clone());
+        }
+        None
+    }
+
     fn c_expr_get_var_decl_id(&self, expr: CExprId) -> Option<CDeclId> {
         if let CExprKind::DeclRef(_, decl_id, _) =
             self.ast_context[self.c_strip_implicit_casts(expr)].kind
@@ -4084,6 +4115,15 @@ impl<'c> Translation<'c> {
             }
         }
         false
+    }
+
+    fn c_expr_get_addr_of(&self, expr: CExprId) -> Option<CExprId> {
+        if let CExprKind::Unary(_, c_ast::UnOp::AddressOf, inner, _) =
+            self.ast_context[self.c_strip_implicit_casts(expr)].kind
+        {
+            return Some(inner);
+        }
+        None
     }
 
     // Fixing this would require major refactors for marginal benefit.
@@ -4892,9 +4932,9 @@ impl<'c> Translation<'c> {
                 } else {
                     self.convert_exprs(ctx.used(), cargs)?
                 };
-                let res =
-                    args.map(|args| self.convert_call_with_args(call_type_id, func, args, cargs));
-                Ok(res)
+                args.result_map(|args| {
+                    self.convert_call_with_args(ctx, call_type_id, func, args, cargs)
+                })
             }
         }
     }
