@@ -49,6 +49,7 @@ pub mod parent_fn;
 mod simd;
 mod structs;
 mod tenjin;
+mod tenjin_scanf;
 mod variadic;
 
 pub use crate::diagnostics::{TranslationError, TranslationErrorKind};
