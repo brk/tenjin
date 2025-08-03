@@ -112,6 +112,10 @@ pub fn expr_is_stderr(expr: &Expr) -> bool {
     tenjin::expr_is_ident(expr, "stderr") || tenjin::expr_is_ident(expr, "__stderrp")
 }
 
+pub fn expr_is_stdin(expr: &Expr) -> bool {
+    tenjin::expr_is_ident(expr, "stdin") || tenjin::expr_is_ident(expr, "__stdinp")
+}
+
 pub fn expr_is_lit_char(expr: &Expr) -> bool {
     if let Expr::Lit(ref lit) = *expr {
         if let syn::Lit::Char(_) = lit.lit {
@@ -283,6 +287,48 @@ fn libz_rs_sys_call_form_cases(
                 mk().path_expr("crc32_zz"),
                 args.to_owned(),
             ));
+        }
+    }
+    None
+}
+
+fn recognize_fscanf_of_stdin(
+    t: &Translation,
+    func: &Box<Expr>,
+    args: &[Box<Expr>],
+    cargs: &[CExprId],
+) -> Option<RecognizedCallForm> {
+    if tenjin::expr_is_ident(&func, "fscanf") && args.len() > 2 && tenjin::expr_is_stdin(&args[0]) {
+        if let Some(fmt_raw) = cargs
+            .get(1)
+            .and_then(|carg| t.c_expr_get_str_lit_bytes(*carg))
+        {
+            let fmt = String::from_utf8_lossy(&fmt_raw);
+            match tenjin_scanf::parse_scanf_format(&fmt) {
+                Ok(directives) => {
+                    if directives.iter().all(tenjin_scanf::directive_is_simple) {
+                        let cargs_after_fmt = cargs[1..].to_vec();
+                        if cargs_after_fmt
+                            .iter()
+                            .all(|&carg| t.c_expr_get_addr_of(carg).is_some())
+                        {
+                            // If all directives are simple, and all arguments are address-taken,
+                            // we can use the scanf macro.
+                            return Some(RecognizedCallForm::ScanfAddrTaken(
+                                directives,
+                                cargs_after_fmt,
+                            ));
+                        }
+                    }
+                    // TENJIN-SHORTCOMINGS:
+                    // - fscanf of non-stdin streams
+                    // - format strings with non-trivial directives (including char/string inputs)
+                    // - arguments that are not address-of expressions
+                }
+                Err(e) => {
+                    log::warn!("TENJIN: Failed to parse fscanf format: {}", e);
+                }
+            }
         }
     }
     None
@@ -505,6 +551,10 @@ impl Translation<'_> {
                     }
                 }
             }
+        }
+
+        if let Some(call_form) = recognize_fscanf_of_stdin(self, &func, &args, &cargs) {
+            return call_form;
         }
 
         if let Some(call_form) = libz_rs_sys_call_form_cases(self, &func, &args) {
