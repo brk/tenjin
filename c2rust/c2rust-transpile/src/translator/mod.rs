@@ -1861,6 +1861,37 @@ mod refactor_format {
             }
         }
     }
+
+    mod tests {
+        #[test]
+        fn test_parser() {
+            let mut pieces = vec![];
+            super::Parser::new("Hello %s %2x", |p| pieces.push(format!("{:?}", p))).parse();
+            assert_eq!(
+                pieces,
+                vec![
+                    "Text(\"Hello \")",
+                    "Conv(Conv { ty: Str, width: None, prec: None })",
+                    "Text(\" \")",
+                    "Conv(Conv { ty: Hex(None, false), width: Some(Number(2)), prec: None })"
+                ]
+            );
+        }
+
+        #[test]
+        fn test_parser_flag_0() {
+            let mut pieces = vec![];
+            super::Parser::new("%2x %02x", |p| pieces.push(format!("{:?}", p))).parse();
+            assert_eq!(
+                pieces,
+                vec![
+                    "Conv(Conv { ty: Hex(None, false), width: Some(Number(2)), prec: None })",
+                    "Text(\" \")",
+                    "Conv(Conv { ty: Hex(None, false), width: Some(Number(2)), prec: None })"
+                ]
+            );
+        }
+    }
 }
 
 impl<'c> Translation<'c> {
