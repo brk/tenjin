@@ -406,12 +406,25 @@ impl Translation<'_> {
                     fmt_string_span,
                 )))
             }
-            RecognizedCallForm::ScanfAddrTaken(mut directives, cargs) => {
-                // If directives.len() > cargs.len(), that's UB in C, so we can do whatever.
-                directives.truncate(cargs.len());
+            RecognizedCallForm::ScanfAddrTaken(all_directives, cargs) => {
+                // If there are more conversion specifications than arguments,
+                // that's UB in C, so we're permitted to drop any extras.
+                let mut capped_directives = Vec::new();
+                let mut seen_conversion_specs = 0;
+                for directive in &all_directives {
+                    if let tenjin_scanf::Directive::ConversionSpec(_) = directive {
+                        if seen_conversion_specs < cargs.len() {
+                            capped_directives.push(directive.clone());
+                        }
+
+                        seen_conversion_specs += 1;
+                    } else {
+                        capped_directives.push(directive.clone());
+                    }
+                }
 
                 let mut scanf_rs_fmt = String::new();
-                for directive in &directives {
+                for directive in &capped_directives {
                     match directive {
                         tenjin_scanf::Directive::ZeroOrMoreWhitespace => {
                             scanf_rs_fmt.push(' ');
