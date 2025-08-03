@@ -414,7 +414,10 @@ def extract_preprocessor_definitions_from_compile_commands(
         command_str = command_info.get("command", "")
         # command_info["directory"] is build directory, which can be
         # located anywhere; it has no relation to the source file path.
-        relative_path = Path(command_info.get("file", "")).relative_to(codebase)
+        if Path(command_info.get("file", "")).resolve() == codebase.resolve():
+            relative_path = command_info.get("file", "")
+        else:
+            relative_path = Path(command_info.get("file", "")).relative_to(codebase)
         defs: list[ingest.PreprocessorDefinition] = []
         args = shlex.split(command_str)
         i = 0
