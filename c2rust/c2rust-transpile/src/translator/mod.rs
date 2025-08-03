@@ -1642,15 +1642,34 @@ mod refactor_format {
         Unknown(char),
     }
 
+    impl ConvType {
+        fn is_numeric(&self) -> bool {
+            matches!(
+                *self,
+                ConvType::Int(_) | ConvType::Uint(_) | ConvType::Hex(_, _) | ConvType::Float
+            )
+        }
+    }
+
     #[derive(Clone, Copy, PartialEq, Eq, Debug)]
     enum Amount {
         Number(usize),
         NextArg,
     }
 
+    #[derive(Clone, PartialEq, Eq, Debug, Default)]
+    struct ConvFlags {
+        left_justified: bool, // `-`
+        show_sign: bool,      // `+`
+        space_sign: bool,     // ` `
+        alternate_form: bool, // `#`
+        zero_padding: bool,   // `0`
+    }
+
     #[derive(Clone, PartialEq, Eq, Debug)]
     struct Conv {
         ty: ConvType,
+        flags: ConvFlags,
         width: Option<Amount>,
         prec: Option<Amount>,
     }
@@ -1659,6 +1678,7 @@ mod refactor_format {
         fn new() -> Conv {
             Conv {
                 ty: ConvType::Int(Length::None),
+                flags: ConvFlags::default(),
                 width: None,
                 prec: None,
             }
@@ -1689,6 +1709,32 @@ mod refactor_format {
 
         fn push_spec(&self, buf: &mut String) {
             buf.push_str("{:");
+
+            // See https://doc.rust-lang.org/std/fmt/#syntax
+
+            if self.flags.left_justified {
+                // In C, the default is right-justified.
+                // In Rust, the default is left-justified for non-numeric types,
+                // and right-justified for numeric types.
+                if self.ty.is_numeric() {
+                    buf.push('<');
+                }
+            } else if !self.ty.is_numeric() {
+                buf.push('>');
+            }
+
+            if self.flags.show_sign {
+                buf.push('+');
+            }
+            if self.flags.space_sign {
+                log::error!("Space-sign flag is not supported in Rust format strings");
+            }
+            if self.flags.alternate_form {
+                buf.push('#');
+            }
+            if self.flags.zero_padding {
+                buf.push('0');
+            }
 
             if let Some(amt) = self.width {
                 match amt {
@@ -1779,6 +1825,22 @@ mod refactor_format {
                     continue;
                 }
 
+                if self.eat(b'-') {
+                    conv.flags.left_justified = true;
+                }
+                if self.eat(b'+') {
+                    conv.flags.show_sign = true;
+                }
+                if self.eat(b' ') {
+                    conv.flags.space_sign = true;
+                }
+                if self.eat(b'#') {
+                    conv.flags.alternate_form = true;
+                }
+                if self.eat(b'0') {
+                    conv.flags.zero_padding = true;
+                }
+
                 if b'1' <= self.peek() && self.peek() <= b'9' || self.peek() == b'*' {
                     conv.width = Some(self.parse_amount());
                 }
@@ -1859,6 +1921,37 @@ mod refactor_format {
                 'f' => ConvType::Float,
                 _ => ConvType::Unknown(c),
             }
+        }
+    }
+
+    mod tests {
+        #[test]
+        fn test_parser() {
+            let mut pieces = vec![];
+            super::Parser::new("Hello %s %2x", |p| pieces.push(format!("{:?}", p))).parse();
+            assert_eq!(
+                pieces,
+                vec![
+                    "Text(\"Hello \")",
+                    "Conv(Conv { ty: Str, flags: ConvFlags { left_justified: false, show_sign: false, space_sign: false, alternate_form: false, zero_padding: false }, width: None, prec: None })",
+                    "Text(\" \")",
+                    "Conv(Conv { ty: Hex(None, false), flags: ConvFlags { left_justified: false, show_sign: false, space_sign: false, alternate_form: false, zero_padding: false }, width: Some(Number(2)), prec: None })"
+                ]
+            );
+        }
+
+        #[test]
+        fn test_parser_flag_0() {
+            let mut pieces = vec![];
+            super::Parser::new("%2x %02x", |p| pieces.push(format!("{:?}", p))).parse();
+            assert_eq!(
+                pieces,
+                vec![
+                    "Conv(Conv { ty: Hex(None, false), flags: ConvFlags { left_justified: false, show_sign: false, space_sign: false, alternate_form: false, zero_padding: false }, width: Some(Number(2)), prec: None })",
+                    "Text(\" \")",
+                    "Conv(Conv { ty: Hex(None, false), flags: ConvFlags { left_justified: false, show_sign: false, space_sign: false, alternate_form: false, zero_padding: true }, width: Some(Number(2)), prec: None })"
+                ]
+            );
         }
     }
 }

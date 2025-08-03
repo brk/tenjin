@@ -410,6 +410,32 @@ mod tests {
     }
 
     #[test]
+    fn test_simple_format_twice() {
+        let result = parse_scanf_format("%d %u").unwrap();
+        assert_eq!(result.len(), 3);
+        match &result[0] {
+            Directive::ConversionSpec(spec) => {
+                assert_eq!(spec.specifier, 'd');
+                assert!(!spec.suppress_assignment);
+                assert_eq!(spec.nth, None);
+            }
+            _ => panic!("Expected ConversionSpec"),
+        }
+        match &result[1] {
+            Directive::ZeroOrMoreWhitespace => {}
+            _ => panic!("Expected ZeroOrMoreWhitespace"),
+        }
+        match &result[2] {
+            Directive::ConversionSpec(spec) => {
+                assert_eq!(spec.specifier, 'u');
+                assert!(!spec.suppress_assignment);
+                assert_eq!(spec.nth, None);
+            }
+            _ => panic!("Expected ConversionSpec"),
+        }
+    }
+
+    #[test]
     fn test_whitespace() {
         let result = parse_scanf_format("  \t\n  ").unwrap();
         assert_eq!(result.len(), 1);

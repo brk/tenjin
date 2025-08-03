@@ -19,6 +19,10 @@ The tests run in CI should be equivalent (for now) to `10j check-star && 10j che
 CI does not yet check whether any particular translations produce the expected results.
 This ought to change in the future.
 
+Some commits should have their message prefixed with a tag:
+- `NFC: ` -- No Functional Change, for behavior-preserving refactorings
+- `TF: ` -- Tests Failing, when the commit intentionally contains a known regression (e.g. for demonstration purposes)
+
 ## Provisioning
 
 Tenjin tries hard to be easy to install, in particular without requiring root/sudo access.

@@ -81,6 +81,14 @@ pub fn expr_is_ident(expr: &Expr, ident: &str) -> bool {
     }
 }
 
+pub fn expr_is_stdout(expr: &Expr) -> bool {
+    tenjin::expr_is_ident(expr, "stdout") || tenjin::expr_is_ident(expr, "__stdoutp")
+}
+
+pub fn expr_is_stderr(expr: &Expr) -> bool {
+    tenjin::expr_is_ident(expr, "stderr") || tenjin::expr_is_ident(expr, "__stderrp")
+}
+
 pub fn expr_is_lit_char(expr: &Expr) -> bool {
     if let Expr::Lit(ref lit) = *expr {
         if let syn::Lit::Char(_) = lit.lit {
@@ -323,14 +331,10 @@ impl Translation<'_> {
         }
 
         if tenjin::expr_is_ident(&func, "fprintf") && !args.is_empty() {
-            if tenjin::expr_is_ident(&args[0], "stderr")
-                || tenjin::expr_is_ident(&args[0], "__stderrp")
-            {
+            if tenjin::expr_is_stderr(&args[0]) {
                 return RecognizedCallForm::PrintfErr(args[1..].to_vec(), cargs[1]);
             }
-            if tenjin::expr_is_ident(&args[0], "stdout")
-                || tenjin::expr_is_ident(&args[0], "__stdoutp")
-            {
+            if tenjin::expr_is_stdout(&args[0]) {
                 return RecognizedCallForm::PrintfOut(args[1..].to_vec(), cargs[1]);
             }
         }
@@ -406,12 +410,25 @@ impl Translation<'_> {
                     fmt_string_span,
                 )))
             }
-            RecognizedCallForm::ScanfAddrTaken(mut directives, cargs) => {
-                // If directives.len() > cargs.len(), that's UB in C, so we can do whatever.
-                directives.truncate(cargs.len());
+            RecognizedCallForm::ScanfAddrTaken(all_directives, cargs) => {
+                // If there are more conversion specifications than arguments,
+                // that's UB in C, so we're permitted to drop any extras.
+                let mut capped_directives = Vec::new();
+                let mut seen_conversion_specs = 0;
+                for directive in &all_directives {
+                    if let tenjin_scanf::Directive::ConversionSpec(_) = directive {
+                        if seen_conversion_specs < cargs.len() {
+                            capped_directives.push(directive.clone());
+                        }
+
+                        seen_conversion_specs += 1;
+                    } else {
+                        capped_directives.push(directive.clone());
+                    }
+                }
 
                 let mut scanf_rs_fmt = String::new();
-                for directive in &directives {
+                for directive in &capped_directives {
                     match directive {
                         tenjin_scanf::Directive::ZeroOrMoreWhitespace => {
                             scanf_rs_fmt.push(' ');
