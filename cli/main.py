@@ -200,6 +200,9 @@ def cli():
 def translate(codebase, resultsdir, cratename, c_main_in, guidance):
     root = repo_root.find_repo_root_dir_Path()
     do_build_rs(root)
+    if guidance is None:
+        click.echo("Using empty guidance; pass `--guidance` to refine translation.", err=True)
+        guidance = "{}"
     translation.do_translate(root, Path(codebase), Path(resultsdir), cratename, guidance, c_main_in)
 
 
