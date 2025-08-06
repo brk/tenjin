@@ -59,7 +59,11 @@ either from `git pull` or `bisect`, the support projects should be kept in sync 
   - Disable the Black formatter extension, if you already have it, as it will produce style mismatches.
   - Depending on what parts of the codebase are being analyzed, `rust-analyzer` may need access to Tenjin's LLVM library directory. From Tenjin's root directory, invoke `10j exec code .` (see below regarding `10j exec`).
 
-### 
+### Update snapshot tests
+
+- Either:
+  - `10j test-unit-rs` then `(cd c2rust ; 10j cargo insta review)`, or
+  - `INSTA_UPDATE=always 10j test-unit-rs` then review the `*.rs` diffs
 
 ## CLI Notes
 
