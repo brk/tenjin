@@ -292,14 +292,24 @@ fn libz_rs_sys_call_form_cases(
     None
 }
 
+#[allow(clippy::borrowed_box)]
 fn recognize_scanf_and_fscanf_of_stdin(
     t: &Translation,
     func: &Box<Expr>,
     args: &[Box<Expr>],
     cargs: &[CExprId],
+    ctx: &ExprContext,
 ) -> Option<RecognizedCallForm> {
+    if ctx.is_used() {
+        // We currently only translate to the scanf::scanf! macro, which
+        // returns Result<(), _>. Eventually, we should find or create a
+        // more faithful implementation which tracks assignments and can
+        // thus compute the same integer return codes as scanf & fscanf.
+        return None;
+    }
+
     // TENJIN-TODO: extract helper method for mostly-duplicated code below
-    if tenjin::expr_is_ident(&func, "scanf") && args.len() > 1 {
+    if tenjin::expr_is_ident(func, "scanf") && args.len() > 1 {
         if let Some(fmt_raw) = cargs
             .first()
             .and_then(|&carg| t.c_expr_get_str_lit_bytes(carg))
@@ -329,7 +339,7 @@ fn recognize_scanf_and_fscanf_of_stdin(
         }
     }
 
-    if tenjin::expr_is_ident(&func, "fscanf") && args.len() > 2 && tenjin::expr_is_stdin(&args[0]) {
+    if tenjin::expr_is_ident(func, "fscanf") && args.len() > 2 && tenjin::expr_is_stdin(&args[0]) {
         if let Some(fmt_raw) = cargs
             .get(1)
             .and_then(|carg| t.c_expr_get_str_lit_bytes(*carg))
@@ -546,6 +556,7 @@ impl Translation<'_> {
         func: Box<Expr>,
         args: Vec<Box<Expr>>,
         cargs: &[CExprId],
+        ctx: ExprContext,
     ) -> RecognizedCallForm {
         if tenjin::expr_is_ident(&func, "printf") {
             return RecognizedCallForm::PrintfOut(args, cargs[0]);
@@ -560,7 +571,9 @@ impl Translation<'_> {
             }
         }
 
-        if let Some(call_form) = recognize_scanf_and_fscanf_of_stdin(self, &func, &args, &cargs) {
+        if let Some(call_form) =
+            recognize_scanf_and_fscanf_of_stdin(self, &func, &args, cargs, &ctx)
+        {
             return call_form;
         }
 
@@ -580,7 +593,7 @@ impl Translation<'_> {
         args: Vec<Box<Expr>>,
         cargs: &[CExprId],
     ) -> TranslationResult<Box<Expr>> {
-        match self.call_form_cases(func, args, cargs) {
+        match self.call_form_cases(func, args, cargs, ctx) {
             RecognizedCallForm::PrintfOut(args, fmt_carg) => {
                 let fmt_string_span = self
                     .ast_context
@@ -662,11 +675,12 @@ impl Translation<'_> {
                     item_store.add_use(vec!["scanf".into()], "scanf");
                 });
 
-                Ok(mk().mac_expr(mk().mac(
+                let scanf_call = mk().mac_expr(mk().mac(
                     mk().path("scanf"),
                     args_tts,
                     MacroDelimiter::Paren(Default::default()),
-                )))
+                ));
+                Ok(mk().method_call_expr(scanf_call, "unwrap", vec![]))
             }
             RecognizedCallForm::OtherCall(func, args) => Ok(mk().call_expr(func, args)),
         }
