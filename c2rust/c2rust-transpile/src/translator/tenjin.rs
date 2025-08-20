@@ -298,6 +298,7 @@ fn recognize_scanf_and_fscanf_of_stdin(
     args: &[Box<Expr>],
     cargs: &[CExprId],
 ) -> Option<RecognizedCallForm> {
+    // TENJIN-TODO: extract helper method for mostly-duplicated code below
     if tenjin::expr_is_ident(&func, "scanf") && args.len() > 1 {
         if let Some(fmt_raw) = cargs
             .first()
@@ -337,7 +338,7 @@ fn recognize_scanf_and_fscanf_of_stdin(
             match tenjin_scanf::parse_scanf_format(&fmt) {
                 Ok(directives) => {
                     if directives.iter().all(tenjin_scanf::directive_is_simple) {
-                        let cargs_after_fmt = cargs[1..].to_vec();
+                        let cargs_after_fmt = cargs[2..].to_vec();
                         if cargs_after_fmt
                             .iter()
                             .all(|&carg| t.c_expr_get_addr_of(carg).is_some())
@@ -348,7 +349,11 @@ fn recognize_scanf_and_fscanf_of_stdin(
                                 directives,
                                 cargs_after_fmt,
                             ));
+                        } else {
+                            log::trace!("TENJIN: fscanf arguments not all address-taken");
                         }
+                    } else {
+                        log::trace!("TENJIN: fscanf directives are not all simple");
                     }
                     // TENJIN-SHORTCOMINGS:
                     // - fscanf of non-stdin streams
@@ -359,6 +364,8 @@ fn recognize_scanf_and_fscanf_of_stdin(
                     log::warn!("TENJIN: Failed to parse fscanf format: {}", e);
                 }
             }
+        } else {
+            log::trace!("TENJIN: fscanf fmt wasn't str lit");
         }
     }
     None
