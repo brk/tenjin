@@ -571,6 +571,14 @@ impl Translation<'_> {
             }
         }
 
+        if tenjin::expr_is_ident(&func, "abort") && args.is_empty() {
+            // TENJIN-TODO: guidance to allow mapping `abort()` to `panic!()`?
+            return RecognizedCallForm::OtherCall(
+                mk().path_expr(vec!["std", "process", "abort"]),
+                args,
+            );
+        }
+
         if let Some(call_form) =
             recognize_scanf_and_fscanf_of_stdin(self, &func, &args, cargs, &ctx)
         {
