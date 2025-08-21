@@ -166,3 +166,23 @@ def extract_preprocessor_definitions_from_compile_commands(
         if defs:
             definitions[relative_path.as_posix()] = defs
     return definitions
+
+
+def munge_compile_commands_for_tenjin_translation(compile_commands_path: Path):
+    """Modify compile_commands.json to include Tenjin-specific declarations
+    and block expansion of macros that Tenjin gives special treatment."""
+    ccs = CompileCommands.from_json_file(compile_commands_path)
+    for cc in ccs.commands:
+        args = cc.get_command_parts()
+        if not args:
+            continue
+        if Path(args[0]).name in ("clang", "cc") and "-c" in args:
+            args.append("-include")
+            args.append(
+                str(repo_root.find_repo_root_dir_Path() / "cli" / "autoincluded_tenjin_decls.h")
+            )
+            args.append("--block-macro")
+            args.append("assert")
+        cc.set_command_parts(args)
+
+    ccs.to_json_file(compile_commands_path)

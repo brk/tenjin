@@ -301,6 +301,10 @@ def do_translate(
 
         output = output.rename(output.with_name("vanilla_c2rust"))
 
+        # After upstream c2rust finishes, we can munge the compilation database
+        # to make Tenjin-specific tweaks to the compilation process.
+        compilation_database.munge_compile_commands_for_tenjin_translation(compdb)
+
         # Then run our version, using guidance and preanalysis.
         output = resultsdir / cratename
         output.mkdir(parents=True, exist_ok=False)
