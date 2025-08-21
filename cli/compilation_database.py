@@ -60,6 +60,13 @@ class CompileCommand:
             return shlex.split(self.command)
         return []
 
+    def set_command_parts(self, parts: list[str]):
+        """Set command as a list of arguments, regardless of original format"""
+        if self.arguments:
+            self.arguments = parts
+        elif self.command:
+            self.command = " ".join(parts)
+
 
 @dataclass
 class CompileCommands:
