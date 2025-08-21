@@ -5,7 +5,7 @@ from pathlib import Path
 import shlex
 from dataclasses import dataclass
 
-from repo_root import localdir
+import repo_root
 import hermetic
 import ingest
 
@@ -112,7 +112,7 @@ def write_synthetic_compile_commands_to(compdb_path: Path, c_file: Path, builddi
     """Write a synthetic compile_commands.json file for a single C file."""
     assert compdb_path.parent.is_dir()
     outname = c_file.with_suffix(".o").name
-    cc = hermetic.xj_llvm_root(localdir()) / "bin" / "clang"
+    cc = hermetic.xj_llvm_root(repo_root.localdir()) / "bin" / "clang"
     c_file_full_q = shlex.quote(c_file.resolve().as_posix())
     contents = json.dumps(
         [
