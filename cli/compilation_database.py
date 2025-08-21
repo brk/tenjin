@@ -1,10 +1,111 @@
+from __future__ import annotations
+
 import json
 from pathlib import Path
 import shlex
+from dataclasses import dataclass
 
 from repo_root import localdir
 import hermetic
 import ingest
+
+# See https://clang.llvm.org/docs/JSONCompilationDatabase.html
+
+
+@dataclass
+class CompileCommand:
+    """Represents a single compile command entry from compile_commands.json"""
+
+    # Required fields
+    directory: str
+    file: str
+
+    # Either command OR arguments is required (but not both)
+    command: str | None = None
+    arguments: list[str] | None = None
+
+    # Optional fields
+    output: str | None = None
+
+    def __post_init__(self):
+        """Validate that either command or arguments is provided"""
+        if self.command is None and self.arguments is None:
+            raise ValueError("Either 'command' or 'arguments' must be provided")
+        if self.command is not None and self.arguments is not None:
+            raise ValueError("Cannot specify both 'command' and 'arguments'")
+
+    @property
+    def directory_path(self) -> Path:
+        """Get directory as a Path object"""
+        return Path(self.directory)
+
+    @property
+    def file_path(self) -> Path:
+        """Get file as a Path object"""
+        return Path(self.file)
+
+    @property
+    def absolute_file_path(self) -> Path:
+        """Get absolute path to the file"""
+        if Path(self.file).is_absolute():
+            return Path(self.file)
+        return self.directory_path / self.file
+
+    def get_command_parts(self) -> list[str]:
+        """Get command as a list of arguments, regardless of original format"""
+        if self.arguments:
+            return self.arguments
+        elif self.command:
+            # Use shlex.split() for proper shell-like parsing of quoted arguments
+            return shlex.split(self.command)
+        return []
+
+
+@dataclass
+class CompileCommands:
+    """Represents the entire compile_commands.json file"""
+
+    commands: list[CompileCommand]
+
+    @classmethod
+    def from_json_file(cls, file_path: str | Path) -> CompileCommands:
+        """Load compile commands from a JSON file"""
+        with open(file_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return cls.from_dict(data)
+
+    @classmethod
+    def from_dict(cls, data: list[dict]) -> CompileCommands:
+        """Create from a list of dictionaries"""
+        commands = [CompileCommand(**entry) for entry in data]
+        return cls(commands=commands)
+
+    def to_dict(self) -> list[dict]:
+        """Convert to a list of dictionaries"""
+        result = []
+        for cmd in self.commands:
+            entry: dict[str, str | list[str]] = {"directory": cmd.directory, "file": cmd.file}
+            if cmd.command:
+                entry["command"] = cmd.command
+            if cmd.arguments:
+                entry["arguments"] = cmd.arguments
+            if cmd.output:
+                entry["output"] = cmd.output
+            result.append(entry)
+        return result
+
+    def to_json_file(self, file_path: str | Path, indent: int = 2):
+        """Save compile commands to a JSON file"""
+        with open(file_path, "w", encoding="utf-8") as f:
+            json.dump(self.to_dict(), f, indent=indent)
+
+    def get_source_files(self) -> list[Path]:
+        """Get all unique source files"""
+        return list(set(cmd.absolute_file_path for cmd in self.commands))
+
+    def get_directories(self) -> list[Path]:
+        """Get all unique directories"""
+        return list(set(cmd.directory_path for cmd in self.commands))
 
 
 def write_synthetic_compile_commands_to(compdb_path: Path, c_file: Path, builddir: Path):
