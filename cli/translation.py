@@ -285,13 +285,12 @@ def do_translate(
         with tracker.tracking("pretranslation", builddir) as _step:
             compdb = perform_pre_translation(builddir)
 
-        with open(compdb, "r", encoding="utf-8") as compdb_f:
-            tracker.set_preprocessor_definitions(
-                compilation_database.extract_preprocessor_definitions_from_compile_commands(
-                    json.load(compdb_f),
-                    codebase,
-                ),
-            )
+        tracker.set_preprocessor_definitions(
+            compilation_database.extract_preprocessor_definitions_from_compile_commands(
+                compdb,
+                codebase,
+            ),
+        )
 
         # The crate name that c2rust uses is based on the directory stem,
         # so we create a subdirectory with the desired crate name.
