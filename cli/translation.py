@@ -1,4 +1,5 @@
 import shutil
+import sys
 import tempfile
 from pathlib import Path
 from subprocess import CompletedProcess, CalledProcessError
@@ -10,6 +11,8 @@ import uuid
 import shlex
 from platform import platform
 import hashlib
+
+import click
 
 from repo_root import find_repo_root_dir_Path, localdir
 import provisioning
@@ -315,10 +318,8 @@ def do_translate(
         output = resultsdir / cratename
         output.mkdir(parents=True, exist_ok=False)
         # First run the upstream c2rust tool to get a baseline translation.
-        upstream_c2rust_bin = localdir() / "upstream-c2rust" / "target" / "debug" / "c2rust"
-        _up_cp = run_c2rust(
-            tracker, "upstream-c2rust", upstream_c2rust_bin, compdb, output, c2rust_transpile_flags
-        )
+        run_upstream_c2rust(tracker, c2rust_transpile_flags, compdb, output)
+
         output = output.rename(output.with_name("vanilla_c2rust"))
 
         # Then run our version, using guidance and preanalysis.
@@ -389,6 +390,38 @@ def do_translate(
 
         with (resultsdir / "translation_snapshot.json").open("w") as f:
             f.write(results_snapshot.to_json(indent=2))
+
+
+def run_upstream_c2rust(tracker, c2rust_transpile_flags, compdb, output):
+    upstream_c2rust_bin = localdir() / "upstream-c2rust" / "target" / "debug" / "c2rust"
+    try:
+        _up_cp = run_c2rust(
+            tracker,
+            "upstream-c2rust",
+            upstream_c2rust_bin,
+            compdb,
+            output,
+            c2rust_transpile_flags,
+        )
+    except CalledProcessError as e:
+
+        def oops(msg: str):
+            click.secho("TENJIN: " + msg, err=True, fg="red", bg="white")
+
+        oops(f"Upstream c2rust failed with error code {e.returncode}.")
+        oops("When upstream c2rust cannot translate a codebase, it's very unlikely that Tenjin")
+        oops("will succeed, so there's not much we can do.")
+        oops("The command we ran was:")
+        click.echo(" ".join(e.cmd))
+        oops("    but note that it was invoked in a modified environment.")
+        oops("The compilation database was:")
+        click.echo(compdb.read_text(encoding="utf-8"))
+        oops("Here was stdout:")
+        click.echo(e.stdout)
+        oops("and stderr:")
+        click.echo(e.stderr)
+
+        sys.exit(1)
 
 
 def load_and_parse_guidance(guidance_path_or_literal):
