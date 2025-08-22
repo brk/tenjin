@@ -1,0 +1,26 @@
+# This file contains macro names for which expansion is stopped during
+# Tenjin's translation. For now we are simply assuming that the macros
+# being referenced are the standard ones. In theory a program could
+# avoid including <ctype.h> and instead define their own version of
+# `isblank` with a different definition of blank characters than the
+# standard definition. We could address that case by requiring a
+# definition to originate via a particular file name.
+
+# assumed to be from <assert.h>
+assert
+
+# assumed to be from <ctype.h>
+isalnum
+isalpha
+islower
+isupper
+isdigit
+isxdigit
+iscntrl
+isgraph
+isspace
+isblank
+isprint
+ispunct
+tolower
+toupper

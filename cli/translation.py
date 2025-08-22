@@ -1,4 +1,5 @@
 import shutil
+import sys
 import tempfile
 from pathlib import Path
 from subprocess import CompletedProcess, CalledProcessError
@@ -7,10 +8,12 @@ import json
 import pprint
 import time
 import uuid
-import shlex
 from platform import platform
 import hashlib
 
+import click
+
+import compilation_database
 from repo_root import find_repo_root_dir_Path, localdir
 import provisioning
 import ingest
@@ -168,26 +171,6 @@ def create_translation_snapshot(
     return results_snapshot
 
 
-def write_synthetic_compile_commands_to(compdb_path: Path, c_file: Path, builddir: Path):
-    """Write a synthetic compile_commands.json file for a single C file."""
-    assert compdb_path.parent.is_dir()
-    outname = c_file.with_suffix(".o").name
-    cc = hermetic.xj_llvm_root(localdir()) / "bin" / "clang"
-    c_file_full_q = shlex.quote(c_file.resolve().as_posix())
-    contents = json.dumps(
-        [
-            {
-                "directory": builddir.as_posix(),
-                "command": f"{cc} -c {c_file_full_q} -o {shlex.quote(outname)}",
-                "file": c_file.resolve().as_posix(),
-                "output": outname,
-            }
-        ],
-        indent=2,
-    )
-    compdb_path.write_text(contents, encoding="utf-8")
-
-
 def do_translate(
     root: Path,
     codebase: Path,
@@ -239,7 +222,7 @@ def do_translate(
         elif codebase.is_file() and codebase.suffix == ".c":
             # If we have a single C file, we can trivially generate a compile_commands.json
             # with a single entry for it.
-            write_synthetic_compile_commands_to(
+            compilation_database.write_synthetic_compile_commands_to(
                 builddir / "compile_commands.json", codebase, builddir
             )
             return builddir / "compile_commands.json"
@@ -302,24 +285,25 @@ def do_translate(
         with tracker.tracking("pretranslation", builddir) as _step:
             compdb = perform_pre_translation(builddir)
 
-        with open(compdb, "r", encoding="utf-8") as compdb_f:
-            tracker.set_preprocessor_definitions(
-                extract_preprocessor_definitions_from_compile_commands(
-                    json.load(compdb_f),
-                    codebase,
-                ),
-            )
+        tracker.set_preprocessor_definitions(
+            compilation_database.extract_preprocessor_definitions_from_compile_commands(
+                compdb,
+                codebase,
+            ),
+        )
 
         # The crate name that c2rust uses is based on the directory stem,
         # so we create a subdirectory with the desired crate name.
         output = resultsdir / cratename
         output.mkdir(parents=True, exist_ok=False)
         # First run the upstream c2rust tool to get a baseline translation.
-        upstream_c2rust_bin = localdir() / "upstream-c2rust" / "target" / "debug" / "c2rust"
-        _up_cp = run_c2rust(
-            tracker, "upstream-c2rust", upstream_c2rust_bin, compdb, output, c2rust_transpile_flags
-        )
+        run_upstream_c2rust(tracker, c2rust_transpile_flags, compdb, output)
+
         output = output.rename(output.with_name("vanilla_c2rust"))
+
+        # After upstream c2rust finishes, we can munge the compilation database
+        # to make Tenjin-specific tweaks to the compilation process.
+        compilation_database.munge_compile_commands_for_tenjin_translation(compdb)
 
         # Then run our version, using guidance and preanalysis.
         output = resultsdir / cratename
@@ -391,6 +375,38 @@ def do_translate(
             f.write(results_snapshot.to_json(indent=2))
 
 
+def run_upstream_c2rust(tracker, c2rust_transpile_flags, compdb, output):
+    upstream_c2rust_bin = localdir() / "upstream-c2rust" / "target" / "debug" / "c2rust"
+    try:
+        _up_cp = run_c2rust(
+            tracker,
+            "upstream-c2rust",
+            upstream_c2rust_bin,
+            compdb,
+            output,
+            c2rust_transpile_flags,
+        )
+    except CalledProcessError as e:
+
+        def oops(msg: str):
+            click.secho("TENJIN: " + msg, err=True, fg="red", bg="white")
+
+        oops(f"Upstream c2rust failed with error code {e.returncode}.")
+        oops("When upstream c2rust cannot translate a codebase, it's very unlikely that Tenjin")
+        oops("will succeed, so there's not much we can do.")
+        oops("The command we ran was:")
+        click.echo(" ".join(e.cmd))
+        oops("    but note that it was invoked in a modified environment.")
+        oops("The compilation database was:")
+        click.echo(compdb.read_text(encoding="utf-8"))
+        oops("Here was stdout:")
+        click.echo(e.stdout)
+        oops("and stderr:")
+        click.echo(e.stderr)
+
+        sys.exit(1)
+
+
 def load_and_parse_guidance(guidance_path_or_literal):
     try:
         if guidance_path_or_literal == "":
@@ -425,40 +441,3 @@ def find_highest_numbered_dir(base: Path) -> Path | None:
                     latest_dir = item
 
     return latest_dir if latest_dir else None
-
-
-def extract_preprocessor_definitions_from_compile_commands(
-    parsed_compile_commands: list[dict],
-    codebase: Path,
-) -> ingest.PerFilePreprocessorDefinitions:
-    """Extract preprocessor definitions from `compile_commands.json`"""
-    definitions = {}
-    for command_info in parsed_compile_commands:
-        command_str = command_info.get("command", "")
-        # command_info["directory"] is build directory, which can be
-        # located anywhere; it has no relation to the source file path.
-        if Path(command_info.get("file", "")).resolve() == codebase.resolve():
-            relative_path = command_info.get("file", "")
-        else:
-            relative_path = Path(command_info.get("file", "")).relative_to(codebase)
-        defs: list[ingest.PreprocessorDefinition] = []
-        args = shlex.split(command_str)
-        i = 0
-        while i < len(args):
-            arg = args[i]
-            i += 1
-            if arg == "-D" and i + 1 < len(args):
-                # If we find a -D, the next argument is a definition.
-                key, _, value = args[i + 1].partition("=")
-                i += 1  # Skip the value
-                defs.append((key, value))
-            elif arg.startswith("-D") and "=" in arg:
-                # Handle -Dkey=value style definitions.
-                key, _, value = arg[2:].partition("=")
-                defs.append((key, value))
-            if arg.startswith("-D"):
-                # Handle -Dkey style definitions.
-                defs.append((arg[2:], None))  # Add the definition without the -D prefix
-        if defs:
-            definitions[relative_path.as_posix()] = defs
-    return definitions

@@ -381,6 +381,20 @@ fn recognize_scanf_and_fscanf_of_stdin(
     None
 }
 
+#[allow(clippy::vec_box)]
+fn mac_call_exprs_tt(args: Vec<Box<Expr>>) -> TokenStream {
+    let mut tokens = TokenStream::new();
+    let mut first = true;
+    for arg in args {
+        if !first {
+            tokens.extend(vec![TokenTree::Punct(Punct::new(',', Alone))]);
+        }
+        tokens.extend(arg.to_token_stream());
+        first = false;
+    }
+    tokens
+}
+
 impl Translation<'_> {
     pub fn recognize_c_assignment_cases(
         &self,
@@ -571,6 +585,14 @@ impl Translation<'_> {
             }
         }
 
+        if tenjin::expr_is_ident(&func, "abort") && args.is_empty() {
+            // TENJIN-TODO: guidance to allow mapping `abort()` to `panic!()`?
+            return RecognizedCallForm::OtherCall(
+                mk().path_expr(vec!["std", "process", "abort"]),
+                args,
+            );
+        }
+
         if let Some(call_form) =
             recognize_scanf_and_fscanf_of_stdin(self, &func, &args, cargs, &ctx)
         {
@@ -696,6 +718,9 @@ impl Translation<'_> {
     ) -> TranslationResult<Option<WithStmts<Box<Expr>>>> {
         if let Some(path) = tenjin::expr_get_path(func) {
             match () {
+                _ if tenjin::is_path_exactly_1(path, "assert") => {
+                    self.recognize_preconversion_call_assert(ctx, cargs)
+                }
                 _ if tenjin::is_path_exactly_1(path, "fputs") => {
                     self.recognize_preconversion_call_fputs_stdout_guided(ctx, func, cargs)
                 }
@@ -716,6 +741,36 @@ impl Translation<'_> {
         } else {
             Ok(None)
         }
+    }
+
+    #[allow(clippy::borrowed_box)]
+    fn recognize_preconversion_call_assert(
+        &self,
+        ctx: ExprContext,
+        cargs: &[CExprId],
+    ) -> TranslationResult<Option<WithStmts<Box<Expr>>>> {
+        if cargs.len() == 1 {
+            // assert(FOO)
+            //    when FOO is a simple variable
+            // should be translated to
+            // assert!(FOO)
+            //
+            // Note that in C the asserted expression must have integral type,
+            // but in Rust the asserted expression is of boolean type. That mismatch
+            // is why we recognize this case pre-conversion.
+            let expr = self.convert_condition(ctx.used(), true, cargs[0])?;
+            return expr
+                .and_then(|expr| {
+                    Ok(WithStmts::new_val(mk().mac_expr(mk().mac(
+                        mk().path("assert"),
+                        mac_call_exprs_tt(vec![expr]),
+                        MacroDelimiter::Paren(Default::default()),
+                    ))))
+                })
+                .map(Some);
+        }
+
+        Ok(None)
     }
 
     #[allow(clippy::borrowed_box)]
