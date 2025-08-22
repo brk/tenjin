@@ -160,7 +160,7 @@ def extract_preprocessor_definitions_from_compile_commands(
                 # Handle -Dkey=value style definitions.
                 key, _, value = arg[2:].partition("=")
                 defs.append((key, value))
-            if arg.startswith("-D"):
+            elif arg.startswith("-D"):
                 # Handle -Dkey style definitions.
                 defs.append((arg[2:], None))  # Add the definition without the -D prefix
         if defs:
