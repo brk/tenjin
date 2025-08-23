@@ -54,8 +54,8 @@ class SpeculativeSpansEraser:
         for span in spans:
             if span is not None:
                 file_path = span_to_path(span)
+                self.spans_by_path.setdefault(file_path, []).append(span)
                 if file_path not in self.rewriters:
-                    self.spans_by_path.setdefault(file_path, []).append(span)
                     self.rewriters[file_path] = SpeculativeFileRewriter(file_path)
 
     def erase_spans(self):
