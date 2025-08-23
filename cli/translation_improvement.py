@@ -17,6 +17,7 @@ from speculative_rewriters import (
     SpeculativeFileRewriter,
     SpeculativeSpansEraser,
 )
+import static_measurements_rust
 
 
 def get_multitool_toolchain(root: Path) -> str:
@@ -319,6 +320,57 @@ def run_trim_allows(root: Path, dir: Path):
                     rewriter.restore()
 
 
+def run_whiteout_clippy_no_effect_paths(root: Path, dir: Path) -> None:
+    """Remove path statements with no effect, as reported by clippy.
+
+    In idiomatic human-written Rust code this rewrite can be behavior-changing
+    due to Drop trait implementations but c2rust's output does not yet use any
+    non-trivial Drop impls, and it generates no-effect path statements for
+    post increment operators."""
+    messages, _res = static_measurements_rust.get_clippy_messages_json(dir)
+
+    spans_to_erase: list[ExplicitSpan] = []
+    files_map: dict[str, int] = {}
+    files_list: list[Path] = []
+
+    for obj in messages:
+        message = obj.get("message", {})
+        if message.get("message") != "path statement with no effect":
+            continue
+
+        for span in message.get("spans", []):
+            if not span.get("is_primary"):
+                continue
+
+            file_name = span.get("file_name")
+            if file_name is None:
+                continue
+
+            # clippy file_name is relative to the crate root (`dir`)
+            abs_path = (dir / file_name).resolve()
+            abs_path_str = str(abs_path)
+
+            if abs_path_str not in files_map:
+                files_map[abs_path_str] = len(files_list)
+                files_list.append(abs_path)
+
+            fileid = files_map[abs_path_str]
+            lo = span.get("byte_start")
+            hi = span.get("byte_end")
+
+            if lo is not None and hi is not None:
+                spans_to_erase.append(ExplicitSpan(fileid=fileid, lo=int(lo), hi=int(hi)))
+
+    if not spans_to_erase:
+        return
+
+    def span_to_path(span: ExplicitSpan) -> Path:
+        return files_list[span.fileid]
+
+    rewriter = SpeculativeSpansEraser(spans_to_erase, span_to_path)
+    rewriter.erase_spans()
+
+
 def elapsed_ms_of_ns(start_ns: int, end_ns: int) -> float:
     """Calculate elapsed time in milliseconds from nanoseconds."""
     return (end_ns - start_ns) / 1_000_000.0
@@ -367,6 +419,7 @@ def run_improvement_passes(
         # But if we format first, the block may not be removable by `fix`!
         ("fix", run_cargo_fix),
         ("clippy-fix", run_cargo_clippy_fix),
+        ("clippy-whiteout-no-effect-paths", run_whiteout_clippy_no_effect_paths),
         ("trim-allows", run_trim_allows),
         ("fmt", run_cargo_fmt),
     ]
