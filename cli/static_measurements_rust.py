@@ -1,6 +1,7 @@
 import json
 
 from pathlib import Path
+import subprocess
 
 import hermetic
 
@@ -72,36 +73,12 @@ def count_rustc_and_clippy_lints(cargo_project_dir: Path) -> dict[str, int]:
     rustc_warnings = 0
     clippy_lints = 0
 
-    res = hermetic.run_cargo_in(
-        [
-            hermetic.tenjin_multitool_toolchain_specifier(),
-            "clippy",
-            "--message-format",
-            "json",
-            "--manifest-path",
-            (cargo_project_dir / "Cargo.toml").resolve().as_posix(),
-            "--",
-            "-Aclippy::missing_safety_doc",  # TRACTOR does not involve code comments.
-            "-Aclippy::too_many_arguments",  # Robust automated conversion > clippy's ideas about style
-            # Given C code with constant branches, it's not unreasonable to translate them as-is.
-            "-Aclippy::absurd_extreme_comparisons",
-        ],
-        cwd=cargo_project_dir,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-
+    messages, res = get_clippy_messages_json(cargo_project_dir)
     if res.returncode != 0:
         rustc_errors += 1
         print("Error running clippy:\n", res.stderr)
 
-    for line in res.stdout.split("\n"):
-        if line == "" or line[0] != "{":
-            continue
-        obj: dict = json.loads(line)
-        if obj["reason"] != "compiler-message":
-            continue
+    for obj in messages:
         message = obj["message"]
         mb_code: dict | None = message["code"]
         level = message["level"]
@@ -125,3 +102,42 @@ def count_rustc_and_clippy_lints(cargo_project_dir: Path) -> dict[str, int]:
         "rustc_warnings": rustc_warnings,
         "clippy_lints": clippy_lints,
     }
+
+
+def get_clippy_messages_json(
+    cargo_project_dir: Path,
+) -> tuple[list[dict], subprocess.CompletedProcess]:
+    """Get Clippy messages for the given project in JSON format,
+    and the `subprocess.CompletedProcess` object."""
+    assert cargo_project_dir.is_dir(), "The provided path must be a directory"
+
+    res = hermetic.run_cargo_in(
+        [
+            hermetic.tenjin_multitool_toolchain_specifier(),
+            "clippy",
+            "--message-format",
+            "json",
+            "--manifest-path",
+            (cargo_project_dir / "Cargo.toml").resolve().as_posix(),
+            "--",
+            "-Aclippy::missing_safety_doc",  # TRACTOR does not involve code comments.
+            "-Aclippy::too_many_arguments",  # Robust automated conversion > clippy's ideas about style
+            # Given C code with constant branches, it's not unreasonable to translate them as-is.
+            "-Aclippy::absurd_extreme_comparisons",
+        ],
+        cwd=cargo_project_dir,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    messages = []
+    for line in res.stdout.split("\n"):
+        if line == "" or line[0] != "{":
+            continue
+        obj: dict = json.loads(line)
+        if obj["reason"] != "compiler-message":
+            continue
+        messages.append(obj)
+
+    return messages, res
