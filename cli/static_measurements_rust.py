@@ -80,6 +80,11 @@ def count_rustc_and_clippy_lints(cargo_project_dir: Path) -> dict[str, int]:
             "json",
             "--manifest-path",
             (cargo_project_dir / "Cargo.toml").resolve().as_posix(),
+            "--",
+            "-Aclippy::missing_safety_doc",  # TRACTOR does not involve code comments.
+            "-Aclippy::too_many_arguments",  # Robust automated conversion > clippy's ideas about style
+            # Given C code with constant branches, it's not unreasonable to translate them as-is.
+            "-Aclippy::absurd_extreme_comparisons",
         ],
         cwd=cargo_project_dir,
         text=True,
@@ -109,6 +114,7 @@ def count_rustc_and_clippy_lints(cargo_project_dir: Path) -> dict[str, int]:
                 match level:
                     case "error":
                         rustc_errors += 1
+                        print(f"Rustc error found for {str(cargo_project_dir)}:\n", message)
                     case "warning":
                         rustc_warnings += 1
                     case _:
