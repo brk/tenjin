@@ -4871,14 +4871,15 @@ impl<'c> Translation<'c> {
                             // Don't dereference the offset if we're still within the variable portion
                             if let Some(elt_type_id) = var_elt_type_id {
                                 let mul = self.compute_size_of_expr(elt_type_id);
-                                self.pointer_offset(lhs, rhs, mul, false, true)
+                                self.pointer_offset(Some(arr), lhs, rhs, mul, false, true)
                             } else {
                                 mk().index_expr(lhs, cast_int(rhs, "usize", false))
                             }
                         }))
                     } else {
                         // LHS must be ref decayed for the offset method call's self param
-                        let lhs = self.convert_expr(ctx.used().decay_ref(), *lhs)?;
+                        let arr = *lhs;
+                        let lhs = self.convert_expr(ctx.used().decay_ref(), arr)?;
                         lhs.result_map(|lhs| {
                             // stmts.extend(lhs.stmts_mut());
                             // is_unsafe = is_unsafe || lhs.is_unsafe();
@@ -4901,7 +4902,7 @@ impl<'c> Translation<'c> {
                                 };
 
                             let mul = self.compute_size_of_expr(pointee_type_id.ctype);
-                            Ok(self.pointer_offset(lhs, rhs, mul, false, true))
+                            Ok(self.pointer_offset(Some(arr), lhs, rhs, mul, false, true))
                         })
                     }
                 })
@@ -6092,6 +6093,7 @@ impl<'c> Translation<'c> {
     /// Pointer offset that casts its argument to isize
     fn pointer_offset(
         &self,
+        _c_ptr: Option<CExprId>,
         ptr: Box<Expr>,
         offset: Box<Expr>,
         multiply_by: Option<Box<Expr>>,

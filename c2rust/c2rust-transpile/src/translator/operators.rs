@@ -360,6 +360,8 @@ impl Translation<'_> {
             })
         };
 
+        let c_lhs = lhs;
+
         rhs_translation.and_then(|rhs| {
             lhs_translation.and_then(
                 |NamedReference {
@@ -440,12 +442,26 @@ impl Translation<'_> {
                         // Everything else
                         AssignAdd if pointer_lhs.is_some() => {
                             let mul = self.compute_size_of_expr(pointer_lhs.unwrap().ctype);
-                            let ptr = self.pointer_offset(write.clone(), rhs, mul, false, false);
+                            let ptr = self.pointer_offset(
+                                Some(c_lhs),
+                                write.clone(),
+                                rhs,
+                                mul,
+                                false,
+                                false,
+                            );
                             WithStmts::new_val(mk().assign_expr(write, ptr))
                         }
                         AssignSubtract if pointer_lhs.is_some() => {
                             let mul = self.compute_size_of_expr(pointer_lhs.unwrap().ctype);
-                            let ptr = self.pointer_offset(write.clone(), rhs, mul, true, false);
+                            let ptr = self.pointer_offset(
+                                Some(c_lhs),
+                                write.clone(),
+                                rhs,
+                                mul,
+                                true,
+                                false,
+                            );
                             WithStmts::new_val(mk().assign_expr(write, ptr))
                         }
 
@@ -455,6 +471,7 @@ impl Translation<'_> {
                             {
                                 let mul = self.compute_size_of_expr(pointer_lhs.ctype);
                                 let ptr = self.pointer_offset(
+                                    Some(c_lhs),
                                     write.clone(),
                                     rhs,
                                     mul,
@@ -523,8 +540,10 @@ impl Translation<'_> {
             .is_unsigned_integral_type();
 
         match op {
-            c_ast::BinOp::Add => self.convert_addition(lhs_type, rhs_type, lhs, rhs),
-            c_ast::BinOp::Subtract => self.convert_subtraction(ty, lhs_type, rhs_type, lhs, rhs),
+            c_ast::BinOp::Add => self.convert_addition(lhs_type, rhs_type, lhs, rhs, lhs_rhs_ids),
+            c_ast::BinOp::Subtract => {
+                self.convert_subtraction(ty, lhs_type, rhs_type, lhs, rhs, lhs_rhs_ids)
+            }
 
             c_ast::BinOp::Multiply if is_unsigned_integral_type => {
                 Ok(mk().method_call_expr(lhs, mk().path_segment("wrapping_mul"), vec![rhs]))
@@ -634,16 +653,23 @@ impl Translation<'_> {
         rhs_type_id: CQualTypeId,
         lhs: Box<Expr>,
         rhs: Box<Expr>,
+        lhs_rhs_ids: Option<(CExprId, CExprId)>,
     ) -> TranslationResult<Box<Expr>> {
         let lhs_type = &self.ast_context.resolve_type(lhs_type_id.ctype).kind;
         let rhs_type = &self.ast_context.resolve_type(rhs_type_id.ctype).kind;
 
+        let c_lhs = if let Some((lhs_id, _rhs_id)) = lhs_rhs_ids {
+            Some(lhs_id)
+        } else {
+            None
+        };
+
         if let &CTypeKind::Pointer(pointee) = lhs_type {
             let mul = self.compute_size_of_expr(pointee.ctype);
-            Ok(self.pointer_offset(lhs, rhs, mul, false, false))
+            Ok(self.pointer_offset(c_lhs, lhs, rhs, mul, false, false))
         } else if let &CTypeKind::Pointer(pointee) = rhs_type {
             let mul = self.compute_size_of_expr(pointee.ctype);
-            Ok(self.pointer_offset(rhs, lhs, mul, false, false))
+            Ok(self.pointer_offset(c_lhs, rhs, lhs, mul, false, false))
         } else if lhs_type.is_unsigned_integral_type() {
             Ok(mk().method_call_expr(lhs, mk().path_segment("wrapping_add"), vec![rhs]))
         } else {
@@ -658,9 +684,16 @@ impl Translation<'_> {
         rhs_type_id: CQualTypeId,
         lhs: Box<Expr>,
         rhs: Box<Expr>,
+        lhs_rhs_ids: Option<(CExprId, CExprId)>,
     ) -> TranslationResult<Box<Expr>> {
         let lhs_type = &self.ast_context.resolve_type(lhs_type_id.ctype).kind;
         let rhs_type = &self.ast_context.resolve_type(rhs_type_id.ctype).kind;
+
+        let c_lhs = if let Some((lhs_id, _rhs_id)) = lhs_rhs_ids {
+            Some(lhs_id)
+        } else {
+            None
+        };
 
         if let &CTypeKind::Pointer(pointee) = rhs_type {
             let mut offset = mk().method_call_expr(lhs, "offset_from", vec![rhs]);
@@ -673,7 +706,7 @@ impl Translation<'_> {
             Ok(mk().cast_expr(offset, ty))
         } else if let &CTypeKind::Pointer(pointee) = lhs_type {
             let mul = self.compute_size_of_expr(pointee.ctype);
-            Ok(self.pointer_offset(lhs, rhs, mul, true, false))
+            Ok(self.pointer_offset(c_lhs, lhs, rhs, mul, true, false))
         } else if lhs_type.is_unsigned_integral_type() {
             Ok(mk().method_call_expr(lhs, mk().path_segment("wrapping_sub"), vec![rhs]))
         } else {
