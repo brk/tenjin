@@ -555,34 +555,6 @@ fn cast_int(val: Box<Expr>, name: &str, need_lit_suffix: bool) -> Box<Expr> {
     }
 }
 
-/// Pointer offset that casts its argument to isize
-fn pointer_offset(
-    ptr: Box<Expr>,
-    offset: Box<Expr>,
-    multiply_by: Option<Box<Expr>>,
-    neg: bool,
-    mut deref: bool,
-) -> Box<Expr> {
-    let mut offset = cast_int(offset, "isize", false);
-
-    if let Some(mul) = multiply_by {
-        let mul = cast_int(mul, "isize", false);
-        offset = mk().binary_expr(BinOp::Mul(Default::default()), offset, mul);
-        deref = false;
-    }
-
-    if neg {
-        offset = mk().unary_expr(UnOp::Neg(Default::default()), offset);
-    }
-
-    let res = mk().method_call_expr(ptr, "offset", vec![offset]);
-    if deref {
-        mk().unary_expr(UnOp::Deref(Default::default()), res)
-    } else {
-        res
-    }
-}
-
 /// Given an expression with type Option<fn(...)->...>, unwrap
 /// the Option and return the function.
 fn unwrap_function_pointer(ptr: Box<Expr>) -> Box<Expr> {
@@ -4899,7 +4871,7 @@ impl<'c> Translation<'c> {
                             // Don't dereference the offset if we're still within the variable portion
                             if let Some(elt_type_id) = var_elt_type_id {
                                 let mul = self.compute_size_of_expr(elt_type_id);
-                                pointer_offset(lhs, rhs, mul, false, true)
+                                self.pointer_offset(lhs, rhs, mul, false, true)
                             } else {
                                 mk().index_expr(lhs, cast_int(rhs, "usize", false))
                             }
@@ -4929,7 +4901,7 @@ impl<'c> Translation<'c> {
                                 };
 
                             let mul = self.compute_size_of_expr(pointee_type_id.ctype);
-                            Ok(pointer_offset(lhs, rhs, mul, false, true))
+                            Ok(self.pointer_offset(lhs, rhs, mul, false, true))
                         })
                     }
                 })
@@ -6114,6 +6086,35 @@ impl<'c> Translation<'c> {
             } else {
                 mk().binary_expr(BinOp::Eq(Default::default()), val, zero)
             }
+        }
+    }
+
+    /// Pointer offset that casts its argument to isize
+    fn pointer_offset(
+        &self,
+        ptr: Box<Expr>,
+        offset: Box<Expr>,
+        multiply_by: Option<Box<Expr>>,
+        neg: bool,
+        mut deref: bool,
+    ) -> Box<Expr> {
+        let mut offset = cast_int(offset, "isize", false);
+
+        if let Some(mul) = multiply_by {
+            let mul = cast_int(mul, "isize", false);
+            offset = mk().binary_expr(BinOp::Mul(Default::default()), offset, mul);
+            deref = false;
+        }
+
+        if neg {
+            offset = mk().unary_expr(UnOp::Neg(Default::default()), offset);
+        }
+
+        let res = mk().method_call_expr(ptr, "offset", vec![offset]);
+        if deref {
+            mk().unary_expr(UnOp::Deref(Default::default()), res)
+        } else {
+            res
         }
     }
 

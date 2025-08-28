@@ -440,12 +440,12 @@ impl Translation<'_> {
                         // Everything else
                         AssignAdd if pointer_lhs.is_some() => {
                             let mul = self.compute_size_of_expr(pointer_lhs.unwrap().ctype);
-                            let ptr = pointer_offset(write.clone(), rhs, mul, false, false);
+                            let ptr = self.pointer_offset(write.clone(), rhs, mul, false, false);
                             WithStmts::new_val(mk().assign_expr(write, ptr))
                         }
                         AssignSubtract if pointer_lhs.is_some() => {
                             let mul = self.compute_size_of_expr(pointer_lhs.unwrap().ctype);
-                            let ptr = pointer_offset(write.clone(), rhs, mul, true, false);
+                            let ptr = self.pointer_offset(write.clone(), rhs, mul, true, false);
                             WithStmts::new_val(mk().assign_expr(write, ptr))
                         }
 
@@ -454,7 +454,7 @@ impl Translation<'_> {
                                 (op, pointer_lhs)
                             {
                                 let mul = self.compute_size_of_expr(pointer_lhs.ctype);
-                                let ptr = pointer_offset(
+                                let ptr = self.pointer_offset(
                                     write.clone(),
                                     rhs,
                                     mul,
@@ -640,10 +640,10 @@ impl Translation<'_> {
 
         if let &CTypeKind::Pointer(pointee) = lhs_type {
             let mul = self.compute_size_of_expr(pointee.ctype);
-            Ok(pointer_offset(lhs, rhs, mul, false, false))
+            Ok(self.pointer_offset(lhs, rhs, mul, false, false))
         } else if let &CTypeKind::Pointer(pointee) = rhs_type {
             let mul = self.compute_size_of_expr(pointee.ctype);
-            Ok(pointer_offset(rhs, lhs, mul, false, false))
+            Ok(self.pointer_offset(rhs, lhs, mul, false, false))
         } else if lhs_type.is_unsigned_integral_type() {
             Ok(mk().method_call_expr(lhs, mk().path_segment("wrapping_add"), vec![rhs]))
         } else {
@@ -673,7 +673,7 @@ impl Translation<'_> {
             Ok(mk().cast_expr(offset, ty))
         } else if let &CTypeKind::Pointer(pointee) = lhs_type {
             let mul = self.compute_size_of_expr(pointee.ctype);
-            Ok(pointer_offset(lhs, rhs, mul, true, false))
+            Ok(self.pointer_offset(lhs, rhs, mul, true, false))
         } else if lhs_type.is_unsigned_integral_type() {
             Ok(mk().method_call_expr(lhs, mk().path_segment("wrapping_sub"), vec![rhs]))
         } else {
