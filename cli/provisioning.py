@@ -96,25 +96,21 @@ def download(url: str, filename: Path, first_attempt=True) -> None:
     # so it is imported here to avoid slowing down the common case.
     from urllib.request import urlretrieve  # noqa: PLC0415
     from urllib.error import HTTPError  # noqa: PLC0415
+    from http.client import RemoteDisconnected  # noqa: PLC0415
 
-    try:
-        urlretrieve(url, filename)
-    except HTTPError as e:
-        if first_attempt and e.code in (500, 502, 503, 504):
-            # These are HTTP error codes for (at least potentially) transient issues.
-            sez(f"Server returned error {e} when downloading {url}", ctx="(download) ", err=True)
-            sez(
-                "Hopefully this is a temporary issue and will resolve itself.",
-                ctx="(download) ",
-                err=True,
-            )
-            sez("I will wait for a few seconds then re-try, once.", ctx="(download) ", err=True)
-            import time  # noqa: PLC0415
+    def report_potentially_transient_problem_and_retry():
+        sez(
+            "Hopefully this is a temporary issue and will resolve itself.",
+            ctx="(download) ",
+            err=True,
+        )
+        sez("I will wait for a few seconds then re-try, once.", ctx="(download) ", err=True)
+        import time  # noqa: PLC0415
 
-            time.sleep(6)
-            download(url, filename, first_attempt=False)
-            return
+        time.sleep(6)
+        download(url, filename, first_attempt=False)
 
+    def report_insurmountable_error_and_die(e: Exception):
         sez(f"Failed to download {url}: {e}", ctx="(download) ", err=True)
         sez(
             "You might try deleting the `_local` directory and re-provisioning?",
@@ -122,6 +118,28 @@ def download(url: str, filename: Path, first_attempt=True) -> None:
             err=True,
         )
         sys.exit(1)
+
+    try:
+        urlretrieve(url, filename)
+    except HTTPError as e:
+        if first_attempt and e.code in (500, 502, 503, 504):
+            # These are HTTP error codes for (at least potentially) transient issues.
+            sez(f"Server returned error {e} when downloading {url}", ctx="(download) ", err=True)
+            report_potentially_transient_problem_and_retry()
+            return
+
+        report_insurmountable_error_and_die(e)
+    except RemoteDisconnected as e:
+        if first_attempt:
+            sez(
+                f"Server closed connection unexpectedly when downloading {url}",
+                ctx="(download) ",
+                err=True,
+            )
+            report_potentially_transient_problem_and_retry()
+            return
+
+        report_insurmountable_error_and_die(e)
 
 
 # platform.system() in ["Linux", "Darwin"]
