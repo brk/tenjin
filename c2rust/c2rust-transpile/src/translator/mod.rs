@@ -317,6 +317,7 @@ pub struct ParsedGuidance {
     pub fn_return_types: HashMap<String, syn::Type>,
     decls_without_type_guidance: HashSet<CDeclId>,
     pub using_crates: HashSet<String>,
+    pub no_math_errno: bool,
 }
 
 impl ParsedGuidance {
@@ -426,6 +427,11 @@ impl ParsedGuidance {
             }
         }
 
+        let no_math_errno: bool = raw
+            .get("no_math_errno")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
         ParsedGuidance {
             _raw: raw,
             declspecs_of_type,
@@ -434,6 +440,7 @@ impl ParsedGuidance {
             fn_return_types,
             decls_without_type_guidance: HashSet::new(),
             using_crates,
+            no_math_errno,
         }
     }
 
