@@ -736,6 +736,13 @@ impl Translation<'_> {
                 _ if tenjin::is_path_exactly_1(path, "isblank") => {
                     self.recognize_preconversion_call_isblank_guided(ctx, func, cargs)
                 }
+                _ if self.parsed_guidance.borrow().no_math_errno
+                    && (tenjin::is_path_exactly_1(path, "pow")
+                        || tenjin::is_path_exactly_1(path, "powf")
+                        || tenjin::is_path_exactly_1(path, "powl")) =>
+                {
+                    self.recognize_preconversion_call_powf_guided(ctx, cargs)
+                }
                 _ => Ok(None),
             }
         } else {
@@ -766,6 +773,35 @@ impl Translation<'_> {
                         mac_call_exprs_tt(vec![expr]),
                         MacroDelimiter::Paren(Default::default()),
                     ))))
+                })
+                .map(Some);
+        }
+
+        Ok(None)
+    }
+
+    #[allow(clippy::borrowed_box)]
+    fn recognize_preconversion_call_powf_guided(
+        &self,
+        ctx: ExprContext,
+        cargs: &[CExprId],
+    ) -> TranslationResult<Option<WithStmts<Box<Expr>>>> {
+        if cargs.len() == 2 {
+            // pow(x, y)
+            //    when we've been provided with no_math_errno guidance,
+            //    or have otherwise ascertained that the program cannot
+            //    observe any modifications to errno,
+            // should be translated to
+            // x.powf(y)
+            let expr_x = self.convert_expr(ctx.used(), cargs[0])?;
+            let expr_y = self.convert_expr(ctx.used(), cargs[1])?;
+            return expr_x
+                .and_then(|expr_x| {
+                    Ok(WithStmts::new_val(mk().method_call_expr(
+                        expr_x,
+                        "powf",
+                        vec![expr_y.to_expr()],
+                    )))
                 })
                 .map(Some);
         }
