@@ -425,6 +425,13 @@ impl ParsedGuidance {
         }
         None
     }
+
+    pub fn query_fn_return_type(&self, name: &str) -> Option<tenjin::GuidedType> {
+        if let Some(guided_type) = self.fn_return_types.get(name) {
+            return Some(tenjin::GuidedType::from_type(guided_type.clone()));
+        }
+        None
+    }
 }
 
 pub struct Translation<'c> {
