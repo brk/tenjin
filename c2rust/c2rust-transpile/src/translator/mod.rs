@@ -411,7 +411,9 @@ impl ParsedGuidance {
             }
         }
 
+        //dbg!(&fn_return_types);
         //dbg!(&declspecs_of_type);
+        //dbg!(&mut_of_decl);
 
         let mut using_crates = HashSet::new();
         if let Some(crates) = raw.get("use_crates") {
@@ -2487,7 +2489,7 @@ impl<'c> Translation<'c> {
                     }
                     CDeclKind::Variable { ident, .. } => {
                         // Match variable declarations against the declspecs
-                        spec.varname == ident.as_str()
+                        spec.varname == "*" || spec.varname == ident.as_str()
                     }
                     _ => {
                         log::warn!(
@@ -2941,8 +2943,9 @@ impl<'c> Translation<'c> {
                     .parsed_guidance
                     .borrow_mut()
                     .query_decl_type(self, decl_id);
+                let guided_mutbl = self.parsed_guidance.borrow().query_decl_mut(self, decl_id);
                 let ConvertedVariable { ty, mutbl, init: _ } =
-                    self.convert_variable(ctx.static_(), None, typ, &guided_type)?;
+                    self.convert_variable(ctx.static_(), None, typ, &guided_type, guided_mutbl)?;
                 // When putting extern statics into submodules, they need to be public to be accessible
                 let visibility = if self.tcfg.reorganize_definitions {
                     "pub"
@@ -2995,14 +2998,19 @@ impl<'c> Translation<'c> {
                     .parsed_guidance
                     .borrow_mut()
                     .query_decl_type(self, decl_id);
-
+                let guided_mutbl = self.parsed_guidance.borrow().query_decl_mut(self, decl_id);
                 // Collect problematic static initializers and offload them to sections for the linker
                 // to initialize for us
                 let (ty, init) = if self.static_initializer_is_uncompilable(initializer, typ) {
                     // Note: We don't pass has_static_duration through here. Extracted initializers
                     // are run outside of the static initializer.
-                    let ConvertedVariable { ty, mutbl: _, init } =
-                        self.convert_variable(ctx.not_static(), initializer, typ, &guided_type)?;
+                    let ConvertedVariable { ty, mutbl: _, init } = self.convert_variable(
+                        ctx.not_static(),
+                        initializer,
+                        typ,
+                        &guided_type,
+                        guided_mutbl,
+                    )?;
 
                     let mut init = init?.to_expr();
 
@@ -3027,8 +3035,13 @@ impl<'c> Translation<'c> {
 
                     (ty, init)
                 } else {
-                    let ConvertedVariable { ty, mutbl: _, init } =
-                        self.convert_variable(ctx.static_(), initializer, typ, &guided_type)?;
+                    let ConvertedVariable { ty, mutbl: _, init } = self.convert_variable(
+                        ctx.static_(),
+                        initializer,
+                        typ,
+                        &guided_type,
+                        guided_mutbl,
+                    )?;
                     let mut init = init?;
                     // TODO: Replace this by relying entirely on
                     // WithStmts.is_unsafe() of the translated variable
@@ -3209,8 +3222,9 @@ impl<'c> Translation<'c> {
                     .parsed_guidance
                     .borrow_mut()
                     .query_decl_type(self, decl_id);
+                let guided_mutbl = self.parsed_guidance.borrow().query_decl_mut(self, decl_id);
                 let ConvertedVariable { ty, mutbl, init: _ } =
-                    self.convert_variable(ctx, None, typ, &guided_type)?;
+                    self.convert_variable(ctx, None, typ, &guided_type, guided_mutbl)?;
 
                 if body.is_some() {
                     log::trace!(
@@ -3219,14 +3233,14 @@ impl<'c> Translation<'c> {
                         decl_id,
                         name
                     );
-                }
 
-                // XREF:TENJIN-GUIDANCE-STRAWMAN
-                let mut_override = if guided_type.is_some() {
-                    Some(Mutability::Immutable)
-                } else {
-                    None
-                };
+                    log::trace!(
+                        "Converting param variable {:?} of body-having function {:?} with guided mut {:?}",
+                        var,
+                        name,
+                        guided_mutbl
+                    );
+                }
 
                 let pat = if var.is_empty() {
                     mk().wild_pat()
@@ -3235,7 +3249,7 @@ impl<'c> Translation<'c> {
                     let mutbl = if body.is_none() {
                         Mutability::Immutable
                     } else {
-                        mut_override.unwrap_or(mutbl)
+                        mutbl
                     };
 
                     let new_var = self
@@ -3641,6 +3655,7 @@ impl<'c> Translation<'c> {
             .parsed_guidance
             .borrow_mut()
             .query_decl_type(self, decl_id);
+        let guided_mutbl = self.parsed_guidance.borrow().query_decl_mut(self, decl_id);
         if let CDeclKind::Variable {
             ref ident,
             has_static_duration: true,
@@ -3665,8 +3680,13 @@ impl<'c> Translation<'c> {
                             "Unable to rename function scoped static initializer",
                         )
                     })?;
-                let ConvertedVariable { ty, mutbl: _, init } =
-                    self.convert_variable(ctx.static_(), initializer, typ, &guided_type)?;
+                let ConvertedVariable { ty, mutbl: _, init } = self.convert_variable(
+                    ctx.static_(),
+                    initializer,
+                    typ,
+                    &guided_type,
+                    guided_mutbl,
+                )?;
                 let default_init = self.implicit_default_expr(typ.ctype, true)?.to_expr();
                 let comment = String::from("// Initialized in run_static_initializers");
                 let span = self
@@ -3742,7 +3762,7 @@ impl<'c> Translation<'c> {
                 let mut stmts = self.compute_variable_array_sizes(ctx, typ.ctype)?;
 
                 let ConvertedVariable { ty, mutbl, init } =
-                    self.convert_variable(ctx, initializer, typ, &guided_type)?;
+                    self.convert_variable(ctx, initializer, typ, &guided_type, guided_mutbl)?;
                 let mut init = init?;
 
                 log::trace!(
@@ -3978,21 +3998,29 @@ impl<'c> Translation<'c> {
         initializer: Option<CExprId>,
         typ: CQualTypeId,
         guided_type: &Option<tenjin::GuidedType>,
+        guided_mutbl: Option<Mutability>,
     ) -> TranslationResult<ConvertedVariable> {
         let init = match initializer {
             Some(x) => self.convert_expr_guided(ctx.used(), x, guided_type),
             None => self.implicit_default_expr_guided(guided_type, typ.ctype, ctx.is_static),
         };
 
+        let mutbl = match guided_mutbl {
+            Some(mutbl) => mutbl,
+            None => {
+                if typ.qualifiers.is_const {
+                    Mutability::Immutable
+                } else {
+                    Mutability::Mutable
+                }
+            }
+        };
+
         if let Some(guided_type) = guided_type {
             // If we have a type override, we use it instead of the converted type
             return Ok(ConvertedVariable {
                 ty: Box::new(guided_type.parsed.clone()),
-                mutbl: if typ.qualifiers.is_const {
-                    Mutability::Immutable
-                } else {
-                    Mutability::Mutable
-                },
+                mutbl,
                 init,
             });
         }
