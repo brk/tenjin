@@ -3225,7 +3225,7 @@ impl<'c> Translation<'c> {
                 }
             }
 
-            let ret = self.convert_function_return_type(return_type)?;
+            let ret = self.convert_function_return_type(name, return_type)?;
 
             let decl = mk().fn_decl(
                 new_name,
@@ -3432,8 +3432,15 @@ impl<'c> Translation<'c> {
 
     fn convert_function_return_type(
         &self,
+        name: &str,
         return_type: Option<CQualTypeId>,
     ) -> TranslationResult<ReturnType> {
+        if let Some(guided_type) = self.parsed_guidance.borrow().query_fn_return_type(name) {
+            return Ok(ReturnType::Type(
+                Default::default(),
+                Box::new(guided_type.parsed),
+            ));
+        }
         let ret = match return_type {
             Some(return_type) => self.convert_type(return_type.ctype)?,
             None => mk().never_ty(),
