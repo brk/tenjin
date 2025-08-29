@@ -313,6 +313,7 @@ pub struct ParsedGuidance {
     pub _raw: serde_json::Value,
     pub declspecs_of_type: HashMap<syn::Type, Vec<TenjinDeclSpecifier>>,
     pub type_of_decl: HashMap<CDeclId, tenjin::GuidedType>,
+    pub fn_return_types: HashMap<String, syn::Type>,
     decls_without_type_guidance: HashSet<CDeclId>,
     pub using_crates: HashSet<String>,
 }
@@ -349,6 +350,31 @@ impl ParsedGuidance {
             }
         }
 
+        let mut fn_return_types: HashMap<String, syn::Type> = HashMap::new();
+
+        if let Some(decls) = raw.get("fn_return_type") {
+            if let Some(decls) = decls.as_object() {
+                for (fn_name, type_name_value) in decls {
+                    if let Some(type_name) = type_name_value.as_str() {
+                        if let Ok(ty) = syn::parse_str::<syn::Type>(type_name) {
+                            fn_return_types.insert(fn_name.clone(), ty);
+                        } else {
+                            log::error!(
+                                "Tenjin `fn_return_type` guidance for function {} has invalid type {}",
+                                fn_name,
+                                type_name
+                            );
+                        }
+                    } else {
+                        log::error!(
+                            "Tenjin `fn_return_type` guidance for function {} is not a string",
+                            fn_name
+                        );
+                    }
+                }
+            }
+        }
+
         //dbg!(&declspecs_of_type);
 
         let mut using_crates = HashSet::new();
@@ -366,6 +392,7 @@ impl ParsedGuidance {
             _raw: raw,
             declspecs_of_type,
             type_of_decl,
+            fn_return_types,
             decls_without_type_guidance: HashSet::new(),
             using_crates,
         }
