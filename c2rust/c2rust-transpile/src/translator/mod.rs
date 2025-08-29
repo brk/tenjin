@@ -3218,22 +3218,7 @@ impl<'c> Translation<'c> {
                 }
             }
 
-            // handle return type
-            let ret = match return_type {
-                Some(return_type) => self.convert_type(return_type.ctype)?,
-                None => mk().never_ty(),
-            };
-            let is_void_ret = return_type
-                .map(|qty| self.ast_context[qty.ctype].kind == CTypeKind::Void)
-                .unwrap_or(false);
-
-            // If a return type is void, we should instead omit the unit type return,
-            // -> (), to be more idiomatic
-            let ret = if is_void_ret {
-                ReturnType::Default
-            } else {
-                ReturnType::Type(Default::default(), ret)
-            };
+            let ret = self.convert_function_return_type(return_type)?;
 
             let decl = mk().fn_decl(
                 new_name,
@@ -3436,6 +3421,27 @@ impl<'c> Translation<'c> {
             cut_out_trailing_ret,
         )?);
         Ok(stmts)
+    }
+
+    fn convert_function_return_type(
+        &self,
+        return_type: Option<CQualTypeId>,
+    ) -> TranslationResult<ReturnType> {
+        let ret = match return_type {
+            Some(return_type) => self.convert_type(return_type.ctype)?,
+            None => mk().never_ty(),
+        };
+        let is_void_ret = return_type
+            .map(|qty| self.ast_context[qty.ctype].kind == CTypeKind::Void)
+            .unwrap_or(false);
+
+        // If a return type is void, we should instead omit the unit type return,
+        // -> (), to be more idiomatic
+        if is_void_ret {
+            Ok(ReturnType::Default)
+        } else {
+            Ok(ReturnType::Type(Default::default(), ret))
+        }
     }
 
     fn convert_function_body(
