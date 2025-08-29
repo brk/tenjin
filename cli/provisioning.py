@@ -96,6 +96,7 @@ def download(url: str, filename: Path, first_attempt=True) -> None:
     # so it is imported here to avoid slowing down the common case.
     from urllib.request import urlretrieve  # noqa: PLC0415
     from urllib.error import HTTPError  # noqa: PLC0415
+    from http.client import RemoteDisconnected  # noqa: PLC0415
 
     def report_potentially_transient_problem_and_retry():
         sez(
@@ -124,6 +125,17 @@ def download(url: str, filename: Path, first_attempt=True) -> None:
         if first_attempt and e.code in (500, 502, 503, 504):
             # These are HTTP error codes for (at least potentially) transient issues.
             sez(f"Server returned error {e} when downloading {url}", ctx="(download) ", err=True)
+            report_potentially_transient_problem_and_retry()
+            return
+
+        report_insurmountable_error_and_die(e)
+    except RemoteDisconnected as e:
+        if first_attempt:
+            sez(
+                f"Server closed connection unexpectedly when downloading {url}",
+                ctx="(download) ",
+                err=True,
+            )
             report_potentially_transient_problem_and_retry()
             return
 
