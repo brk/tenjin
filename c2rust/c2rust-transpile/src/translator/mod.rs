@@ -313,6 +313,7 @@ pub struct ParsedGuidance {
     pub _raw: serde_json::Value,
     pub declspecs_of_type: HashMap<syn::Type, Vec<TenjinDeclSpecifier>>,
     pub type_of_decl: HashMap<CDeclId, tenjin::GuidedType>,
+    pub fn_return_types: HashMap<String, syn::Type>,
     decls_without_type_guidance: HashSet<CDeclId>,
     pub using_crates: HashSet<String>,
 }
@@ -349,6 +350,31 @@ impl ParsedGuidance {
             }
         }
 
+        let mut fn_return_types: HashMap<String, syn::Type> = HashMap::new();
+
+        if let Some(decls) = raw.get("fn_return_type") {
+            if let Some(decls) = decls.as_object() {
+                for (fn_name, type_name_value) in decls {
+                    if let Some(type_name) = type_name_value.as_str() {
+                        if let Ok(ty) = syn::parse_str::<syn::Type>(type_name) {
+                            fn_return_types.insert(fn_name.clone(), ty);
+                        } else {
+                            log::error!(
+                                "Tenjin `fn_return_type` guidance for function {} has invalid type {}",
+                                fn_name,
+                                type_name
+                            );
+                        }
+                    } else {
+                        log::error!(
+                            "Tenjin `fn_return_type` guidance for function {} is not a string",
+                            fn_name
+                        );
+                    }
+                }
+            }
+        }
+
         //dbg!(&declspecs_of_type);
 
         let mut using_crates = HashSet::new();
@@ -366,6 +392,7 @@ impl ParsedGuidance {
             _raw: raw,
             declspecs_of_type,
             type_of_decl,
+            fn_return_types,
             decls_without_type_guidance: HashSet::new(),
             using_crates,
         }
@@ -395,6 +422,13 @@ impl ParsedGuidance {
     pub fn query_expr_type(&mut self, t: &Translation, id: CExprId) -> Option<tenjin::GuidedType> {
         if let Some(decl_id) = t.c_expr_get_var_decl_id(id) {
             return self.query_decl_type(t, decl_id);
+        }
+        None
+    }
+
+    pub fn query_fn_return_type(&self, name: &str) -> Option<tenjin::GuidedType> {
+        if let Some(guided_type) = self.fn_return_types.get(name) {
+            return Some(tenjin::GuidedType::from_type(guided_type.clone()));
         }
         None
     }
@@ -3191,22 +3225,7 @@ impl<'c> Translation<'c> {
                 }
             }
 
-            // handle return type
-            let ret = match return_type {
-                Some(return_type) => self.convert_type(return_type.ctype)?,
-                None => mk().never_ty(),
-            };
-            let is_void_ret = return_type
-                .map(|qty| self.ast_context[qty.ctype].kind == CTypeKind::Void)
-                .unwrap_or(false);
-
-            // If a return type is void, we should instead omit the unit type return,
-            // -> (), to be more idiomatic
-            let ret = if is_void_ret {
-                ReturnType::Default
-            } else {
-                ReturnType::Type(Default::default(), ret)
-            };
+            let ret = self.convert_function_return_type(name, return_type)?;
 
             let decl = mk().fn_decl(
                 new_name,
@@ -3409,6 +3428,34 @@ impl<'c> Translation<'c> {
             cut_out_trailing_ret,
         )?);
         Ok(stmts)
+    }
+
+    fn convert_function_return_type(
+        &self,
+        name: &str,
+        return_type: Option<CQualTypeId>,
+    ) -> TranslationResult<ReturnType> {
+        if let Some(guided_type) = self.parsed_guidance.borrow().query_fn_return_type(name) {
+            return Ok(ReturnType::Type(
+                Default::default(),
+                Box::new(guided_type.parsed),
+            ));
+        }
+        let ret = match return_type {
+            Some(return_type) => self.convert_type(return_type.ctype)?,
+            None => mk().never_ty(),
+        };
+        let is_void_ret = return_type
+            .map(|qty| self.ast_context[qty.ctype].kind == CTypeKind::Void)
+            .unwrap_or(false);
+
+        // If a return type is void, we should instead omit the unit type return,
+        // -> (), to be more idiomatic
+        if is_void_ret {
+            Ok(ReturnType::Default)
+        } else {
+            Ok(ReturnType::Type(Default::default(), ret))
+        }
     }
 
     fn convert_function_body(
