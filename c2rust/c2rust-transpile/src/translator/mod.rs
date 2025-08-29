@@ -6093,14 +6093,30 @@ impl<'c> Translation<'c> {
     /// Pointer offset that casts its argument to isize
     fn pointer_offset(
         &self,
-        _c_ptr: Option<CExprId>,
+        c_ptr: Option<CExprId>,
         ptr: Box<Expr>,
         offset: Box<Expr>,
         multiply_by: Option<Box<Expr>>,
         neg: bool,
         mut deref: bool,
     ) -> Box<Expr> {
-        let mut offset = cast_int(offset, "isize", false);
+        let mut offset = offset;
+
+        if let Some(c_ptr) = c_ptr {
+            let guided_type = self
+                .parsed_guidance
+                .borrow_mut()
+                .query_expr_type(self, c_ptr);
+
+            if guided_type.is_some_and(|g: tenjin::GuidedType| g.pretty.starts_with("Vec <")) {
+                if neg {
+                    offset = mk().unary_expr(UnOp::Neg(Default::default()), offset);
+                }
+                return mk().index_expr(ptr, cast_int(offset, "usize", false));
+            }
+        }
+
+        offset = cast_int(offset, "isize", false);
 
         if let Some(mul) = multiply_by {
             let mul = cast_int(mul, "isize", false);
