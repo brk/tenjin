@@ -313,6 +313,7 @@ pub struct ParsedGuidance {
     pub _raw: serde_json::Value,
     pub declspecs_of_type: HashMap<syn::Type, Vec<TenjinDeclSpecifier>>,
     pub type_of_decl: HashMap<CDeclId, tenjin::GuidedType>,
+    pub mut_of_decl: Vec<(TenjinDeclSpecifier, Mutability)>,
     pub fn_return_types: HashMap<String, syn::Type>,
     decls_without_type_guidance: HashSet<CDeclId>,
     pub using_crates: HashSet<String>,
@@ -324,6 +325,7 @@ impl ParsedGuidance {
 
         // These map will be filled in lazily.
         let type_of_decl: HashMap<CDeclId, tenjin::GuidedType> = HashMap::new();
+        let mut mut_of_decl: Vec<(TenjinDeclSpecifier, Mutability)> = Vec::new();
 
         if let Some(decls) = raw.get("vars_of_type") {
             if let Some(decls) = decls.as_object() {
@@ -346,6 +348,40 @@ impl ParsedGuidance {
                     let ty = syn::parse_str::<syn::Type>(unparsed_ty)
                         .unwrap_or_else(|_| panic!("Failed to parse type: {}", unparsed_ty));
                     declspecs_of_type.insert(ty, parsed_declspecs);
+                }
+            }
+        }
+
+        if let Some(decls) = raw.get("vars_mut") {
+            if let Some(decls) = decls.as_object() {
+                fn mutability_from_bool(is_mut: bool) -> Mutability {
+                    if is_mut {
+                        Mutability::Mutable
+                    } else {
+                        Mutability::Immutable
+                    }
+                }
+                for (declspec, is_mut_value) in decls {
+                    if !is_mut_value.is_boolean() {
+                        log::error!(
+                            "Tenjin `vars_mut` guidance for variable {} is not a boolean",
+                            declspec
+                        );
+                    }
+                    match parse_tenjin_decl_specifier(declspec) {
+                        Some(decl_specifier) => {
+                            mut_of_decl.push((
+                                decl_specifier,
+                                mutability_from_bool(is_mut_value.as_bool().unwrap_or(false)),
+                            ));
+                        }
+                        None => {
+                            log::error!(
+                                "Tenjin `vars_mut` guidance for variable {} has invalid specifier",
+                                declspec
+                            );
+                        }
+                    }
                 }
             }
         }
@@ -375,7 +411,9 @@ impl ParsedGuidance {
             }
         }
 
+        //dbg!(&fn_return_types);
         //dbg!(&declspecs_of_type);
+        //dbg!(&mut_of_decl);
 
         let mut using_crates = HashSet::new();
         if let Some(crates) = raw.get("use_crates") {
@@ -392,6 +430,7 @@ impl ParsedGuidance {
             _raw: raw,
             declspecs_of_type,
             type_of_decl,
+            mut_of_decl,
             fn_return_types,
             decls_without_type_guidance: HashSet::new(),
             using_crates,
@@ -429,6 +468,15 @@ impl ParsedGuidance {
     pub fn query_fn_return_type(&self, name: &str) -> Option<tenjin::GuidedType> {
         if let Some(guided_type) = self.fn_return_types.get(name) {
             return Some(tenjin::GuidedType::from_type(guided_type.clone()));
+        }
+        None
+    }
+
+    pub fn query_decl_mut(&self, t: &Translation, id: CDeclId) -> Option<Mutability> {
+        if let Some((_decl_specifier, is_mut)) =
+            self.mut_of_decl.iter().find(|(d, _)| t.matches_decl(d, id))
+        {
+            return Some(*is_mut);
         }
         None
     }
@@ -2441,7 +2489,7 @@ impl<'c> Translation<'c> {
                     }
                     CDeclKind::Variable { ident, .. } => {
                         // Match variable declarations against the declspecs
-                        spec.varname == ident.as_str()
+                        spec.varname == "*" || spec.varname == ident.as_str()
                     }
                     _ => {
                         log::warn!(
@@ -2895,8 +2943,9 @@ impl<'c> Translation<'c> {
                     .parsed_guidance
                     .borrow_mut()
                     .query_decl_type(self, decl_id);
+                let guided_mutbl = self.parsed_guidance.borrow().query_decl_mut(self, decl_id);
                 let ConvertedVariable { ty, mutbl, init: _ } =
-                    self.convert_variable(ctx.static_(), None, typ, &guided_type)?;
+                    self.convert_variable(ctx.static_(), None, typ, &guided_type, guided_mutbl)?;
                 // When putting extern statics into submodules, they need to be public to be accessible
                 let visibility = if self.tcfg.reorganize_definitions {
                     "pub"
@@ -2949,14 +2998,19 @@ impl<'c> Translation<'c> {
                     .parsed_guidance
                     .borrow_mut()
                     .query_decl_type(self, decl_id);
-
+                let guided_mutbl = self.parsed_guidance.borrow().query_decl_mut(self, decl_id);
                 // Collect problematic static initializers and offload them to sections for the linker
                 // to initialize for us
                 let (ty, init) = if self.static_initializer_is_uncompilable(initializer, typ) {
                     // Note: We don't pass has_static_duration through here. Extracted initializers
                     // are run outside of the static initializer.
-                    let ConvertedVariable { ty, mutbl: _, init } =
-                        self.convert_variable(ctx.not_static(), initializer, typ, &guided_type)?;
+                    let ConvertedVariable { ty, mutbl: _, init } = self.convert_variable(
+                        ctx.not_static(),
+                        initializer,
+                        typ,
+                        &guided_type,
+                        guided_mutbl,
+                    )?;
 
                     let mut init = init?.to_expr();
 
@@ -2981,8 +3035,13 @@ impl<'c> Translation<'c> {
 
                     (ty, init)
                 } else {
-                    let ConvertedVariable { ty, mutbl: _, init } =
-                        self.convert_variable(ctx.static_(), initializer, typ, &guided_type)?;
+                    let ConvertedVariable { ty, mutbl: _, init } = self.convert_variable(
+                        ctx.static_(),
+                        initializer,
+                        typ,
+                        &guided_type,
+                        guided_mutbl,
+                    )?;
                     let mut init = init?;
                     // TODO: Replace this by relying entirely on
                     // WithStmts.is_unsafe() of the translated variable
@@ -3163,8 +3222,9 @@ impl<'c> Translation<'c> {
                     .parsed_guidance
                     .borrow_mut()
                     .query_decl_type(self, decl_id);
+                let guided_mutbl = self.parsed_guidance.borrow().query_decl_mut(self, decl_id);
                 let ConvertedVariable { ty, mutbl, init: _ } =
-                    self.convert_variable(ctx, None, typ, &guided_type)?;
+                    self.convert_variable(ctx, None, typ, &guided_type, guided_mutbl)?;
 
                 if body.is_some() {
                     log::trace!(
@@ -3173,14 +3233,14 @@ impl<'c> Translation<'c> {
                         decl_id,
                         name
                     );
-                }
 
-                // XREF:TENJIN-GUIDANCE-STRAWMAN
-                let mut_override = if guided_type.is_some() {
-                    Some(Mutability::Immutable)
-                } else {
-                    None
-                };
+                    log::trace!(
+                        "Converting param variable {:?} of body-having function {:?} with guided mut {:?}",
+                        var,
+                        name,
+                        guided_mutbl
+                    );
+                }
 
                 let pat = if var.is_empty() {
                     mk().wild_pat()
@@ -3189,7 +3249,7 @@ impl<'c> Translation<'c> {
                     let mutbl = if body.is_none() {
                         Mutability::Immutable
                     } else {
-                        mut_override.unwrap_or(mutbl)
+                        mutbl
                     };
 
                     let new_var = self
@@ -3595,6 +3655,7 @@ impl<'c> Translation<'c> {
             .parsed_guidance
             .borrow_mut()
             .query_decl_type(self, decl_id);
+        let guided_mutbl = self.parsed_guidance.borrow().query_decl_mut(self, decl_id);
         if let CDeclKind::Variable {
             ref ident,
             has_static_duration: true,
@@ -3619,8 +3680,13 @@ impl<'c> Translation<'c> {
                             "Unable to rename function scoped static initializer",
                         )
                     })?;
-                let ConvertedVariable { ty, mutbl: _, init } =
-                    self.convert_variable(ctx.static_(), initializer, typ, &guided_type)?;
+                let ConvertedVariable { ty, mutbl: _, init } = self.convert_variable(
+                    ctx.static_(),
+                    initializer,
+                    typ,
+                    &guided_type,
+                    guided_mutbl,
+                )?;
                 let default_init = self.implicit_default_expr(typ.ctype, true)?.to_expr();
                 let comment = String::from("// Initialized in run_static_initializers");
                 let span = self
@@ -3696,7 +3762,7 @@ impl<'c> Translation<'c> {
                 let mut stmts = self.compute_variable_array_sizes(ctx, typ.ctype)?;
 
                 let ConvertedVariable { ty, mutbl, init } =
-                    self.convert_variable(ctx, initializer, typ, &guided_type)?;
+                    self.convert_variable(ctx, initializer, typ, &guided_type, guided_mutbl)?;
                 let mut init = init?;
 
                 log::trace!(
@@ -3932,21 +3998,29 @@ impl<'c> Translation<'c> {
         initializer: Option<CExprId>,
         typ: CQualTypeId,
         guided_type: &Option<tenjin::GuidedType>,
+        guided_mutbl: Option<Mutability>,
     ) -> TranslationResult<ConvertedVariable> {
         let init = match initializer {
             Some(x) => self.convert_expr_guided(ctx.used(), x, guided_type),
             None => self.implicit_default_expr_guided(guided_type, typ.ctype, ctx.is_static),
         };
 
+        let mutbl = match guided_mutbl {
+            Some(mutbl) => mutbl,
+            None => {
+                if typ.qualifiers.is_const {
+                    Mutability::Immutable
+                } else {
+                    Mutability::Mutable
+                }
+            }
+        };
+
         if let Some(guided_type) = guided_type {
             // If we have a type override, we use it instead of the converted type
             return Ok(ConvertedVariable {
                 ty: Box::new(guided_type.parsed.clone()),
-                mutbl: if typ.qualifiers.is_const {
-                    Mutability::Immutable
-                } else {
-                    Mutability::Mutable
-                },
+                mutbl,
                 init,
             });
         }
