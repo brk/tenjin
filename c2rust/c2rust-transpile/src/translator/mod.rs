@@ -313,6 +313,7 @@ pub struct ParsedGuidance {
     pub _raw: serde_json::Value,
     pub declspecs_of_type: HashMap<syn::Type, Vec<TenjinDeclSpecifier>>,
     pub type_of_decl: HashMap<CDeclId, tenjin::GuidedType>,
+    pub mut_of_decl: Vec<(TenjinDeclSpecifier, Mutability)>,
     pub fn_return_types: HashMap<String, syn::Type>,
     decls_without_type_guidance: HashSet<CDeclId>,
     pub using_crates: HashSet<String>,
@@ -324,6 +325,7 @@ impl ParsedGuidance {
 
         // These map will be filled in lazily.
         let type_of_decl: HashMap<CDeclId, tenjin::GuidedType> = HashMap::new();
+        let mut mut_of_decl: Vec<(TenjinDeclSpecifier, Mutability)> = Vec::new();
 
         if let Some(decls) = raw.get("vars_of_type") {
             if let Some(decls) = decls.as_object() {
@@ -346,6 +348,40 @@ impl ParsedGuidance {
                     let ty = syn::parse_str::<syn::Type>(unparsed_ty)
                         .unwrap_or_else(|_| panic!("Failed to parse type: {}", unparsed_ty));
                     declspecs_of_type.insert(ty, parsed_declspecs);
+                }
+            }
+        }
+
+        if let Some(decls) = raw.get("vars_mut") {
+            if let Some(decls) = decls.as_object() {
+                fn mutability_from_bool(is_mut: bool) -> Mutability {
+                    if is_mut {
+                        Mutability::Mutable
+                    } else {
+                        Mutability::Immutable
+                    }
+                }
+                for (declspec, is_mut_value) in decls {
+                    if !is_mut_value.is_boolean() {
+                        log::error!(
+                            "Tenjin `vars_mut` guidance for variable {} is not a boolean",
+                            declspec
+                        );
+                    }
+                    match parse_tenjin_decl_specifier(declspec) {
+                        Some(decl_specifier) => {
+                            mut_of_decl.push((
+                                decl_specifier,
+                                mutability_from_bool(is_mut_value.as_bool().unwrap_or(false)),
+                            ));
+                        }
+                        None => {
+                            log::error!(
+                                "Tenjin `vars_mut` guidance for variable {} has invalid specifier",
+                                declspec
+                            );
+                        }
+                    }
                 }
             }
         }
@@ -392,6 +428,7 @@ impl ParsedGuidance {
             _raw: raw,
             declspecs_of_type,
             type_of_decl,
+            mut_of_decl,
             fn_return_types,
             decls_without_type_guidance: HashSet::new(),
             using_crates,
@@ -429,6 +466,15 @@ impl ParsedGuidance {
     pub fn query_fn_return_type(&self, name: &str) -> Option<tenjin::GuidedType> {
         if let Some(guided_type) = self.fn_return_types.get(name) {
             return Some(tenjin::GuidedType::from_type(guided_type.clone()));
+        }
+        None
+    }
+
+    pub fn query_decl_mut(&self, t: &Translation, id: CDeclId) -> Option<Mutability> {
+        if let Some((_decl_specifier, is_mut)) =
+            self.mut_of_decl.iter().find(|(d, _)| t.matches_decl(d, id))
+        {
+            return Some(*is_mut);
         }
         None
     }
