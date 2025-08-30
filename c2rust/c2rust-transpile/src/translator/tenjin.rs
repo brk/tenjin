@@ -762,6 +762,12 @@ impl Translation<'_> {
                 {
                     self.recognize_preconversion_call_method_1_guided(ctx, "abs", cargs)
                 }
+                _ if (tenjin::is_path_exactly_1(path, "floor")
+                    || tenjin::is_path_exactly_1(path, "floorf")
+                    || tenjin::is_path_exactly_1(path, "floorl")) =>
+                {
+                    self.recognize_preconversion_call_method_1_guided(ctx, "floor", cargs)
+                }
                 _ => Ok(None),
             }
         } else {
