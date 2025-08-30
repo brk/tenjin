@@ -760,7 +760,7 @@ impl Translation<'_> {
                     || tenjin::is_path_exactly_1(path, "fabsf")
                     || tenjin::is_path_exactly_1(path, "fabsl")) =>
                 {
-                    self.recognize_preconversion_call_abs_guided(ctx, cargs)
+                    self.recognize_preconversion_call_method_1_guided(ctx, "abs", cargs)
                 }
                 _ => Ok(None),
             }
@@ -800,21 +800,19 @@ impl Translation<'_> {
     }
 
     #[allow(clippy::borrowed_box)]
-    fn recognize_preconversion_call_abs_guided(
+    fn recognize_preconversion_call_method_1_guided(
         &self,
         ctx: ExprContext,
+        method_name: &str,
         cargs: &[CExprId],
     ) -> TranslationResult<Option<WithStmts<Box<Expr>>>> {
         if cargs.len() == 1 {
-            // [f]abs[fl](FOO)
-            // should be translated to
-            // FOO.abs()
             let expr_x = self.convert_expr(ctx.used(), cargs[0])?;
             return expr_x
                 .and_then(|expr_x| {
                     Ok(WithStmts::new_val(mk().method_call_expr(
                         expr_x,
-                        "abs",
+                        method_name,
                         Vec::new(),
                     )))
                 })
