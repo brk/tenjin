@@ -749,6 +749,13 @@ impl Translation<'_> {
                 {
                     self.recognize_preconversion_call_powf_guided(ctx, cargs)
                 }
+                _ if self.parsed_guidance.borrow().no_math_errno
+                    && (tenjin::is_path_exactly_1(path, "fmod")
+                        || tenjin::is_path_exactly_1(path, "fmodf")
+                        || tenjin::is_path_exactly_1(path, "fmodl")) =>
+                {
+                    self.recognize_preconversion_call_fmodf_guided(ctx, cargs)
+                }
                 _ if (tenjin::is_path_exactly_1(path, "fabs")
                     || tenjin::is_path_exactly_1(path, "fabsf")
                     || tenjin::is_path_exactly_1(path, "fabsl")) =>
@@ -838,6 +845,35 @@ impl Translation<'_> {
                         expr_x,
                         "powf",
                         vec![expr_y.to_expr()],
+                    )))
+                })
+                .map(Some);
+        }
+
+        Ok(None)
+    }
+
+    #[allow(clippy::borrowed_box)]
+    fn recognize_preconversion_call_fmodf_guided(
+        &self,
+        ctx: ExprContext,
+        cargs: &[CExprId],
+    ) -> TranslationResult<Option<WithStmts<Box<Expr>>>> {
+        if cargs.len() == 2 {
+            // fmodf(x, y)
+            //    when we've been provided with no_math_errno guidance,
+            //    or have otherwise ascertained that the program cannot
+            //    observe any modifications to errno,
+            // should be translated to
+            // x % y
+            let expr_x = self.convert_expr(ctx.used(), cargs[0])?;
+            let expr_y = self.convert_expr(ctx.used(), cargs[1])?;
+            return expr_x
+                .and_then(|expr_x| {
+                    Ok(WithStmts::new_val(mk().binary_expr(
+                        BinOp::Rem(Default::default()),
+                        expr_x,
+                        expr_y.to_expr(),
                     )))
                 })
                 .map(Some);
