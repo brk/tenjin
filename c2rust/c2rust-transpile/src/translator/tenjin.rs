@@ -749,6 +749,12 @@ impl Translation<'_> {
                 {
                     self.recognize_preconversion_call_powf_guided(ctx, cargs)
                 }
+                _ if (tenjin::is_path_exactly_1(path, "fabs")
+                    || tenjin::is_path_exactly_1(path, "fabsf")
+                    || tenjin::is_path_exactly_1(path, "fabsl")) =>
+                {
+                    self.recognize_preconversion_call_abs_guided(ctx, cargs)
+                }
                 _ => Ok(None),
             }
         } else {
@@ -779,6 +785,31 @@ impl Translation<'_> {
                         mac_call_exprs_tt(vec![expr]),
                         MacroDelimiter::Paren(Default::default()),
                     ))))
+                })
+                .map(Some);
+        }
+
+        Ok(None)
+    }
+
+    #[allow(clippy::borrowed_box)]
+    fn recognize_preconversion_call_abs_guided(
+        &self,
+        ctx: ExprContext,
+        cargs: &[CExprId],
+    ) -> TranslationResult<Option<WithStmts<Box<Expr>>>> {
+        if cargs.len() == 1 {
+            // [f]abs[fl](FOO)
+            // should be translated to
+            // FOO.abs()
+            let expr_x = self.convert_expr(ctx.used(), cargs[0])?;
+            return expr_x
+                .and_then(|expr_x| {
+                    Ok(WithStmts::new_val(mk().method_call_expr(
+                        expr_x,
+                        "abs",
+                        Vec::new(),
+                    )))
                 })
                 .map(Some);
         }
