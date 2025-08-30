@@ -3044,7 +3044,13 @@ impl<'c> Translation<'c> {
 
                 // Force mutability due to the potential for raw pointers occurring in the type
                 // and because we may be assigning to these variables in the external initializer
-                static_def = static_def.span(span).mutbl();
+                match guided_mutbl.unwrap_or(Mutability::Mutable) {
+                    Mutability::Mutable => {
+                        static_def = static_def.span(span).mutbl();
+                    }
+                    Mutability::Immutable => {}
+                }
+
                 if has_thread_duration {
                     static_def = static_def.single_attr("thread_local");
                 }
