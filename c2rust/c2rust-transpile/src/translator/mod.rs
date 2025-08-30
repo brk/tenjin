@@ -3034,7 +3034,7 @@ impl<'c> Translation<'c> {
                     (ty, init)
                 };
 
-                let static_def = if is_externally_visible {
+                let mut static_def = if is_externally_visible {
                     mk_linkage(false, new_name, ident).pub_().extern_("C")
                 } else if self.cur_file.borrow().is_some() {
                     mk().pub_()
@@ -3044,7 +3044,13 @@ impl<'c> Translation<'c> {
 
                 // Force mutability due to the potential for raw pointers occurring in the type
                 // and because we may be assigning to these variables in the external initializer
-                let mut static_def = static_def.span(span).mutbl();
+                match guided_mutbl.unwrap_or(Mutability::Mutable) {
+                    Mutability::Mutable => {
+                        static_def = static_def.span(span).mutbl();
+                    }
+                    Mutability::Immutable => {}
+                }
+
                 if has_thread_duration {
                     static_def = static_def.single_attr("thread_local");
                 }
@@ -4016,12 +4022,6 @@ impl<'c> Translation<'c> {
             ])
         } else {
             self.convert_type(typ.ctype)?
-        };
-
-        let mutbl = if typ.qualifiers.is_const {
-            Mutability::Immutable
-        } else {
-            Mutability::Mutable
         };
 
         Ok(ConvertedVariable { ty, mutbl, init })
