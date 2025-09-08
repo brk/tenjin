@@ -201,6 +201,7 @@ def provision_desires(wanted: str):
 
     if wanted == "all":
         want_10j_reference_c2rust_tag()
+        want_hayroll_maki()
 
     HAVE.provisioning_depth -= 1
 
@@ -381,6 +382,92 @@ def rebuild_10j_upstream_c2rust(xj_upstream_c2rust: Path):
     # Ensure a clean checkout for future updates
     stdout_path.unlink(missing_ok=True)
     stderr_path.unlink(missing_ok=True)
+
+
+def want_hayroll_maki():
+    def provision_hayroll_maki_with(
+        version: str,
+        keyname: str,
+    ):
+        def say(msg: str):
+            sez(msg, ctx="(hayroll-maki) ")
+
+        localdir = HAVE.localdir
+
+        xj_hayroll_maki = hermetic.xj_hayroll_maki(localdir)
+        if xj_hayroll_maki.is_dir():
+            say(f"Fetching and resetting @UW-HARVEST/Maki to commit {version} ...")
+            subprocess.check_call(["git", "fetch", "--all"], cwd=str(xj_hayroll_maki))
+            subprocess.check_call(
+                ["git", "checkout", "--detach", version], cwd=str(xj_hayroll_maki)
+            )
+        else:
+            say(f"Cloning @UW-HARVEST/Maki {version} ...")
+
+            stdout_path = Path(localdir, "xj-hayroll-maki-clone.log")
+            stderr_path = Path(localdir, "xj-hayroll-maki-clone.err")
+            hermetic.run_command_with_progress(
+                [
+                    "git",
+                    "clone",
+                    "https://github.com/Aarno-Labs/Maki.git",
+                    str(xj_hayroll_maki),
+                ],
+                stdout_file=stdout_path,
+                stderr_file=stderr_path,
+            )
+            subprocess.check_call(
+                ["git", "checkout", "--detach", version], cwd=str(xj_hayroll_maki)
+            )
+
+        rebuild_10j_hayroll_maki(xj_hayroll_maki)
+        HAVE.note_we_have(keyname, specifier=version)
+
+    want(
+        "uw-harvest-maki",
+        "uw-harvest-maki",
+        "Hayroll's fork of Maki",
+        provision_hayroll_maki_with,
+    )
+
+
+def rebuild_10j_hayroll_maki(xj_hayroll_maki: Path):
+    config_stdout_path = Path(xj_hayroll_maki, "xj-hayroll-maki-config.log")
+    config_stderr_path = Path(xj_hayroll_maki, "xj-hayroll-maki-config.err")
+    build_stdout_path = Path(xj_hayroll_maki, "xj-hayroll-maki-build.log")
+    build_stderr_path = Path(xj_hayroll_maki, "xj-hayroll-maki-build.err")
+
+    cmd = [
+        "cmake",
+        "-B",
+        str(xj_hayroll_maki / "build"),
+        "-S",
+        xj_hayroll_maki,
+    ]
+
+    # We need to tell CMake where our hermetic copy of zlib is, on Linux;
+    # on Mac, we get zlib via homebrew, so it gets picked up automatically.
+    if (hermetic.xj_build_deps(HAVE.localdir) / "usr" / "lib" / "libz.so").is_file():
+        cmd.append("-DZLIB_ROOT={}".format(hermetic.xj_build_deps(HAVE.localdir)))
+
+    sez("Configuring Hayroll's fork of Maki...", ctx="(hayroll-maki) ")
+    hermetic.run_command_with_progress(
+        cmd,
+        stdout_file=config_stdout_path,
+        stderr_file=config_stderr_path,
+    )
+    sez("Building Hayroll's fork of Maki...", ctx="(hayroll-maki) ")
+    hermetic.run_command_with_progress(
+        ["cmake", "--build", str(xj_hayroll_maki / "build"), "--", f"-j{os.cpu_count()}"],
+        stdout_file=build_stdout_path,
+        stderr_file=build_stderr_path,
+        cwd=xj_hayroll_maki,
+    )
+    # Ensure a clean checkout for future updates
+    config_stdout_path.unlink(missing_ok=True)
+    config_stderr_path.unlink(missing_ok=True)
+    build_stdout_path.unlink(missing_ok=True)
+    build_stderr_path.unlink(missing_ok=True)
 
 
 def want_10j_sysroot_extras():
@@ -974,6 +1061,12 @@ def provision_10j_llvm_with(version: str, keyname: str):
             hermetic.run_cargo_in(["clean"], upstream_c2rust_dir)
             rebuild_10j_upstream_c2rust(upstream_c2rust_dir)
 
+        # Likewise for Maki, which is a Clang plugin
+        xj_hayroll_maki = hermetic.xj_hayroll_maki(localdir)
+        if xj_hayroll_maki.is_dir():
+            shutil.rmtree(xj_hayroll_maki / "build", ignore_errors=True)
+            rebuild_10j_hayroll_maki(xj_hayroll_maki)
+
     update_10j_llvm_have(keyname, version, llvm_version)
 
 
@@ -1095,6 +1188,8 @@ def provision_10j_deps_with(version: str, keyname: str):
 
             if shutil.which("pkg-config") is None:
                 subprocess.check_call(["brew", "install", "pkg-config"])
+
+            subprocess.check_call(["brew", "install", "zlib"])
 
             # The other dependencies we need on Linux, like patch and make,
             # should have been provided already by Xcode Developer Tools.
