@@ -6,12 +6,13 @@ WANT = {
     "10j-dune": "3.19.0",
     "10j-ocaml": "5.2.0",
     "10j-cmake": "3.31.7",
-    "10j-bullseye-sysroot-extras": "rev-b578a0937",
-    "10j-build-deps": "rev-b578a0937",
+    "10j-bullseye-sysroot-extras": "rev-6b5fc80e3",
+    "10j-build-deps": "rev-6b5fc80e3",
     # Keep in sync with the version in `xj-improve-multitool/rust-toolchain.toml`.
     "10j-xj-improve-multitool-toolchain": "nightly-2025-03-03",
     "10j-xj-default-rust-toolchain": "1.88.0",
     "10j-reference-c2rust-tag": "v0.20.0",
+    "uw-harvest-maki": "fa9206c600fb5209984f5b83b996d1966e8da1bc",
 }
 
 # Subdirectory of hermetic.xj_llvm_root()
