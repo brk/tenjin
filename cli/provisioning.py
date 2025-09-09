@@ -202,6 +202,8 @@ def provision_desires(wanted: str):
     if wanted == "all":
         want_10j_reference_c2rust_tag()
         want_hayroll_maki()
+        want_tree_sitter()
+        want_uw_harvest_tree_sitter_c_preproc()
 
     HAVE.provisioning_depth -= 1
 
@@ -468,6 +470,125 @@ def rebuild_10j_hayroll_maki(xj_hayroll_maki: Path):
     config_stderr_path.unlink(missing_ok=True)
     build_stdout_path.unlink(missing_ok=True)
     build_stderr_path.unlink(missing_ok=True)
+
+
+def want_uw_harvest_tree_sitter_c_preproc():
+    def rebuild_10j_uw_harvest_tree_sitter_c_preproc(git_root: Path):
+        build_stdout_path = Path(git_root, "xj-uw-harvest-tree-sitter-c_preproc-build.log")
+        build_stderr_path = Path(git_root, "xj-uw-harvest-tree-sitter-c_preproc-build.err")
+
+        # Note that Hayroll's build system assumes we're doing an in-tree build
+        # with Make, not CMake.
+
+        sez("Building UW-HARVEST/tree-sitter-c_preproc...", ctx="(hayroll) ")
+        hermetic.run_command_with_progress(
+            ["make", f"-j{os.cpu_count()}"],
+            stdout_file=build_stdout_path,
+            stderr_file=build_stderr_path,
+            cwd=git_root,
+        )
+        # Ensure a clean checkout for future updates
+        build_stdout_path.unlink(missing_ok=True)
+        build_stderr_path.unlink(missing_ok=True)
+
+    def provision_uw_harvest_tree_sitter_c_preproc_with(
+        version: str,
+        keyname: str,
+    ):
+        def say(msg: str):
+            sez(msg, ctx="(uw-harvest-tree-sitter-c_preproc) ")
+
+        localdir = HAVE.localdir
+
+        target_dir = localdir / "tree-sitter-c_preproc"
+        if target_dir.is_dir():
+            say(f"Fetching and resetting @UW-HARVEST/tree-sitter_c_preproc to commit {version} ...")
+            subprocess.check_call(["git", "fetch", "--all"], cwd=str(target_dir))
+            subprocess.check_call(["git", "checkout", "--detach", version], cwd=str(target_dir))
+        else:
+            say(f"Cloning @UW-HARVEST/tree-sitter_c_preproc {version} ...")
+
+            stdout_path = Path(localdir, "xj-uw-harvest-tree-sitter-c_preproc-clone.log")
+            stderr_path = Path(localdir, "xj-uw-harvest-tree-sitter-c_preproc-clone.err")
+            hermetic.run_command_with_progress(
+                [
+                    "git",
+                    "clone",
+                    "https://github.com/UW-HARVEST/tree-sitter-c_preproc.git",
+                    str(target_dir),
+                ],
+                stdout_file=stdout_path,
+                stderr_file=stderr_path,
+            )
+            subprocess.check_call(["git", "checkout", "--detach", version], cwd=str(target_dir))
+
+        rebuild_10j_uw_harvest_tree_sitter_c_preproc(target_dir)
+        HAVE.note_we_have(keyname, specifier=version)
+
+    want(
+        "uw-harvest-tree-sitter-c_preproc",
+        "uw-harvest-tree-sitter-c_preproc",
+        "UW-HARVEST/tree-sitter-c_preproc",
+        provision_uw_harvest_tree_sitter_c_preproc_with,
+    )
+
+
+def want_tree_sitter():
+    def rebuild_10j_tree_sitter(git_root: Path):
+        build_stdout_path = Path(git_root, "xj-tree-sitter-build.log")
+        build_stderr_path = Path(git_root, "xj-tree-sitter-build.err")
+
+        sez("Building tree-sitter...", ctx="(hayroll) ")
+        hermetic.run_command_with_progress(
+            ["make", f"-j{os.cpu_count()}"],
+            stdout_file=build_stdout_path,
+            stderr_file=build_stderr_path,
+            cwd=git_root,
+        )
+        # Ensure a clean checkout for future updates
+        build_stdout_path.unlink(missing_ok=True)
+        build_stderr_path.unlink(missing_ok=True)
+
+    def provision_tree_sitter_with(
+        version: str,
+        keyname: str,
+    ):
+        def say(msg: str):
+            sez(msg, ctx="(hayroll) ")
+
+        localdir = HAVE.localdir
+
+        target_dir = localdir / "tree-sitter"
+        if target_dir.is_dir():
+            say(f"Fetching and resetting tree-sitter to commit {version} ...")
+            subprocess.check_call(["git", "fetch", "--all"], cwd=str(target_dir))
+            subprocess.check_call(["git", "checkout", "--detach", version], cwd=str(target_dir))
+        else:
+            say(f"Cloning tree-sitter {version} ...")
+
+            stdout_path = Path(localdir, "xj-tree-sitter-clone.log")
+            stderr_path = Path(localdir, "xj-tree-sitter-clone.err")
+            hermetic.run_command_with_progress(
+                [
+                    "git",
+                    "clone",
+                    "https://github.com/tree-sitter/tree-sitter.git",
+                    str(target_dir),
+                ],
+                stdout_file=stdout_path,
+                stderr_file=stderr_path,
+            )
+            subprocess.check_call(["git", "checkout", "--detach", version], cwd=str(target_dir))
+
+        rebuild_10j_tree_sitter(target_dir)
+        HAVE.note_we_have(keyname, specifier=version)
+
+    want(
+        "tree-sitter",
+        "tree-sitter",
+        "tree-sitter",
+        provision_tree_sitter_with,
+    )
 
 
 def want_10j_sysroot_extras():
