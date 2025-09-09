@@ -1189,6 +1189,9 @@ def provision_10j_deps_with(version: str, keyname: str):
             if shutil.which("pkg-config") is None:
                 subprocess.check_call(["brew", "install", "pkg-config"])
 
+            if shutil.which("z3") is None:
+                subprocess.check_call(["brew", "install", "z3"])
+
             subprocess.check_call(["brew", "install", "zlib"])
 
             # The other dependencies we need on Linux, like patch and make,
