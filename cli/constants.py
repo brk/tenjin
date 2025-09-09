@@ -13,6 +13,8 @@ WANT = {
     "10j-xj-default-rust-toolchain": "1.88.0",
     "10j-reference-c2rust-tag": "v0.20.0",
     "uw-harvest-maki": "fa9206c600fb5209984f5b83b996d1966e8da1bc",
+    "tree-sitter": "a467ea8502d95562171f97953a6dc5b2a8622609",
+    "uw-harvest-tree-sitter-c_preproc": "ead342bb632f8c3c732d4e2bd709225ba07a5798",
 }
 
 # Subdirectory of hermetic.xj_llvm_root()
