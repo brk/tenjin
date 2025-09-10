@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import shlex
 from dataclasses import dataclass
+from typing import Literal
 
 import repo_root
 import hermetic
@@ -67,6 +68,13 @@ class CompileCommand:
         elif self.command:
             self.command = " ".join(parts)
 
+    def view_command(self) -> str:
+        if self.command:
+            return self.command
+        elif self.arguments:
+            return " ".join(shlex.quote(arg) for arg in self.arguments)
+        raise ValueError("No command or arguments available")
+
 
 @dataclass
 class CompileCommands:
@@ -87,24 +95,35 @@ class CompileCommands:
         commands = [CompileCommand(**entry) for entry in data]
         return cls(commands=commands)
 
-    def to_dict(self) -> list[dict]:
+    def to_dict(self, flavor: Literal["arguments", "command", "preserve"]) -> list[dict]:
         """Convert to a list of dictionaries"""
         result = []
         for cmd in self.commands:
             entry: dict[str, str | list[str]] = {"directory": cmd.directory, "file": cmd.file}
-            if cmd.command:
-                entry["command"] = cmd.command
-            if cmd.arguments:
-                entry["arguments"] = cmd.arguments
+            match flavor:
+                case "preserve":
+                    if cmd.command:
+                        entry["command"] = cmd.command
+                    if cmd.arguments:
+                        entry["arguments"] = cmd.arguments
+                case "command":
+                    entry["command"] = cmd.view_command()
+                case "arguments":
+                    entry["arguments"] = cmd.get_command_parts()
             if cmd.output:
                 entry["output"] = cmd.output
             result.append(entry)
         return result
 
-    def to_json_file(self, file_path: str | Path, indent: int = 2):
+    def to_json_file(
+        self,
+        file_path: str | Path,
+        flavor: Literal["arguments", "command", "preserve"] = "preserve",
+        indent: int = 2,
+    ):
         """Save compile commands to a JSON file"""
         with open(file_path, "w", encoding="utf-8") as f:
-            json.dump(self.to_dict(), f, indent=indent)
+            json.dump(self.to_dict(flavor=flavor), f, indent=indent)
 
     def get_source_files(self) -> list[Path]:
         """Get all unique source files"""
@@ -202,4 +221,4 @@ def munge_compile_commands_for_tenjin_translation(compile_commands_path: Path):
             args.append("assert")
         cc.set_command_parts(args)
 
-    ccs.to_json_file(compile_commands_path)
+    ccs.to_json_file(compile_commands_path, flavor="arguments")
