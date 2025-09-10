@@ -221,4 +221,10 @@ def munge_compile_commands_for_tenjin_translation(compile_commands_path: Path):
             args.append("assert")
         cc.set_command_parts(args)
 
+    ccs.to_json_file(compile_commands_path)
+
+
+def munge_compile_commands_for_hayroll(compile_commands_path: Path, source_root: Path):
+    """Rewrite compile_commands.json for Hayroll compatibility."""
+    ccs = CompileCommands.from_json_file(compile_commands_path)
     ccs.to_json_file(compile_commands_path, flavor="arguments")

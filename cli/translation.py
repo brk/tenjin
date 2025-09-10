@@ -3,6 +3,7 @@ import sys
 import tempfile
 from pathlib import Path
 from subprocess import CompletedProcess, CalledProcessError
+import os
 import re
 import json
 import pprint
@@ -10,6 +11,7 @@ import time
 import uuid
 from platform import platform
 import hashlib
+import shlex
 
 import click
 
@@ -156,7 +158,7 @@ def create_translation_snapshot(
     c_snapshot = create_subdirectory_snapshot(False, codebase, "original_codebase")
 
     rust_snapshots = []
-    for dirname in ["vanilla_c2rust", "00_out", "final"]:
+    for dirname in ["vanilla_c2rust", "00_out", "final", "hayroll"]:
         subdir = resultsdir / dirname
         assert not subdir.is_file()
         if subdir.is_dir():
@@ -344,6 +346,55 @@ def do_translate(
 
             tracker.mark_translation_finished()
             skip_remainder_of_translation = True
+
+        # Try using Hayroll only if the underlying Tenjin translation did not fail.
+        if not skip_remainder_of_translation and guidance.get("use_hayroll"):
+            # Hayroll does not work well with absolute paths in compilation databases;
+            # it demands that all paths be relative to the compilation database's "directory".
+            if codebase.suffix == ".c":
+                shutil.copyfile(codebase, builddir / codebase.name)
+                codebase_root = codebase.parent
+            else:
+                shutil.copytree(codebase, builddir)
+                codebase_root = codebase
+
+            hayroll_compdb = builddir / "hayroll_compile_commands.json"
+            shutil.copyfile(compdb, hayroll_compdb)
+            compilation_database.munge_compile_commands_for_hayroll(hayroll_compdb, codebase_root)
+
+            flags_str = " ".join(shlex.quote(x) for x in xj_c2rust_transpile_flags)
+            c2rust_wrapper = Path(builddir, "c2rust")
+            c2rust_wrapper.write_text(
+                f"""
+#!/bin/sh
+# Hayroll expects to call c2rust (or a script with that name) directly.
+# In our pinned version of Hayroll, it passes the following flags:
+#    transpile --reorganize-definitions <compdb> --output-dir <hayroll-tmpdir>
+#      $1             $2                   $3          $4          $5
+# This synthesized shell script expects those flags and invokes our
+# copy of c2rust while also passing guidance, etc.
+COMPDB=$3
+HAYROLL_TMPDIR=$5
+exec {c2rust_bin} transpile $COMPDB --output-dir $HAYROLL_TMPDIR {flags_str}
+                """,
+                encoding="utf-8",
+            )
+            c2rust_wrapper.chmod(0o755)
+
+            # On macOS, c2rust-transpile calls /usr/bin/xcrun
+            path = os.pathsep.join([str(builddir), "/usr/bin"])
+            hayroll_exe = localdir() / "Hayroll" / "hayroll"
+            hermetic.run(
+                [
+                    hayroll_exe,
+                    hayroll_compdb,
+                    resultsdir / "hayroll",
+                    "--project-dir",
+                    codebase_root,
+                ],
+                check=False,
+                env_ext={"PATH": path},
+            )
 
     if not skip_remainder_of_translation:
         # Verify that the initial translation is valid Rust code.
