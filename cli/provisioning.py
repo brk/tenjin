@@ -204,6 +204,7 @@ def provision_desires(wanted: str):
         want_hayroll_maki()
         want_tree_sitter()
         want_uw_harvest_tree_sitter_c_preproc()
+        want_hayroll()
 
     HAVE.provisioning_depth -= 1
 
@@ -588,6 +589,104 @@ def want_tree_sitter():
         "tree-sitter",
         "tree-sitter",
         provision_tree_sitter_with,
+    )
+
+
+def want_hayroll():
+    def rebuild_10j_hayroll(xj_hayroll: Path):
+        config_stdout_path = Path(xj_hayroll, "xj-hayroll-config.log")
+        config_stderr_path = Path(xj_hayroll, "xj-hayroll-config.err")
+        build_stdout_path = Path(xj_hayroll, "xj-hayroll-build.log")
+        build_stderr_path = Path(xj_hayroll, "xj-hayroll-build.err")
+
+        cmd = [
+            "cmake",
+            "-B",
+            str(xj_hayroll / "build"),
+            "-S",
+            xj_hayroll,
+            "-DCMAKE_PREFIX_PATH=" + str(hermetic.xj_build_deps(HAVE.localdir)),
+            "-DCMAKE_BUILD_TYPE=Release",
+        ]
+
+        # We need to tell CMake where our hermetic copy of zlib is, on Linux;
+        # on Mac, we get zlib via homebrew, so it gets picked up automatically.
+        if (hermetic.xj_build_deps(HAVE.localdir) / "usr" / "lib" / "libz.so").is_file():
+            cmd.append("-DZLIB_ROOT={}".format(hermetic.xj_build_deps(HAVE.localdir)))
+
+        sez("Configuring Hayroll...", ctx="(hayroll) ")
+        hermetic.run_command_with_progress(
+            cmd,
+            env_ext={
+                "PATH": str(repo_root.find_repo_root_dir_Path() / "c2rust" / "target" / "debug")
+            },
+            stdout_file=config_stdout_path,
+            stderr_file=config_stderr_path,
+        )
+        sez("Building Hayroll...", ctx="(hayroll) ")
+        hermetic.run_command_with_progress(
+            ["cmake", "--build", str(xj_hayroll / "build"), "--", f"-j{os.cpu_count()}"],
+            stdout_file=build_stdout_path,
+            stderr_file=build_stderr_path,
+            cwd=xj_hayroll,
+        )
+
+        # Set up symlinks that Hayroll requires
+        for component in ("hayroll", "pioneer", "seeder", "reaper"):
+            link = xj_hayroll / component
+            if os.path.islink(link):
+                link.unlink()
+            if component == "reaper":
+                target = xj_hayroll / "build" / "debug" / component
+            else:
+                target = xj_hayroll / "build" / component
+            link.symlink_to(target)
+
+        # Ensure a clean checkout for future updates
+        config_stdout_path.unlink(missing_ok=True)
+        config_stderr_path.unlink(missing_ok=True)
+        build_stdout_path.unlink(missing_ok=True)
+        build_stderr_path.unlink(missing_ok=True)
+
+    def provision_hayroll_with(
+        version: str,
+        keyname: str,
+    ):
+        def say(msg: str):
+            sez(msg, ctx="(hayroll) ")
+
+        localdir = HAVE.localdir
+
+        target_dir = localdir / "Hayroll"
+        if target_dir.is_dir():
+            say(f"Fetching and resetting hayroll to commit {version} ...")
+            subprocess.check_call(["git", "fetch", "--all"], cwd=str(target_dir))
+            subprocess.check_call(["git", "checkout", "--detach", version], cwd=str(target_dir))
+        else:
+            say(f"Cloning hayroll {version} ...")
+
+            stdout_path = Path(localdir, "xj-hayroll-clone.log")
+            stderr_path = Path(localdir, "xj-hayroll-clone.err")
+            hermetic.run_command_with_progress(
+                [
+                    "git",
+                    "clone",
+                    "https://github.com/Aarno-Labs/Hayroll.git",
+                    str(target_dir),
+                ],
+                stdout_file=stdout_path,
+                stderr_file=stderr_path,
+            )
+            subprocess.check_call(["git", "checkout", "--detach", version], cwd=str(target_dir))
+
+        rebuild_10j_hayroll(target_dir)
+        HAVE.note_we_have(keyname, specifier=version)
+
+    want(
+        "uw-harvest-hayroll",
+        "uw-harvest-hayroll",
+        "UW-HARVEST's Hayroll",
+        provision_hayroll_with,
     )
 
 
