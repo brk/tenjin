@@ -120,7 +120,22 @@ impl Translation<'_> {
                     ];
                     mk().path_ty(mk().abs_path(path))
                 } else {
-                    self.convert_type(ctype)?
+                    let record_name = self
+                        .type_converter
+                        .borrow()
+                        .resolve_decl_name(record_id)
+                        .unwrap();
+                    let guided_type = self.parsed_guidance.borrow_mut().query_field_type(
+                        self,
+                        &record_name,
+                        *field_id,
+                        &field_name,
+                    );
+                    if let Some(guided_type) = guided_type {
+                        Box::new(guided_type.parsed)
+                    } else {
+                        self.convert_type(ctype)?
+                    }
                 };
                 let bitfield_width = match bitfield_width {
                     // Bitfield widths of 0 should just be markers for clang,

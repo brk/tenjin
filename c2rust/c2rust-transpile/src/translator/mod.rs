@@ -453,7 +453,7 @@ impl ParsedGuidance {
         if let Some(decl) = self
             .declspecs_of_type
             .iter()
-            .find(|(_, declspecs)| declspecs.iter().any(|d| t.matches_decl(d, id)))
+            .find(|(_, declspecs)| declspecs.iter().any(|d| t.matches_decl(d, id, None, None)))
         {
             let ty = tenjin::GuidedType::from_type(decl.0.clone());
             self.type_of_decl.insert(id, ty.clone());
@@ -471,6 +471,29 @@ impl ParsedGuidance {
         None
     }
 
+    pub fn query_field_type(
+        &mut self,
+        t: &Translation,
+        record_name: &str,
+        field_id: CFieldId,
+        field_name: &str,
+    ) -> Option<tenjin::GuidedType> {
+        // Unlike `query_decl_type`, this method is invoked when the field name is available,
+        // so it's passed as as &str instead of a CDeclId.
+        // We don't currently cache query results for fields because we expect them
+        // to only be queried once.
+        if let Some(decl) = self.declspecs_of_type.iter().find(|(_, declspecs)| {
+            declspecs
+                .iter()
+                .any(|d| t.matches_decl(d, field_id, Some(record_name), Some(field_name)))
+        }) {
+            let ty = tenjin::GuidedType::from_type(decl.0.clone());
+            Some(ty)
+        } else {
+            None
+        }
+    }
+
     pub fn query_fn_return_type(&self, name: &str) -> Option<tenjin::GuidedType> {
         if let Some(guided_type) = self.fn_return_types.get(name) {
             return Some(tenjin::GuidedType::from_type(guided_type.clone()));
@@ -479,8 +502,10 @@ impl ParsedGuidance {
     }
 
     pub fn query_decl_mut(&self, t: &Translation, id: CDeclId) -> Option<Mutability> {
-        if let Some((_decl_specifier, is_mut)) =
-            self.mut_of_decl.iter().find(|(d, _)| t.matches_decl(d, id))
+        if let Some((_decl_specifier, is_mut)) = self
+            .mut_of_decl
+            .iter()
+            .find(|(d, _)| t.matches_decl(d, id, None, None))
         {
             return Some(*is_mut);
         }
@@ -2400,7 +2425,13 @@ impl<'c> Translation<'c> {
         (fn_item, static_item)
     }
 
-    fn matches_decl(&self, spec: &TenjinDeclSpecifier, id: CDeclId) -> bool {
+    fn matches_decl(
+        &self,
+        spec: &TenjinDeclSpecifier,
+        id: CDeclId,
+        fn_name_override: Option<&str>,
+        var_name_override: Option<&str>,
+    ) -> bool {
         log::trace!("TENJIN matches_decl: {:?} ({:?})", spec, id);
         match self.ast_context.get_decl(&id) {
             Some(decl) => {
@@ -2439,31 +2470,24 @@ impl<'c> Translation<'c> {
                 }
 
                 if (!spec.fnname.is_empty()) && spec.fnname != "*" {
-                    if let Some(parent_fn) = self.parent_fn_map.get(&id) {
-                        if self
-                            .ast_context
+                    let parent_fn_name = self.parent_fn_map.get(&id).and_then(|parent_fn| {
+                        self.ast_context
                             .get_decl(parent_fn)
-                            .is_none_or(|fn_decl| fn_decl.kind.get_name() != Some(&spec.fnname))
-                        {
-                            log::warn!(
-                            "TENJIN matches_decl: Decl {:?} does not match parent function {:?}",
-                            id,
-                            parent_fn
-                        );
-                            return false;
-                        }
+                            .and_then(|fn_decl| fn_decl.kind.get_name().map(|s| s.as_str()))
+                    });
+
+                    let opt_parent_fn_name = fn_name_override.or(parent_fn_name);
+                    if opt_parent_fn_name != Some(&spec.fnname) {
+                        return false;
                     }
                 }
 
                 match &decl.kind {
                     CDeclKind::Function { name, .. } => spec.varname == name.as_str(),
-                    CDeclKind::Field { ref name, .. } => {
-                        // Match field names against the declspecs
-                        log::warn!(
-                            "TENJIN matches_decl: Field matching not implemented for decl {:?} with name {}",
-                            id, name
-                        );
-                        false
+                    CDeclKind::Field { .. } => {
+                        spec.varname == "*"
+                            || spec.varname
+                                == var_name_override.expect("matches_decl() needs a field name")
                     }
                     CDeclKind::Variable {
                         ident,
