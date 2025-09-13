@@ -1924,7 +1924,9 @@ impl ConversionContext {
                         .expect("Expected to find visibility");
                     let is_defn = from_value(node.extras[4].clone())
                         .expect("Expected to find whether decl is definition");
-                    let attributes = from_value::<Vec<Value>>(node.extras[5].clone())
+                    let has_global_storage = from_value::<bool>(node.extras[5].clone())
+                        .expect("Expected to find whether decl has global storage");
+                    let attributes = from_value::<Vec<Value>>(node.extras[6].clone())
                         .expect("Expected attribute array on var decl");
 
                     assert!(
@@ -1953,6 +1955,7 @@ impl ConversionContext {
                         has_thread_duration,
                         is_externally_visible,
                         is_defn,
+                        has_global_storage,
                         ident,
                         initializer,
                         typ,
