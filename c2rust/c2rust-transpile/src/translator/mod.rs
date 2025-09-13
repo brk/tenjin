@@ -5005,6 +5005,19 @@ impl<'c> Translation<'c> {
                 if ctx.is_unused() {
                     self.convert_expr(ctx, expr)
                 } else {
+                    let guided_type = self
+                        .parsed_guidance
+                        .borrow_mut()
+                        .query_expr_type(self, expr);
+                    let mut skip_ptr_deref = false;
+                    if let Some(guided_type) = guided_type {
+                        if !guided_type.pretty.starts_with("*") {
+                            // Member lookup with guidance that isn't a pointer;
+                            // assuming this means we want direct lookup, without pointer deref.
+                            skip_ptr_deref = true;
+                        }
+                    }
+
                     let mut val = match kind {
                         MemberKind::Dot => self.convert_expr(ctx, expr)?,
                         MemberKind::Arrow => {
@@ -5016,7 +5029,11 @@ impl<'c> Translation<'c> {
                                 self.convert_expr(ctx, subexpr_id)?
                             } else {
                                 let val = self.convert_expr(ctx, expr)?;
-                                val.map(|v| mk().unary_expr(UnOp::Deref(Default::default()), v))
+                                if skip_ptr_deref {
+                                    val
+                                } else {
+                                    val.map(|v| mk().unary_expr(UnOp::Deref(Default::default()), v))
+                                }
                             }
                         }
                     };
