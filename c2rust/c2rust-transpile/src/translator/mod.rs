@@ -347,6 +347,7 @@ impl ParsedGuidance {
                     }
                     let ty = syn::parse_str::<syn::Type>(unparsed_ty)
                         .unwrap_or_else(|_| panic!("Failed to parse type: {}", unparsed_ty));
+                    log::warn!("Parsed type key vars_of_type: {:#?}", ty);
                     declspecs_of_type.insert(ty, parsed_declspecs);
                 }
             }
@@ -2589,7 +2590,8 @@ impl<'c> Translation<'c> {
                 let (field_entries, contains_va_list) =
                     self.convert_struct_fields(decl_id, fields, platform_byte_size)?;
 
-                let derives = self.get_traits_to_derive_for_struct(fields, contains_va_list);
+                let derives =
+                    self.get_traits_to_derive_for_struct(fields, &field_entries, contains_va_list);
 
                 let mut reprs = vec![simple_metaitem("C")];
                 let max_field_alignment = if is_packed {
@@ -3152,13 +3154,45 @@ impl<'c> Translation<'c> {
     fn get_traits_to_derive_for_struct(
         &self,
         fields: &Vec<CDeclId>,
+        field_entries: &Vec<Field>,
         contains_va_list: bool,
     ) -> Vec<&'static str> {
+        fn field_has_uncloneable_types(field: &Field) -> bool {
+            match &field.ty {
+                Type::Reference(inner) => {
+                    log::warn!(
+                        "Found reference type in struct field: {:?} mut? {}, lifetime? {}",
+                        field.ty,
+                        inner.mutability.is_some(),
+                        inner.lifetime.is_some()
+                    );
+                    inner.mutability.is_some() && {
+                        match &*inner.elem {
+                            Type::Path(type_path) if type_path.path.segments.len() != 1 => false,
+                            Type::Path(type_path) => {
+                                type_path.path.segments.first().unwrap().ident == "Vec"
+                            }
+                            _ => {
+                                log::warn!(
+                                    "Found non-Path type in struct field: {:#?}",
+                                    *inner.elem
+                                );
+                                false
+                            }
+                        }
+                    }
+                }
+                _ => false,
+            }
+        }
+
+        let has_uncloneable_types = field_entries.iter().any(field_has_uncloneable_types);
         let mut derives = vec![];
-        if !contains_va_list {
+
+        if !contains_va_list && !has_uncloneable_types {
             derives.push("Copy");
             derives.push("Clone");
-        };
+        }
         let has_bitfields =
             fields
                 .iter()
