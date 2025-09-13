@@ -2465,9 +2465,18 @@ impl<'c> Translation<'c> {
                         );
                         false
                     }
-                    CDeclKind::Variable { ident, .. } => {
-                        // Match variable declarations against the declspecs
-                        spec.varname == "*" || spec.varname == ident.as_str()
+                    CDeclKind::Variable {
+                        ident,
+                        has_global_storage,
+                        ..
+                    } => {
+                        if *has_global_storage {
+                            // For globals, match the spec fnname instead of the varname
+                            spec.fnname == ident.as_str()
+                        } else {
+                            // Match variable declarations against the declspecs
+                            spec.varname == "*" || spec.varname == ident.as_str()
+                        }
                     }
                     _ => {
                         log::warn!(
