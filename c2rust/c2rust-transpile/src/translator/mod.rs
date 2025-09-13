@@ -2589,22 +2589,7 @@ impl<'c> Translation<'c> {
                 let (field_entries, contains_va_list) =
                     self.convert_struct_fields(decl_id, fields, platform_byte_size)?;
 
-                let mut derives = vec![];
-                if !contains_va_list {
-                    derives.push("Copy");
-                    derives.push("Clone");
-                };
-                let has_bitfields =
-                    fields
-                        .iter()
-                        .any(|field_id| match self.ast_context.index(*field_id).kind {
-                            CDeclKind::Field { bitfield_width, .. } => bitfield_width.is_some(),
-                            _ => unreachable!("Found non-field in record field list"),
-                        });
-                if has_bitfields {
-                    derives.push("BitfieldStruct");
-                    self.use_crate(ExternCrate::C2RustBitfields);
-                }
+                let derives = self.get_traits_to_derive_for_struct(fields, contains_va_list);
 
                 let mut reprs = vec![simple_metaitem("C")];
                 let max_field_alignment = if is_packed {
@@ -3162,6 +3147,30 @@ impl<'c> Translation<'c> {
                 Ok(ConvertedDecl::NoItem)
             }
         }
+    }
+
+    fn get_traits_to_derive_for_struct(
+        &self,
+        fields: &Vec<CDeclId>,
+        contains_va_list: bool,
+    ) -> Vec<&'static str> {
+        let mut derives = vec![];
+        if !contains_va_list {
+            derives.push("Copy");
+            derives.push("Clone");
+        };
+        let has_bitfields =
+            fields
+                .iter()
+                .any(|field_id| match self.ast_context.index(*field_id).kind {
+                    CDeclKind::Field { bitfield_width, .. } => bitfield_width.is_some(),
+                    _ => unreachable!("Found non-field in record field list"),
+                });
+        if has_bitfields {
+            derives.push("BitfieldStruct");
+            self.use_crate(ExternCrate::C2RustBitfields);
+        }
+        derives
     }
 
     fn canonical_macro_replacement(
