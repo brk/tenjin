@@ -2593,6 +2593,16 @@ impl<'c> Translation<'c> {
                 let derives =
                     self.get_traits_to_derive_for_struct(fields, &field_entries, contains_va_list);
 
+                fn field_lifetime(field: &syn::Field) -> Option<Lifetime> {
+                    if let Type::Reference(inner) = &field.ty {
+                        inner.lifetime.clone()
+                    } else {
+                        None
+                    }
+                }
+                let lifetimes: HashSet<Lifetime> =
+                    field_entries.iter().filter_map(field_lifetime).collect();
+
                 let mut reprs = vec![simple_metaitem("C")];
                 let max_field_alignment = if is_packed {
                     // `__attribute__((packed))` forces a max alignment of 1,
@@ -2679,6 +2689,10 @@ impl<'c> Translation<'c> {
 
                     if contains_va_list {
                         mk_ = mk_.generic_over(mk().lt_param(mk().ident("a")))
+                    }
+
+                    for lifetime in lifetimes {
+                        mk_ = mk_.generic_over(mk().lt_param(lifetime));
                     }
 
                     Ok(ConvertedDecl::Item(mk_.struct_item(
