@@ -35,9 +35,15 @@ impl GuidedType {
     }
 
     pub fn pretty_sans_refs(&self) -> &str {
-        self.pretty
-            .trim_start_matches("& ")
-            .trim_start_matches("mut ")
+        let parts: Vec<&str> = self.pretty.splitn(4, " ").collect();
+        match *parts.as_slice() {
+            ["&", rest] => rest,
+            ["&", life, rest] if life.starts_with("'") => rest,
+            ["&", life, "mut", rest] if life.starts_with("'") => rest,
+            ["&", "mut", rest] => rest,
+            ["&", "mut", _, _] => &self.pretty[6..],
+            _ => self.pretty.as_str(),
+        }
     }
 }
 
