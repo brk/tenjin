@@ -3185,8 +3185,8 @@ impl<'c> Translation<'c> {
     fn get_traits_to_derive_for_struct(
         &self,
         struct_name: &str,
-        fields: &Vec<CDeclId>,
-        field_entries: &Vec<Field>,
+        fields: &[CDeclId],
+        field_entries: &[Field],
         contains_va_list: bool,
     ) -> Vec<&'static str> {
         fn field_has_uncloneable_types(field: &Field) -> bool {
@@ -5610,8 +5610,51 @@ impl<'c> Translation<'c> {
                         )))
                     } else {
                         // Normal case
+                        // TENJIN-TODO: use type inference to decide whether we should be
+                        // omitting the cast, or using some other form of coercion.
                         if !is_explicit && guided_type.is_some() {
                             return Ok(WithStmts::new_val(x));
+                        }
+                        if let Some(guided_type) = guided_type {
+                            if let CTypeKind::Pointer(pcq) = source_ty_kind {
+                                if let CTypeKind::Struct(s) =
+                                    self.ast_context.resolve_type(pcq.ctype).kind
+                                {
+                                    let name =
+                                        self.type_converter.borrow().resolve_decl_name(s).unwrap();
+                                    if self.parsed_guidance.borrow().pod_types.contains(&name) {
+                                        match &guided_type.parsed {
+                                            Type::Reference(tref) => {
+                                                if tenjin::type_is_vec(&tref.elem) {
+                                                    // emit bytemuck::cast_slice_mut(&mut x)
+                                                    return Ok(WithStmts::new_val(mk().call_expr(
+                                                        mk().path_expr(vec![
+                                                            "bytemuck",
+                                                            "cast_slice_mut",
+                                                        ]),
+                                                        vec![mk()
+                                                                .set_mutbl(Mutability::Mutable)
+                                                                .addr_of_expr(x)],
+                                                    )));
+                                                }
+                                                // emit bytemuck::cast_mut(&mut x)
+                                                return Ok(WithStmts::new_val(mk().call_expr(
+                                                    mk().path_expr(vec!["bytemuck", "cast_mut"]),
+                                                    vec![mk()
+                                                            .set_mutbl(Mutability::Mutable)
+                                                            .addr_of_expr(x)],
+                                                )));
+                                            }
+                                            _ => {
+                                                log::error!(
+                                                    "Unhandled type guidance for cast: {:?}",
+                                                    guided_type
+                                                );
+                                            }
+                                        }
+                                    }
+                                }
+                            }
                         }
                         let target_ty = self.convert_type(ty.ctype)?;
                         Ok(WithStmts::new_val(mk().cast_expr(x, target_ty)))

@@ -91,6 +91,13 @@ pub fn type_get_bare_path(ty: &Type) -> Option<&Path> {
     None
 }
 
+pub fn type_is_vec(ty: &Type) -> bool {
+    if let Some(path) = type_get_bare_path(ty) {
+        return is_path_exactly_1(path, "Vec");
+    }
+    false
+}
+
 pub fn expr_get_path(expr: &Expr) -> Option<&Path> {
     if let Expr::Path(ref path) = *expr {
         Some(&path.path)
