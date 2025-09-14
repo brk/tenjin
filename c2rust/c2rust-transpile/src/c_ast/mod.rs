@@ -922,6 +922,7 @@ pub enum CDeclKind {
         has_thread_duration: bool,
         is_externally_visible: bool,
         is_defn: bool,
+        has_global_storage: bool,
         ident: String,
         initializer: Option<CExprId>,
         typ: CQualTypeId,

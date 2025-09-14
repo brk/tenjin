@@ -1982,6 +1982,7 @@ class TranslateASTVisitor final
                 cbor_encode_boolean(array, has_thread_duration);
                 cbor_encode_boolean(array, is_externally_visible);
                 cbor_encode_boolean(array, is_defn);
+                cbor_encode_boolean(array, VD->hasGlobalStorage());
 
                 // Encode attribute names and relevant info if supported
                 CborEncoder attr_info;

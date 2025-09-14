@@ -144,6 +144,7 @@ pub enum ExternCrate {
     Libc,
     Scanf,
     LibzRsSys,
+    Bytemuck,
 }
 
 #[derive(Serialize)]
@@ -152,6 +153,7 @@ struct ExternCrateDetails {
     ident: String,
     macro_use: bool,
     version: &'static str,
+    features: Option<Vec<&'static str>>,
 }
 
 impl ExternCrateDetails {
@@ -161,7 +163,13 @@ impl ExternCrateDetails {
             ident: name.replace('-', "_"),
             macro_use,
             version,
+            features: None,
         }
+    }
+
+    fn with_features(mut self, features: Vec<&'static str>) -> Self {
+        self.features = Some(features);
+        self
     }
 }
 
@@ -176,6 +184,8 @@ impl From<ExternCrate> for ExternCrateDetails {
             ExternCrate::Libc => Self::new("libc", "0.2", false),
             ExternCrate::Scanf => Self::new("scanf", "1.3.1", true),
             ExternCrate::LibzRsSys => Self::new("libz-rs-sys", "0.5.1", false),
+            ExternCrate::Bytemuck => Self::new("bytemuck", "1.23.2", false)
+                .with_features(vec!["derive", "extern_crate_alloc"]),
         }
     }
 }

@@ -35,9 +35,15 @@ impl GuidedType {
     }
 
     pub fn pretty_sans_refs(&self) -> &str {
-        self.pretty
-            .trim_start_matches("& ")
-            .trim_start_matches("mut ")
+        let parts: Vec<&str> = self.pretty.splitn(4, " ").collect();
+        match *parts.as_slice() {
+            ["&", rest] => rest,
+            ["&", life, rest] if life.starts_with("'") => rest,
+            ["&", life, "mut", rest] if life.starts_with("'") => rest,
+            ["&", "mut", rest] => rest,
+            ["&", "mut", _, _] => &self.pretty[6..],
+            _ => self.pretty.as_str(),
+        }
     }
 }
 
@@ -83,6 +89,13 @@ pub fn type_get_bare_path(ty: &Type) -> Option<&Path> {
         }
     }
     None
+}
+
+pub fn type_is_vec(ty: &Type) -> bool {
+    if let Some(path) = type_get_bare_path(ty) {
+        return is_path_exactly_1(path, "Vec");
+    }
+    false
 }
 
 pub fn expr_get_path(expr: &Expr) -> Option<&Path> {

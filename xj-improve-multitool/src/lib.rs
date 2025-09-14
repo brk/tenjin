@@ -277,11 +277,15 @@ impl CondensedSpanGraph {
         for node in call_graph.node_indices() {
             let def_id = &call_graph[node];
 
-            let span = defspans
-                .get(def_id)
-                .expect("DefId should exist in defspans");
-            let srcfile = source_map.lookup_source_file(span.lo());
+            let span = match defspans.get(def_id) {
+                Some(span) => span,
+                None => {
+                    // If DefId does not exist in defspans, it's likely a generated trait method
+                    continue;
+                }
+            };
 
+            let srcfile = source_map.lookup_source_file(span.lo());
             #[allow(clippy::map_entry)]
             if !file_map.contains_key(&srcfile.stable_id) {
                 match &srcfile.name {
@@ -327,11 +331,10 @@ impl CondensedSpanGraph {
             .map(|n| {
                 let mut node_idxs: Vec<usize> = Vec::new();
                 for def_id in gvec[n].iter() {
-                    node_idxs.push(
-                        *def_to_elt_idx
-                            .get(def_id)
-                            .expect("DefId should have an elt index"),
-                    );
+                    match def_to_elt_idx.get(def_id) {
+                        Some(elt_idx) => node_idxs.push(*elt_idx),
+                        None => continue, // presumably a definition we don't care about, e.g. a trait method
+                    };
                 }
                 node_idxs
             })

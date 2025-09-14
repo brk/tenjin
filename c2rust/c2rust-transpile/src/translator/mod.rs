@@ -317,6 +317,7 @@ pub struct ParsedGuidance {
     pub fn_return_types: HashMap<String, syn::Type>,
     decls_without_type_guidance: HashSet<CDeclId>,
     pub using_crates: HashSet<String>,
+    pub pod_types: HashSet<String>,
     pub no_math_errno: bool,
 }
 
@@ -331,14 +332,13 @@ impl ParsedGuidance {
         if let Some(decls) = raw.get("vars_of_type") {
             if let Some(decls) = decls.as_object() {
                 for (unparsed_ty, decls) in decls {
-                    if decls.is_string() {
-                        log::error!(
-                            "Tenjin `vars_of_type` guidance for type {} is a string, expected an array of declspecs",
-                            unparsed_ty
-                        );
-                    }
+                    let decls_arr = if decls.is_string() {
+                        &serde_json::json!([decls])
+                    } else {
+                        decls
+                    };
                     let mut parsed_declspecs = Vec::new();
-                    for decl in decls.as_array().unwrap_or(&vec![]) {
+                    for decl in decls_arr.as_array().unwrap_or(&vec![]) {
                         if let Some(declspec_str) = decl.as_str() {
                             if let Some(decl_specifier) = parse_tenjin_decl_specifier(declspec_str)
                             {
@@ -348,6 +348,7 @@ impl ParsedGuidance {
                     }
                     let ty = syn::parse_str::<syn::Type>(unparsed_ty)
                         .unwrap_or_else(|_| panic!("Failed to parse type: {}", unparsed_ty));
+                    log::warn!("Parsed type key vars_of_type: {:#?}", ty);
                     declspecs_of_type.insert(ty, parsed_declspecs);
                 }
             }
@@ -427,6 +428,17 @@ impl ParsedGuidance {
             }
         }
 
+        let mut pod_types = HashSet::new();
+        if let Some(crates) = raw.get("pod_types") {
+            if let Some(crates) = crates.as_array() {
+                for krate in crates {
+                    if let Some(krate_str) = krate.as_str() {
+                        pod_types.insert(krate_str.to_string());
+                    }
+                }
+            }
+        }
+
         let no_math_errno: bool = raw
             .get("no_math_errno")
             .and_then(|v| v.as_bool())
@@ -440,6 +452,7 @@ impl ParsedGuidance {
             fn_return_types,
             decls_without_type_guidance: HashSet::new(),
             using_crates,
+            pod_types,
             no_math_errno,
         }
     }
@@ -454,7 +467,7 @@ impl ParsedGuidance {
         if let Some(decl) = self
             .declspecs_of_type
             .iter()
-            .find(|(_, declspecs)| declspecs.iter().any(|d| t.matches_decl(d, id)))
+            .find(|(_, declspecs)| declspecs.iter().any(|d| t.matches_decl(d, id, None, None)))
         {
             let ty = tenjin::GuidedType::from_type(decl.0.clone());
             self.type_of_decl.insert(id, ty.clone());
@@ -472,6 +485,29 @@ impl ParsedGuidance {
         None
     }
 
+    pub fn query_field_type(
+        &mut self,
+        t: &Translation,
+        record_name: &str,
+        field_id: CFieldId,
+        field_name: &str,
+    ) -> Option<tenjin::GuidedType> {
+        // Unlike `query_decl_type`, this method is invoked when the field name is available,
+        // so it's passed as as &str instead of a CDeclId.
+        // We don't currently cache query results for fields because we expect them
+        // to only be queried once.
+        if let Some(decl) = self.declspecs_of_type.iter().find(|(_, declspecs)| {
+            declspecs
+                .iter()
+                .any(|d| t.matches_decl(d, field_id, Some(record_name), Some(field_name)))
+        }) {
+            let ty = tenjin::GuidedType::from_type(decl.0.clone());
+            Some(ty)
+        } else {
+            None
+        }
+    }
+
     pub fn query_fn_return_type(&self, name: &str) -> Option<tenjin::GuidedType> {
         if let Some(guided_type) = self.fn_return_types.get(name) {
             return Some(tenjin::GuidedType::from_type(guided_type.clone()));
@@ -480,8 +516,10 @@ impl ParsedGuidance {
     }
 
     pub fn query_decl_mut(&self, t: &Translation, id: CDeclId) -> Option<Mutability> {
-        if let Some((_decl_specifier, is_mut)) =
-            self.mut_of_decl.iter().find(|(d, _)| t.matches_decl(d, id))
+        if let Some((_decl_specifier, is_mut)) = self
+            .mut_of_decl
+            .iter()
+            .find(|(d, _)| t.matches_decl(d, id, None, None))
         {
             return Some(*is_mut);
         }
@@ -2401,7 +2439,13 @@ impl<'c> Translation<'c> {
         (fn_item, static_item)
     }
 
-    fn matches_decl(&self, spec: &TenjinDeclSpecifier, id: CDeclId) -> bool {
+    fn matches_decl(
+        &self,
+        spec: &TenjinDeclSpecifier,
+        id: CDeclId,
+        fn_name_override: Option<&str>,
+        var_name_override: Option<&str>,
+    ) -> bool {
         log::trace!("TENJIN matches_decl: {:?} ({:?})", spec, id);
         match self.ast_context.get_decl(&id) {
             Some(decl) => {
@@ -2440,35 +2484,37 @@ impl<'c> Translation<'c> {
                 }
 
                 if (!spec.fnname.is_empty()) && spec.fnname != "*" {
-                    if let Some(parent_fn) = self.parent_fn_map.get(&id) {
-                        if self
-                            .ast_context
+                    let parent_fn_name = self.parent_fn_map.get(&id).and_then(|parent_fn| {
+                        self.ast_context
                             .get_decl(parent_fn)
-                            .is_none_or(|fn_decl| fn_decl.kind.get_name() != Some(&spec.fnname))
-                        {
-                            log::warn!(
-                            "TENJIN matches_decl: Decl {:?} does not match parent function {:?}",
-                            id,
-                            parent_fn
-                        );
-                            return false;
-                        }
+                            .and_then(|fn_decl| fn_decl.kind.get_name().map(|s| s.as_str()))
+                    });
+
+                    let opt_parent_fn_name = fn_name_override.or(parent_fn_name);
+                    if opt_parent_fn_name != Some(&spec.fnname) {
+                        return false;
                     }
                 }
 
                 match &decl.kind {
                     CDeclKind::Function { name, .. } => spec.varname == name.as_str(),
-                    CDeclKind::Field { ref name, .. } => {
-                        // Match field names against the declspecs
-                        log::warn!(
-                            "TENJIN matches_decl: Field matching not implemented for decl {:?} with name {}",
-                            id, name
-                        );
-                        false
+                    CDeclKind::Field { .. } => {
+                        spec.varname == "*"
+                            || spec.varname
+                                == var_name_override.expect("matches_decl() needs a field name")
                     }
-                    CDeclKind::Variable { ident, .. } => {
-                        // Match variable declarations against the declspecs
-                        spec.varname == "*" || spec.varname == ident.as_str()
+                    CDeclKind::Variable {
+                        ident,
+                        has_global_storage,
+                        ..
+                    } => {
+                        if *has_global_storage {
+                            // For globals, match the spec fnname instead of the varname
+                            spec.fnname == ident.as_str()
+                        } else {
+                            // Match variable declarations against the declspecs
+                            spec.varname == "*" || spec.varname == ident.as_str()
+                        }
                     }
                     _ => {
                         log::warn!(
@@ -2557,22 +2603,22 @@ impl<'c> Translation<'c> {
                 let (field_entries, contains_va_list) =
                     self.convert_struct_fields(decl_id, fields, platform_byte_size)?;
 
-                let mut derives = vec![];
-                if !contains_va_list {
-                    derives.push("Copy");
-                    derives.push("Clone");
-                };
-                let has_bitfields =
-                    fields
-                        .iter()
-                        .any(|field_id| match self.ast_context.index(*field_id).kind {
-                            CDeclKind::Field { bitfield_width, .. } => bitfield_width.is_some(),
-                            _ => unreachable!("Found non-field in record field list"),
-                        });
-                if has_bitfields {
-                    derives.push("BitfieldStruct");
-                    self.use_crate(ExternCrate::C2RustBitfields);
+                let derives = self.get_traits_to_derive_for_struct(
+                    &name,
+                    fields,
+                    &field_entries,
+                    contains_va_list,
+                );
+
+                fn field_lifetime(field: &syn::Field) -> Option<Lifetime> {
+                    if let Type::Reference(inner) = &field.ty {
+                        inner.lifetime.clone()
+                    } else {
+                        None
+                    }
                 }
+                let lifetimes: HashSet<Lifetime> =
+                    field_entries.iter().filter_map(field_lifetime).collect();
 
                 let mut reprs = vec![simple_metaitem("C")];
                 let max_field_alignment = if is_packed {
@@ -2660,6 +2706,10 @@ impl<'c> Translation<'c> {
 
                     if contains_va_list {
                         mk_ = mk_.generic_over(mk().lt_param(mk().ident("a")))
+                    }
+
+                    for lifetime in lifetimes {
+                        mk_ = mk_.generic_over(mk().lt_param(lifetime));
                     }
 
                     Ok(ConvertedDecl::Item(mk_.struct_item(
@@ -3130,6 +3180,80 @@ impl<'c> Translation<'c> {
                 Ok(ConvertedDecl::NoItem)
             }
         }
+    }
+
+    fn get_traits_to_derive_for_struct(
+        &self,
+        struct_name: &str,
+        fields: &[CDeclId],
+        field_entries: &[Field],
+        contains_va_list: bool,
+    ) -> Vec<&'static str> {
+        fn field_has_uncloneable_types(field: &Field) -> bool {
+            match &field.ty {
+                Type::Reference(inner) => {
+                    log::warn!(
+                        "Found reference type in struct field: {:?} mut? {}, lifetime? {}",
+                        field.ty,
+                        inner.mutability.is_some(),
+                        inner.lifetime.is_some()
+                    );
+                    inner.mutability.is_some() && {
+                        match &*inner.elem {
+                            Type::Path(type_path) if type_path.path.segments.len() != 1 => false,
+                            Type::Path(type_path) => {
+                                type_path.path.segments.first().unwrap().ident == "Vec"
+                            }
+                            _ => {
+                                log::warn!(
+                                    "Found non-Path type in struct field: {:#?}",
+                                    *inner.elem
+                                );
+                                false
+                            }
+                        }
+                    }
+                }
+                _ => false,
+            }
+        }
+
+        let has_uncloneable_types = field_entries.iter().any(field_has_uncloneable_types);
+        let mut derives = vec![];
+
+        if !contains_va_list && !has_uncloneable_types {
+            derives.push("Copy");
+            derives.push("Clone");
+        }
+        let has_bitfields =
+            fields
+                .iter()
+                .any(|field_id| match self.ast_context.index(*field_id).kind {
+                    CDeclKind::Field { bitfield_width, .. } => bitfield_width.is_some(),
+                    _ => unreachable!("Found non-field in record field list"),
+                });
+        if has_bitfields {
+            derives.push("BitfieldStruct");
+            self.use_crate(ExternCrate::C2RustBitfields);
+        }
+
+        if self
+            .parsed_guidance
+            .borrow()
+            .pod_types
+            .contains(struct_name)
+        {
+            derives.push("Pod");
+            derives.push("Zeroable");
+            self.use_crate(ExternCrate::Bytemuck);
+
+            self.with_cur_file_item_store(|item_store| {
+                item_store.add_use(vec!["bytemuck".into()], "Pod");
+                item_store.add_use(vec!["bytemuck".into()], "Zeroable");
+            });
+        }
+
+        derives
     }
 
     fn canonical_macro_replacement(
@@ -5005,6 +5129,19 @@ impl<'c> Translation<'c> {
                 if ctx.is_unused() {
                     self.convert_expr(ctx, expr)
                 } else {
+                    let guided_type = self
+                        .parsed_guidance
+                        .borrow_mut()
+                        .query_expr_type(self, expr);
+                    let mut skip_ptr_deref = false;
+                    if let Some(guided_type) = guided_type {
+                        if !guided_type.pretty.starts_with("*") {
+                            // Member lookup with guidance that isn't a pointer;
+                            // assuming this means we want direct lookup, without pointer deref.
+                            skip_ptr_deref = true;
+                        }
+                    }
+
                     let mut val = match kind {
                         MemberKind::Dot => self.convert_expr(ctx, expr)?,
                         MemberKind::Arrow => {
@@ -5016,7 +5153,11 @@ impl<'c> Translation<'c> {
                                 self.convert_expr(ctx, subexpr_id)?
                             } else {
                                 let val = self.convert_expr(ctx, expr)?;
-                                val.map(|v| mk().unary_expr(UnOp::Deref(Default::default()), v))
+                                if skip_ptr_deref {
+                                    val
+                                } else {
+                                    val.map(|v| mk().unary_expr(UnOp::Deref(Default::default()), v))
+                                }
                             }
                         }
                     };
@@ -5469,8 +5610,51 @@ impl<'c> Translation<'c> {
                         )))
                     } else {
                         // Normal case
+                        // TENJIN-TODO: use type inference to decide whether we should be
+                        // omitting the cast, or using some other form of coercion.
                         if !is_explicit && guided_type.is_some() {
                             return Ok(WithStmts::new_val(x));
+                        }
+                        if let Some(guided_type) = guided_type {
+                            if let CTypeKind::Pointer(pcq) = source_ty_kind {
+                                if let CTypeKind::Struct(s) =
+                                    self.ast_context.resolve_type(pcq.ctype).kind
+                                {
+                                    let name =
+                                        self.type_converter.borrow().resolve_decl_name(s).unwrap();
+                                    if self.parsed_guidance.borrow().pod_types.contains(&name) {
+                                        match &guided_type.parsed {
+                                            Type::Reference(tref) => {
+                                                if tenjin::type_is_vec(&tref.elem) {
+                                                    // emit bytemuck::cast_slice_mut(&mut x)
+                                                    return Ok(WithStmts::new_val(mk().call_expr(
+                                                        mk().path_expr(vec![
+                                                            "bytemuck",
+                                                            "cast_slice_mut",
+                                                        ]),
+                                                        vec![mk()
+                                                                .set_mutbl(Mutability::Mutable)
+                                                                .addr_of_expr(x)],
+                                                    )));
+                                                }
+                                                // emit bytemuck::cast_mut(&mut x)
+                                                return Ok(WithStmts::new_val(mk().call_expr(
+                                                    mk().path_expr(vec!["bytemuck", "cast_mut"]),
+                                                    vec![mk()
+                                                            .set_mutbl(Mutability::Mutable)
+                                                            .addr_of_expr(x)],
+                                                )));
+                                            }
+                                            _ => {
+                                                log::error!(
+                                                    "Unhandled type guidance for cast: {:?}",
+                                                    guided_type
+                                                );
+                                            }
+                                        }
+                                    }
+                                }
+                            }
                         }
                         let target_ty = self.convert_type(ty.ctype)?;
                         Ok(WithStmts::new_val(mk().cast_expr(x, target_ty)))
