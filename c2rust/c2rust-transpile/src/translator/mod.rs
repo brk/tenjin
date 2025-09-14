@@ -317,6 +317,7 @@ pub struct ParsedGuidance {
     pub fn_return_types: HashMap<String, syn::Type>,
     decls_without_type_guidance: HashSet<CDeclId>,
     pub using_crates: HashSet<String>,
+    pub pod_types: HashSet<String>,
     pub no_math_errno: bool,
 }
 
@@ -427,6 +428,17 @@ impl ParsedGuidance {
             }
         }
 
+        let mut pod_types = HashSet::new();
+        if let Some(crates) = raw.get("pod_types") {
+            if let Some(crates) = crates.as_array() {
+                for krate in crates {
+                    if let Some(krate_str) = krate.as_str() {
+                        pod_types.insert(krate_str.to_string());
+                    }
+                }
+            }
+        }
+
         let no_math_errno: bool = raw
             .get("no_math_errno")
             .and_then(|v| v.as_bool())
@@ -440,6 +452,7 @@ impl ParsedGuidance {
             fn_return_types,
             decls_without_type_guidance: HashSet::new(),
             using_crates,
+            pod_types,
             no_math_errno,
         }
     }
@@ -2590,8 +2603,12 @@ impl<'c> Translation<'c> {
                 let (field_entries, contains_va_list) =
                     self.convert_struct_fields(decl_id, fields, platform_byte_size)?;
 
-                let derives =
-                    self.get_traits_to_derive_for_struct(fields, &field_entries, contains_va_list);
+                let derives = self.get_traits_to_derive_for_struct(
+                    &name,
+                    fields,
+                    &field_entries,
+                    contains_va_list,
+                );
 
                 fn field_lifetime(field: &syn::Field) -> Option<Lifetime> {
                     if let Type::Reference(inner) = &field.ty {
@@ -3167,6 +3184,7 @@ impl<'c> Translation<'c> {
 
     fn get_traits_to_derive_for_struct(
         &self,
+        struct_name: &str,
         fields: &Vec<CDeclId>,
         field_entries: &Vec<Field>,
         contains_va_list: bool,
@@ -3218,6 +3236,23 @@ impl<'c> Translation<'c> {
             derives.push("BitfieldStruct");
             self.use_crate(ExternCrate::C2RustBitfields);
         }
+
+        if self
+            .parsed_guidance
+            .borrow()
+            .pod_types
+            .contains(struct_name)
+        {
+            derives.push("Pod");
+            derives.push("Zeroable");
+            self.use_crate(ExternCrate::Bytemuck);
+
+            self.with_cur_file_item_store(|item_store| {
+                item_store.add_use(vec!["bytemuck".into()], "Pod");
+                item_store.add_use(vec!["bytemuck".into()], "Zeroable");
+            });
+        }
+
         derives
     }
 
