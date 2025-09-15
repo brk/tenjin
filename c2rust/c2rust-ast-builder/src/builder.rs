@@ -836,6 +836,17 @@ impl Builder {
         }))
     }
 
+    /// A slice expression with an open upper bound.
+    /// `[expr..]`
+    pub fn range_expr(self, start: Option<Box<Expr>>, end: Option<Box<Expr>>) -> Box<Expr> {
+        Box::new(Expr::Range(ExprRange {
+            attrs: self.attrs,
+            limits: RangeLimits::HalfOpen(Token![..](self.span)),
+            start,
+            end,
+        }))
+    }
+
     pub fn paren_expr(self, e: Box<Expr>) -> Box<Expr> {
         Box::new(Expr::Paren(ExprParen {
             attrs: self.attrs,

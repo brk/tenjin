@@ -5524,6 +5524,8 @@ impl<'c> Translation<'c> {
                     arr.map(|arr| {
                         arr.map(|arr| match *arr {
                             Expr::Array(syn::ExprArray { elems, .. }) => {
+                                // This is almost an exact copy of tenjin::mac_call_exprs_tt(),
+                                // but that takes a Vec<Box<Expr>> rather than raw Punctuated.
                                 let mut ts: TokenStream = TokenStream::new();
                                 for e in elems.into_iter() {
                                     use syn::__private::ToTokens;

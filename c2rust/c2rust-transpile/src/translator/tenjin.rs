@@ -235,6 +235,23 @@ pub fn expr_in_u64(expr: Box<Expr>) -> Box<Expr> {
     cast_box
 }
 
+pub fn expr_in_usize(expr: Box<Expr>) -> Box<Expr> {
+    use crate::translator::mk;
+    let cast_box = mk().cast_expr(expr, mk().path_ty(vec!["usize"]));
+    // If we end up with a cast of a literal, we can elide the outer cast.
+    if let Expr::Cast(ref cast) = *cast_box {
+        if let Expr::Lit(ref elit) = *cast.expr {
+            if let syn::Lit::Int(ref lit_int) = elit.lit {
+                // If the literal is small enough, we can elide the cast
+                if lit_int.base10_parse::<usize>().is_ok() {
+                    return cast.expr.clone();
+                }
+            }
+        }
+    }
+    cast_box
+}
+
 fn to_char_lossy(expr: Box<Expr>) -> Box<Expr> {
     // Converts an expression of integral type to char, using lossy conversion.
     // This is appropriate for calls to tolower() and similar functions,
@@ -513,6 +530,12 @@ fn mac_call_exprs_tt(args: Vec<Box<Expr>>) -> TokenStream {
     tokens
 }
 
+enum SizeofArgSituation {
+    BareSizeof(Option<CExprId>, CTypeId),
+    ExprTimesSizeof(CExprId, Option<CExprId>, CTypeId),
+    Unrecognized,
+}
+
 impl Translation<'_> {
     pub fn recognize_c_assignment_cases(
         &self,
@@ -580,6 +603,41 @@ impl Translation<'_> {
         } else {
             None
         }
+    }
+
+    fn split_mul_by_sizeof(&self, expr: CExprId) -> SizeofArgSituation {
+        // Maps:
+        //   (   E      * sizeof(T)) or
+        //   (sizeof(T) *     E)     ==> (E, None, T)
+        //   (   E      * sizeof(V)) ==> (E, Some(V), typeof(V))
+
+        let get_sizeof =
+            |t: &Translation<'_>, expr: CExprId| -> Option<(Option<CExprId>, CTypeId)> {
+                let kind = &t.ast_context.index(expr).kind;
+                if let CExprKind::UnaryType(_cqt1, UnTypeOp::SizeOf, mb_expr_id, cqt2) = kind {
+                    Some((*mb_expr_id, cqt2.ctype))
+                } else {
+                    None
+                }
+            };
+
+        if let CExprKind::Binary(_cq, c_ast::BinOp::Multiply, lhs, rhs, _opt_cq_lhs, _opt_cq_rhs) =
+            self.ast_context.index(expr).kind
+        {
+            if let Some((mb_expr_id, typ)) = get_sizeof(self, lhs) {
+                return SizeofArgSituation::ExprTimesSizeof(rhs, mb_expr_id, typ);
+            }
+
+            if let Some((mb_expr_id, typ)) = get_sizeof(self, rhs) {
+                return SizeofArgSituation::ExprTimesSizeof(lhs, mb_expr_id, typ);
+            }
+        }
+
+        if let Some((mb_expr_id, typ)) = get_sizeof(self, expr) {
+            return SizeofArgSituation::BareSizeof(mb_expr_id, typ);
+        }
+
+        SizeofArgSituation::Unrecognized
     }
 
     fn recognize_c_assignment_string_pop(
@@ -1042,6 +1100,9 @@ impl Translation<'_> {
                         || tenjin::is_path_exactly_1(path, "copysignl")) =>
                 {
                     self.recognize_preconversion_call_method_2_guided(ctx, "copysign", cargs)
+                }
+                _ if tenjin::is_path_exactly_1(path, "memset") => {
+                    self.recognize_preconversion_call_memset_zero_guided(ctx, func, cargs)
                 }
                 _ if self.parsed_guidance.borrow().no_math_errno
                     && (tenjin::is_path_exactly_1(path, "pow")
@@ -1673,6 +1734,153 @@ impl Translation<'_> {
             }
         }
         Ok(None)
+    }
+
+    #[allow(clippy::borrowed_box)]
+    fn recognize_preconversion_call_memset_zero_guided(
+        &self,
+        ctx: ExprContext,
+        func: &Box<Expr>,
+        cargs: &[CExprId],
+    ) -> TranslationResult<Option<WithStmts<Box<Expr>>>> {
+        if tenjin::expr_is_ident(func, "memset") && cargs.len() == 3 {
+            // memset(DST, 0, NUM)
+            //    when DST is guided to be of type Vec<X> (where type X has size Y)
+            //    and NUM is of the form   E * sizeof(T)  (where type T has size Y)
+            //                        or       sizeof DST (where DST is an array in C w/ E elts)
+            //    and we know that the all-zero-bytes representation of X is V
+            // should be translated to
+            // dst[..E].fill(V);
+            if !self.is_integral_lit(cargs[1], 0) {
+                return Ok(None);
+            }
+
+            let arg0_sans_casts = self.c_strip_implicit_casts(cargs[0]);
+
+            let mb_dst_guided_type = self
+                .parsed_guidance
+                .borrow_mut()
+                .query_expr_type(self, arg0_sans_casts);
+            if let Some(dst_guided_type) = mb_dst_guided_type {
+                if !dst_guided_type.pretty_sans_refs().starts_with("Vec <") {
+                    return Ok(None);
+                }
+
+                // pull out vec element type from dst_guided_type.parsed
+                let _elt_type = match dst_guided_type.parsed {
+                    syn::Type::Path(ref type_path) => {
+                        if let Some(seg) = type_path.path.segments.last() {
+                            if seg.ident == "Vec" {
+                                if let syn::PathArguments::AngleBracketed(ref args) = seg.arguments
+                                {
+                                    if let Some(syn::GenericArgument::Type(ref ty)) =
+                                        args.args.first()
+                                    {
+                                        ty.clone()
+                                    } else {
+                                        return Ok(None);
+                                    }
+                                } else {
+                                    return Ok(None);
+                                }
+                            } else {
+                                return Ok(None);
+                            }
+                        } else {
+                            return Ok(None);
+                        }
+                    }
+                    _ => {
+                        return Ok(None);
+                    }
+                };
+
+                let handle_sizeof =
+                    |elt_count: Box<Expr>| -> TranslationResult<Option<WithStmts<Box<Expr>>>> {
+                        let expr_dst = self.convert_expr(ctx.used(), arg0_sans_casts, None)?;
+
+                        let slice = mk().index_expr(
+                            expr_dst.to_expr(),
+                            mk().range_expr(None, Some(tenjin::expr_in_usize(elt_count))),
+                        );
+
+                        // TODO(brk) - determine the Rust-side all-zero-bytes representation for non-primitive types.
+                        // TODO(brk) - or use bytemuck?
+                        let zero_value = mk().lit_expr(mk().int_unsuffixed_lit(0));
+                        let fill_call = mk().method_call_expr(slice, "fill", vec![zero_value]);
+
+                        Ok(Some(WithStmts::new_val(fill_call)))
+                    };
+
+                match self.split_mul_by_sizeof(cargs[2]) {
+                    SizeofArgSituation::ExprTimesSizeof(
+                        elt_count_cexpr,
+                        mb_sized_expr,
+                        elt_type,
+                    ) => {
+                        if self.memset_args_translate_plainly(
+                            &arg0_sans_casts,
+                            &mb_sized_expr,
+                            &elt_type,
+                        ) {
+                            let elt_count = self.convert_expr(ctx.used(), elt_count_cexpr, None)?;
+                            return handle_sizeof(elt_count.to_expr());
+                        }
+                    }
+                    SizeofArgSituation::BareSizeof(mb_sized_expr, elt_type) => {
+                        if self.memset_args_translate_plainly(
+                            &arg0_sans_casts,
+                            &mb_sized_expr,
+                            &elt_type,
+                        ) {
+                            let elt_count = mk().lit_expr(mk().int_unsuffixed_lit(1));
+                            return handle_sizeof(elt_count);
+                        }
+                    }
+                    SizeofArgSituation::Unrecognized => {
+                        log::trace!(
+                            "memset zero recognition found mul-by-sizeof but the args seem wonky"
+                        );
+                    }
+                }
+            }
+        }
+
+        Ok(None)
+    }
+
+    fn memset_args_translate_plainly(
+        &self,
+        dst: &CExprId,
+        sized_expr: &Option<CExprId>,
+        elt_type: &CTypeId,
+    ) -> bool {
+        // For `memset(DST, 0, E * sizeof(T))` it's OK as long as sizeof(T) == sizeof(*DST), which we currently
+        // approximate by requiring that the resolved types are identical.
+        if sized_expr.is_none() && Some(*elt_type) == self.ast_context[*dst].kind.get_type() {
+            return true;
+        }
+
+        // We can only proceed if the user wrote something sensible like memset(DST, 0, E * sizeof(*DST)).
+        // For `memset(PTR, 0, E * sizeof(PTR))` we'd need to know the relationship between the target pointer size
+        // and the size of the pointee type.
+        if let Some(sized_expr) = sized_expr {
+            match &self.ast_context[*sized_expr].kind {
+                CExprKind::Unary(_, c_ast::UnOp::Deref, inner, _lrvalue) => {
+                    self.c_expr_decl_id(*inner) == self.c_expr_decl_id(*dst)
+                }
+                CExprKind::ArraySubscript(_cqt, base, _idx, _lrval) => {
+                    log::warn!(
+                        "memset_args_translate_plainly: sized_expr is ArraySubscript, cqt={:?}",
+                        _cqt
+                    );
+                    self.c_expr_decl_id(*base) == self.c_expr_decl_id(*dst)
+                }
+                _ => false,
+            }
+        } else {
+            false
+        }
     }
 
     pub fn get_callee_function_arg_guidances(
