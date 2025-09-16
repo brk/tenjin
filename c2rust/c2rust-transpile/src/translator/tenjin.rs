@@ -41,8 +41,9 @@ impl GuidedType {
             ["&", life, rest] if life.starts_with("'") => rest,
             ["&", life, "mut", rest] if life.starts_with("'") => rest,
             ["&", "mut", rest] => rest,
-            ["&", "mut", _, _] => &self.pretty[6..],
-            _ => self.pretty.as_str(),
+            ["&", "mut", _, _] => self.pretty[6..].as_ref(),
+            ["&", _, _, _] => self.pretty[2..].as_ref(),
+            _ => self.pretty.as_ref(),
         }
     }
 }
