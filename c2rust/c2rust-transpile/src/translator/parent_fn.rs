@@ -25,12 +25,8 @@ impl<'a> ParentFnCollector<'a> {
         for node in iter {
             if let SomeId::Decl(decl_id) = node {
                 let decl = &self.ast_context[decl_id];
-                if let CDeclKind::Variable {
-                    has_global_storage, ..
-                } = decl.kind
-                {
+                if let CDeclKind::Variable { is_defn: true, .. } = decl.kind {
                     if let Some(fn_id) = self.current_fn {
-                        assert!(!has_global_storage);
                         self.parent_fn_map.insert(decl_id, fn_id);
                     }
                 }
