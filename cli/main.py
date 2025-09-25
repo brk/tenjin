@@ -396,6 +396,12 @@ if __name__ == "__main__":
             sys.exit(hermetic.run_cargo_in(sys.argv[2:], cwd=Path.cwd(), check=False).returncode)
         if sys.argv[1] == "clang":
             sys.exit(hermetic.run_shell_cmd(sys.argv[1:]).returncode)
+        if sys.argv[1] == "chkc":
+            localdir = repo_root.localdir()
+            env_ext = {"PYTHONPATH": hermetic.xj_codehawk_c(localdir).as_posix()}
+            cmdline = hermetic.xj_codehawk_c(localdir) / "chc" / "cmdline"
+            env_ext["PATH"] = os.pathsep.join([cmdline.as_posix(), os.environ["PATH"]])
+            sys.exit(hermetic.run_shell_cmd(sys.argv[1:], env_ext=env_ext).returncode)
         if sys.argv[1] == "exec":
             sys.exit(hermetic.run_shell_cmd(sys.argv[2:]).returncode)
         if sys.argv[1] == "true":
