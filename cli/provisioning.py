@@ -743,7 +743,16 @@ def provision_dune(dune_version: str):
 
     try:
         # Try installing from opam registry first
-        hermetic.check_call_opam(["install", f"dune.{dune_version}"])
+        hermetic.check_call_opam(["pin", "add", "--no-action", "--yes", "dune", dune_version])
+        hermetic.check_call_opam([
+            "pin",
+            "add",
+            "--no-action",
+            "--yes",
+            "dune-configurator",
+            dune_version,
+        ])
+        hermetic.check_call_opam(["install", "--yes", "dune", "dune-configurator"])
     except subprocess.CalledProcessError:
         say("Failed to install dune from opam registry.")
         provision_dune_from_source(dune_version, say)
@@ -756,7 +765,20 @@ def provision_dune_from_source(dune_version: str, say):
     # GitHub releases URL pattern
     say("Installing dune from source...")
     dune_git_url = f"git+https://github.com/ocaml/dune.git#{dune_version}"
-    hermetic.check_call_opam(["pin", "add", "--yes", f"dune.{dune_version}", dune_git_url])
+    hermetic.check_call_opam([
+        "pin",
+        "add",
+        "--yes",
+        f"dune.{dune_version}",
+        dune_git_url,
+    ])
+    hermetic.check_call_opam([
+        "pin",
+        "add",
+        "--yes",
+        f"dune-configurator.{dune_version}",
+        dune_git_url,
+    ])
 
 
 def provision_opam_with(version: str, keyname: str):
