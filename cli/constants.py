@@ -3,11 +3,13 @@
 WANT = {
     "10j-llvm": "18.1.8@tenjin-llvm-4256d1483",
     "10j-opam": "2.3.0",
-    "10j-dune": "3.19.0",
+    "10j-dune": "3.19.1",
     "10j-ocaml": "5.2.0",
     "10j-cmake": "3.31.7",
     "10j-bullseye-sysroot-extras": "rev-b578a0937",
     "10j-build-deps": "rev-b578a0937",
+    "10j-codehawk": "d7904d71d7743369fab9020fcaf3e8b15482152b",
+    "10j-codehawk-c": "55c7beb8606fe8d67eeb06a97d4038ff810191f9",
     # Keep in sync with the version in `xj-improve-multitool/rust-toolchain.toml`.
     "10j-xj-improve-multitool-toolchain": "nightly-2025-03-03",
     "10j-xj-default-rust-toolchain": "1.88.0",
@@ -31,5 +33,12 @@ if __name__ == "__main__":
 
             ocamlparts = ";".join(piece(k) for k in "ocaml opam dune".split())
             print(";".join([platform.system(), platform.machine(), ocamlparts]))
+        case [_, "codehawk-cache-key"]:
+
+            def piece(k):
+                return f"{k}-{WANT['10j-' + k]}"
+
+            codehawkparts = piece("codehawk")
+            print(";".join([platform.system(), platform.machine(), codehawkparts]))
         case _:
             pass

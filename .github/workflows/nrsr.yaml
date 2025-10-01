@@ -93,9 +93,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Extract OCaml Cache Key
+      - name: Extract OCaml Cache Keys
         id: extract
-        run: echo "ocaml_key=$(python3 cli/constants.py ocaml-cache-key)" >> $GITHUB_OUTPUT
+        run: |
+          echo "ocaml_key=$(python3 cli/constants.py ocaml-cache-key)" >> $GITHUB_OUTPUT
+          echo "codehawk_key=$(python3 cli/constants.py codehawk-cache-key)" >> $GITHUB_OUTPUT
 
       # We don't use setup-ocaml because it would compile OCaml in the runner's
       # environment, which has libraries that aren't available to the 10j toolchain.
@@ -111,6 +113,20 @@ jobs:
             ~/.opam
             ~/.local/bin/opam
           key: ${{ steps.extract.outputs.ocaml_key }}
-          
+
+      # We don't cache CodeHawk in the `_local` directory because that doesn't exist yet.
+      # Instead, we cache it elsewhere, and provisioning moves it into place.
+      - name: Cache CodeHawk
+        id: cache-codehawk
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.xj-cached-codehawk
+          key: ${{ steps.extract.outputs.codehawk_key }}
+
+      - name: Install tss utility for showing timestamps
+        run: curl --silent --location --output tss https://github.com/kevinburke/tss/releases/download/1.3/tss-linux-amd64 && chmod +x tss
+
       - name: Provision OCaml
-        run: cli/10j provision ocaml
+        run: cli/10j provision ocaml |& ./tss
+        shell: bash  # GitHub Actions applies pipefail only for explicitly requested bash shell.

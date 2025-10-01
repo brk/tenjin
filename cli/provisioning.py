@@ -198,6 +198,7 @@ def provision_desires(wanted: str):
 
     if wanted in ("all", "ocaml"):
         want_dune()
+        want_codehawk_c()
 
     if wanted == "all":
         want_10j_reference_c2rust_tag()
@@ -381,6 +382,156 @@ def rebuild_10j_upstream_c2rust(xj_upstream_c2rust: Path):
     # Ensure a clean checkout for future updates
     stdout_path.unlink(missing_ok=True)
     stderr_path.unlink(missing_ok=True)
+
+
+def want_codehawk():
+    def rebuild_codehawk(xj_codehawk: Path):
+        sez("Updating CodeHawk dependencies...", ctx="(codehawk) ")
+
+        # Start by synchronizing Opam's database, just in case CodeHawk has a new
+        # dependency which wasn't in the previous cache.
+        hermetic.run_opam(["update"], check=False)
+
+        hermetic.run_opam(
+            [
+                "install",
+                "--assume-depexts",
+                "--deps-only",
+                "--yes",
+                str(xj_codehawk / "CodeHawk" / "codehawk.opam"),
+            ],
+            cwd=xj_codehawk,
+            check=True,
+        )
+
+        sez("Building CodeHawk...", ctx="(codehawk) ")
+        hermetic.run_opam(
+            [
+                "exec",
+                "--",
+                "dune",
+                "build",
+                "@install",
+            ],
+            check=True,
+            cwd=xj_codehawk / "CodeHawk",
+        )
+
+    def provision_codehawk_source_with(
+        version: str,
+        xj_codehawk: Path,
+    ):
+        def say(msg: str):
+            sez(msg, ctx="(codehawk) ")
+
+        localdir = HAVE.localdir
+        if xj_codehawk.is_dir():
+            say(f"Fetching and resetting CodeHawk to version {version} ...")
+            subprocess.check_call(["git", "fetch", "--all"], cwd=str(xj_codehawk))
+            subprocess.check_call(["git", "switch", "--detach", version], cwd=str(xj_codehawk))
+        else:
+            say(f"Cloning CodeHawk {version} ...")
+
+            stdout_path = Path(localdir, "xj-codehawk-clone.log")
+            stderr_path = Path(localdir, "xj-codehawk-clone.err")
+            hermetic.run_command_with_progress(
+                [
+                    "git",
+                    "clone",
+                    "https://github.com/static-analysis-engineering/codehawk.git",
+                    str(xj_codehawk),
+                ],
+                stdout_file=stdout_path,
+                stderr_file=stderr_path,
+            )
+            subprocess.check_call(["git", "switch", "--detach", version], cwd=str(xj_codehawk))
+
+    def provision_codehawk_with(
+        version: str,
+        keyname: str,
+    ):
+        xj_codehawk = hermetic.xj_codehawk(HAVE.localdir)
+
+        ci_cached_codehawk = Path.home() / ".xj-cached-codehawk"
+        if hermetic.running_in_ci() and ci_cached_codehawk.is_dir():
+            sez("Restoring CodeHawk from CI cache...", ctx="(codehawk) ")
+            if xj_codehawk.is_dir():
+                shutil.rmtree(xj_codehawk)
+            shutil.copytree(ci_cached_codehawk, xj_codehawk)
+        else:
+            provision_codehawk_source_with(version, xj_codehawk)
+            rebuild_codehawk(xj_codehawk)
+
+            if hermetic.running_in_ci():
+                # Copy CodeHawk (source and build artifacts) outside the _local directory
+                # so that it can be cached, or rather, it can be restored from cache
+                # without the _local directory existing yet.
+                if ci_cached_codehawk.is_dir():
+                    shutil.rmtree(ci_cached_codehawk)
+                shutil.copytree(xj_codehawk, ci_cached_codehawk)
+
+        HAVE.note_we_have(keyname, specifier=version)
+
+    want(
+        "10j-codehawk",
+        "codehawk",
+        "CodeHawk",
+        provision_codehawk_with,
+    )
+
+
+def want_codehawk_c():
+    want_codehawk()
+
+    def rebuild_codehawk_c(xj_codehawk_c: Path):
+        ch_os_name = "linux" if platform.system() == "Linux" else "macOS"
+        destdir = xj_codehawk_c / "chc" / "bin" / ch_os_name
+        ch_build_dir = hermetic.xj_codehawk(HAVE.localdir) / "CodeHawk" / "_build"
+        ch_bin_dir = ch_build_dir / "install" / "default" / "bin"
+
+        shutil.copyfile(ch_bin_dir / "canalyzer", destdir / "canalyzer")
+        shutil.copyfile(ch_bin_dir / "parseFile", destdir / "parseFile")
+
+    def provision_codehawk_c_with(
+        version: str,
+        keyname: str,
+    ):
+        def say(msg: str):
+            sez(msg, ctx="(codehawk) ")
+
+        localdir = HAVE.localdir
+
+        xj_codehawk = hermetic.xj_codehawk_c(localdir)
+        if xj_codehawk.is_dir():
+            say(f"Fetching and resetting CodeHawk-C to version {version} ...")
+            subprocess.check_call(["git", "fetch", "--all"], cwd=str(xj_codehawk))
+            subprocess.check_call(["git", "switch", "--detach", version], cwd=str(xj_codehawk))
+        else:
+            say(f"Cloning CodeHawk-C {version} ...")
+
+            stdout_path = Path(localdir, "xj-codehawk-c-clone.log")
+            stderr_path = Path(localdir, "xj-codehawk-c-clone.err")
+            hermetic.run_command_with_progress(
+                [
+                    "git",
+                    "clone",
+                    "https://github.com/static-analysis-engineering/CodeHawk-C.git",
+                    str(xj_codehawk),
+                ],
+                stdout_file=stdout_path,
+                stderr_file=stderr_path,
+            )
+            subprocess.check_call(["git", "switch", "--detach", version], cwd=str(xj_codehawk))
+
+        rebuild_codehawk_c(xj_codehawk)
+        HAVE.note_we_have(keyname, specifier=version)
+
+    want(
+        "10j-codehawk-c",
+        "codehawk-c",
+        "CodeHawk-C",
+        provision_codehawk_c_with,
+    )
 
 
 def want_10j_sysroot_extras():
@@ -743,7 +894,16 @@ def provision_dune(dune_version: str):
 
     try:
         # Try installing from opam registry first
-        hermetic.check_call_opam(["install", f"dune.{dune_version}"])
+        hermetic.check_call_opam(["pin", "add", "--no-action", "--yes", "dune", dune_version])
+        hermetic.check_call_opam([
+            "pin",
+            "add",
+            "--no-action",
+            "--yes",
+            "dune-configurator",
+            dune_version,
+        ])
+        hermetic.check_call_opam(["install", "--yes", "dune", "dune-configurator"])
     except subprocess.CalledProcessError:
         say("Failed to install dune from opam registry.")
         provision_dune_from_source(dune_version, say)
@@ -756,7 +916,20 @@ def provision_dune_from_source(dune_version: str, say):
     # GitHub releases URL pattern
     say("Installing dune from source...")
     dune_git_url = f"git+https://github.com/ocaml/dune.git#{dune_version}"
-    hermetic.check_call_opam(["pin", "add", "--yes", f"dune.{dune_version}", dune_git_url])
+    hermetic.check_call_opam([
+        "pin",
+        "add",
+        "--yes",
+        f"dune.{dune_version}",
+        dune_git_url,
+    ])
+    hermetic.check_call_opam([
+        "pin",
+        "add",
+        "--yes",
+        f"dune-configurator.{dune_version}",
+        dune_git_url,
+    ])
 
 
 def provision_opam_with(version: str, keyname: str):
