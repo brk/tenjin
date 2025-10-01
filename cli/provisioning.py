@@ -417,16 +417,14 @@ def want_codehawk():
             cwd=xj_codehawk / "CodeHawk",
         )
 
-    def provision_codehawk_with(
+    def provision_codehawk_source_with(
         version: str,
-        keyname: str,
+        xj_codehawk: Path,
     ):
         def say(msg: str):
             sez(msg, ctx="(codehawk) ")
 
         localdir = HAVE.localdir
-
-        xj_codehawk = hermetic.xj_codehawk(localdir)
         if xj_codehawk.is_dir():
             say(f"Fetching and resetting CodeHawk to version {version} ...")
             subprocess.check_call(["git", "fetch", "--all"], cwd=str(xj_codehawk))
@@ -448,7 +446,30 @@ def want_codehawk():
             )
             subprocess.check_call(["git", "switch", "--detach", version], cwd=str(xj_codehawk))
 
-        rebuild_codehawk(xj_codehawk)
+    def provision_codehawk_with(
+        version: str,
+        keyname: str,
+    ):
+        xj_codehawk = hermetic.xj_codehawk(HAVE.localdir)
+
+        ci_cached_codehawk = Path.home() / ".xj-cached-codehawk"
+        if hermetic.running_in_ci() and ci_cached_codehawk.is_dir():
+            sez("Restoring CodeHawk from CI cache...", ctx="(codehawk) ")
+            if xj_codehawk.is_dir():
+                shutil.rmtree(xj_codehawk)
+            shutil.copytree(ci_cached_codehawk, xj_codehawk)
+        else:
+            provision_codehawk_source_with(version, xj_codehawk)
+            rebuild_codehawk(xj_codehawk)
+
+            if hermetic.running_in_ci():
+                # Copy CodeHawk (source and build artifacts) outside the _local directory
+                # so that it can be cached, or rather, it can be restored from cache
+                # without the _local directory existing yet.
+                if ci_cached_codehawk.is_dir():
+                    shutil.rmtree(ci_cached_codehawk)
+                shutil.copytree(xj_codehawk, ci_cached_codehawk)
+
         HAVE.note_we_have(keyname, specifier=version)
 
     want(
