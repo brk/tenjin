@@ -25,6 +25,7 @@ use itertools::Itertools;
 use log::{info, warn};
 use regex::Regex;
 use serde_derive::Serialize;
+pub use tempfile::TempDir;
 
 use crate::c_ast::Printer;
 use crate::c_ast::*;
@@ -41,6 +42,22 @@ type PragmaVec = Vec<(&'static str, Vec<&'static str>)>;
 type PragmaSet = indexmap::IndexSet<(&'static str, &'static str)>;
 type CrateSet = indexmap::IndexSet<ExternCrate>;
 type TranspileResult = Result<(PathBuf, PragmaVec, CrateSet), ()>;
+
+#[derive(Default, Debug)]
+pub enum TranslateMacros {
+    /// Don't translate any macros.
+    None,
+
+    /// Translate the conservative subset of macros known to always work.
+    #[default]
+    Conservative,
+
+    /// Try to translate more, but this is experimental and not guaranteed to work.
+    ///
+    /// For const-like macros, this works in some cases.
+    /// For function-like macros, this doesn't really work at all yet.
+    Experimental,
+}
 
 /// Configuration settings for the translation process
 #[derive(Debug)]
@@ -77,8 +94,8 @@ pub struct TranspilerConfig {
     pub enabled_warnings: HashSet<Diagnostic>,
     pub emit_no_std: bool,
     pub output_dir: Option<PathBuf>,
-    pub translate_const_macros: bool,
-    pub translate_fn_macros: bool,
+    pub translate_const_macros: TranslateMacros,
+    pub translate_fn_macros: TranslateMacros,
     pub disable_refactoring: bool,
     pub preserve_unused_functions: bool,
     pub log_level: log::LevelFilter,
@@ -129,7 +146,8 @@ impl TranspilerConfig {
     fn crate_name(&self) -> String {
         self.output_dir
             .as_ref()
-            .and_then(|x| x.file_name().map(|x| x.to_string_lossy().into_owned()))
+            .and_then(|dir| dir.file_name())
+            .map(|fname| str_to_ident_checked(fname.to_string_lossy().as_ref(), true))
             .unwrap_or_else(|| "c2rust_out".into())
     }
 }
@@ -198,23 +216,22 @@ fn char_to_ident(c: char) -> char {
     }
 }
 
-fn str_to_ident<S: AsRef<str>>(s: S) -> String {
-    s.as_ref().chars().map(char_to_ident).collect()
+fn str_to_ident(s: &str) -> String {
+    s.chars().map(char_to_ident).collect()
 }
 
 /// Make sure that name:
 /// - does not contain illegal characters,
 /// - does not clash with reserved keywords.
-fn str_to_ident_checked(filename: &Option<String>, check_reserved: bool) -> Option<String> {
-    // module names cannot contain periods or dashes
-    filename.as_ref().map(str_to_ident).map(|module| {
-        // make sure the module name does not clash with keywords
-        if check_reserved && RESERVED_NAMES.contains(&module.as_str()) {
-            format!("r#{}", module)
-        } else {
-            module
-        }
-    })
+fn str_to_ident_checked(s: &str, check_reserved: bool) -> String {
+    let s = str_to_ident(s);
+
+    // make sure the name does not clash with keywords
+    if check_reserved && RESERVED_NAMES.contains(&s.as_str()) {
+        format!("r#{}", s)
+    } else {
+        s
+    }
 }
 
 fn get_module_name(
@@ -229,8 +246,8 @@ fn get_module_name(
     } else {
         file.file_name()
     };
-    let fname = &fname.unwrap().to_str().map(String::from);
-    let mut name = str_to_ident_checked(fname, check_reserved).unwrap();
+    let fname = fname.unwrap().to_str().unwrap();
+    let mut name = str_to_ident_checked(fname, check_reserved);
     if keep_extension && is_rs {
         name.push_str(".rs");
     }
@@ -242,8 +259,18 @@ fn get_module_name(
     file.to_str().map(String::from)
 }
 
-pub fn create_temp_compile_commands(sources: &[PathBuf]) -> PathBuf {
-    let temp_path = std::env::temp_dir().join("compile_commands.json");
+pub fn create_temp_compile_commands(sources: &[PathBuf]) -> (TempDir, PathBuf) {
+    // If we generate the same path here on every run, then we can't run
+    // multiple transpiles in parallel, so we need a unique path. But clang
+    // won't read this file unless it is named exactly "compile_commands.json",
+    // so we can't change the filename. Instead, create a temporary directory
+    // with a unique name, and put the file there.
+    let temp_dir = tempfile::Builder::new()
+        .prefix("c2rust-")
+        .tempdir()
+        .expect("Failed to create temporary directory for compile_commands.json");
+    let temp_path = temp_dir.path().join("compile_commands.json");
+
     let compile_commands: Vec<CompileCmd> = sources
         .iter()
         .map(|source_file| {
@@ -268,8 +295,7 @@ pub fn create_temp_compile_commands(sources: &[PathBuf]) -> PathBuf {
         File::create(&temp_path).expect("Failed to create temporary compile_commands.json");
     file.write_all(json_content.as_bytes())
         .expect("Failed to write to temporary compile_commands.json");
-
-    temp_path
+    (temp_dir, temp_path)
 }
 
 /// Main entry point to transpiler. Called from CLI tools with the result of
@@ -534,7 +560,7 @@ fn transpile_single(
         if conv.invalid_clang_ast && tcfg.fail_on_error {
             panic!("Clang AST was invalid");
         }
-        conv.typed_context
+        conv.into_typed_context()
     };
 
     if tcfg.dump_typed_context {

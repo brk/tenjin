@@ -150,7 +150,6 @@ pub fn expr_strip_casts(expr: &Expr) -> &Expr {
     loop {
         match ep {
             Expr::Cast(ExprCast { expr, .. }) => ep = expr,
-            Expr::Type(ExprType { expr, .. }) => ep = expr,
             _ => break ep,
         }
     }
@@ -592,8 +591,11 @@ impl Translation<'_> {
                             if args.len() == 1
                                 && self.c_expr_decl_id(args[0]) == self.c_expr_decl_id(*raw_base)
                             {
-                                let tgt_expr =
-                                    self.convert_expr(ctx, self.c_strip_implicit_casts(*raw_base))?;
+                                let tgt_expr = self.convert_expr(
+                                    ctx,
+                                    self.c_strip_implicit_casts(*raw_base),
+                                    None,
+                                )?;
                                 let pop_call = mk().method_call_expr(
                                     tgt_expr.to_expr(),
                                     mk().path_segment("pop"),
@@ -665,7 +667,8 @@ impl Translation<'_> {
     pub fn convert_call_with_args(
         &self,
         ctx: ExprContext,
-        _call_type_id: CTypeId,
+        call_expr_ty: CQualTypeId,
+        override_ty: Option<CQualTypeId>,
         func: Box<Expr>,
         args: Vec<Box<Expr>>,
         cargs: &[CExprId],
@@ -739,7 +742,7 @@ impl Translation<'_> {
                 args_tts.push(TokenTree::Literal(Literal::string(&scanf_rs_fmt)));
                 for carg in cargs {
                     let un_addr = self.c_expr_get_addr_of(carg).unwrap();
-                    let arg = self.convert_expr(ctx, un_addr)?;
+                    let arg = self.convert_expr(ctx, un_addr, None)?;
                     args_tts.push(TokenTree::Punct(Punct::new(',', Alone)));
                     args_tts.push(TokenTree::Group(proc_macro2::Group::new(
                         proc_macro2::Delimiter::None,
@@ -759,7 +762,19 @@ impl Translation<'_> {
                 ));
                 Ok(mk().method_call_expr(scanf_call, "unwrap", vec![]))
             }
-            RecognizedCallForm::OtherCall(func, args) => Ok(mk().call_expr(func, args)),
+            RecognizedCallForm::OtherCall(func, args) => {
+                let mut call_expr = mk().call_expr(func, args);
+
+                if let Some(expected_ty) = override_ty {
+                    if call_expr_ty != expected_ty {
+                        let ret_ty = self.convert_type(expected_ty.ctype)?;
+                        call_expr = mk().cast_expr(call_expr, ret_ty);
+                    }
+                }
+
+                let res: TranslationResult<_> = Ok(call_expr);
+                res
+            },
         }
     }
 
@@ -862,7 +877,7 @@ impl Translation<'_> {
         cargs: &[CExprId],
     ) -> TranslationResult<Option<WithStmts<Box<Expr>>>> {
         if cargs.len() == 1 {
-            let expr_x = self.convert_expr(ctx.used(), cargs[0])?;
+            let expr_x = self.convert_expr(ctx.used(), cargs[0], None)?;
             return expr_x
                 .and_then(|expr_x| {
                     Ok(WithStmts::new_val(mk().method_call_expr(
@@ -890,8 +905,8 @@ impl Translation<'_> {
             //    observe any modifications to errno,
             // should be translated to
             // x.powf(y)
-            let expr_x = self.convert_expr(ctx.used(), cargs[0])?;
-            let expr_y = self.convert_expr(ctx.used(), cargs[1])?;
+            let expr_x = self.convert_expr(ctx.used(), cargs[0], None)?;
+            let expr_y = self.convert_expr(ctx.used(), cargs[1], None)?;
             return expr_x
                 .and_then(|expr_x| {
                     Ok(WithStmts::new_val(mk().method_call_expr(
@@ -919,8 +934,8 @@ impl Translation<'_> {
             //    observe any modifications to errno,
             // should be translated to
             // x % y
-            let expr_x = self.convert_expr(ctx.used(), cargs[0])?;
-            let expr_y = self.convert_expr(ctx.used(), cargs[1])?;
+            let expr_x = self.convert_expr(ctx.used(), cargs[0], None)?;
+            let expr_y = self.convert_expr(ctx.used(), cargs[1], None)?;
             return expr_x
                 .and_then(|expr_x| {
                     Ok(WithStmts::new_val(mk().binary_expr(
@@ -960,7 +975,7 @@ impl Translation<'_> {
                     .query_decl_type(self, var_cdecl_id)
                     .is_some_and(|g| g.pretty == "String")
                 {
-                    let expr = self.convert_expr(ctx.used(), cargs[0])?;
+                    let expr = self.convert_expr(ctx.used(), cargs[0], None)?;
                     let print_call = mk().mac_expr(refactor_format::build_format_macro_from(
                         self,
                         "%s".to_string(),
@@ -1000,7 +1015,7 @@ impl Translation<'_> {
                     .query_decl_type(self, var_cdecl_id)
                     .is_some_and(|g| g.pretty == "String")
                 {
-                    let expr = self.convert_expr(ctx.used(), cargs[0])?;
+                    let expr = self.convert_expr(ctx.used(), cargs[0], None)?;
                     let len_call = mk().method_call_expr(expr.to_expr(), "len", vec![]);
                     return Ok(Some(WithStmts::new_val(len_call)));
                 }
@@ -1043,8 +1058,8 @@ impl Translation<'_> {
                         );
                     });
 
-                    let expr_foo = self.convert_expr(ctx.used(), cargs[0])?;
-                    let expr_bar = self.convert_expr(ctx.used(), cargs[1])?;
+                    let expr_foo = self.convert_expr(ctx.used(), cargs[0], None)?;
+                    let expr_bar = self.convert_expr(ctx.used(), cargs[1], None)?;
                     let strcspn_call = mk().call_expr(
                         mk().path_expr(vec!["strcspn_str"]),
                         vec![
@@ -1087,7 +1102,7 @@ impl Translation<'_> {
                         );
                     });
 
-                    let expr_foo = self.convert_expr(ctx.used(), cargs[0])?;
+                    let expr_foo = self.convert_expr(ctx.used(), cargs[0], None)?;
                     // Stripping casts is correct because we know the underlying type is char,
                     // which matches the argument of the function we're redirecting to.
                     let bare_foo: Box<Expr> =
@@ -1158,8 +1173,8 @@ impl Translation<'_> {
                         );
                     });
 
-                    let buf = self.convert_expr(ctx.used(), cargs[0])?;
-                    let lim = self.convert_expr(ctx.used(), cargs[1])?;
+                    let buf = self.convert_expr(ctx.used(), cargs[0], None)?;
+                    let lim = self.convert_expr(ctx.used(), cargs[1], None)?;
                     let fgets_stdin_bool_call = mk().call_expr(
                         mk().path_expr(vec!["fgets_stdin_bool"]),
                         vec![
