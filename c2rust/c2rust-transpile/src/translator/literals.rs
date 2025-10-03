@@ -329,7 +329,10 @@ impl Translation<'_> {
                             .map(to_array_element)
                             .chain(
                                 // Pad out the array literal with default values to the desired size
-                                std::iter::repeat_n(self.implicit_default_expr(ty, ctx.is_static), n - ids.len()),
+                                std::iter::repeat_n(
+                                    self.implicit_default_expr(ty, ctx.is_static),
+                                    n - ids.len(),
+                                ),
                             )
                             .collect::<TranslationResult<WithStmts<_>>>()?
                             .map(|vals| mk().array_expr(vals)))

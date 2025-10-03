@@ -520,7 +520,6 @@ impl Translation<'_> {
                                 val.map(|val| mk().cast_expr(val, write_type))
                             };
 
-                            
                             if is_volatile {
                                 val.and_then(|val| {
                                     TranslationResult::Ok(WithStmts::new_unsafe_val(

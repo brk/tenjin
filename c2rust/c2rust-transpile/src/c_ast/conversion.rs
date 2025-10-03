@@ -287,10 +287,11 @@ impl ConversionContext {
                         "{}",
                         TranslationError::new(
                             display_loc(untyped_context, &Some(node.loc)),
-                            err_msg(format!("Missing child {child} of node {node:?}",))
-                                .context(TranslationErrorKind::InvalidClangAst(
+                            err_msg(format!("Missing child {child} of node {node:?}",)).context(
+                                TranslationErrorKind::InvalidClangAst(
                                     ClangAstParseErrorKind::MissingChild,
-                                )),
+                                )
+                            ),
                         ),
                     );
                     invalid_clang_ast = true;
@@ -305,10 +306,11 @@ impl ConversionContext {
                         "{}",
                         TranslationError::new(
                             display_loc(untyped_context, &Some(node.loc)),
-                            err_msg(format!("Missing type {type_id} for node: {node:?}",))
-                                .context(TranslationErrorKind::InvalidClangAst(
+                            err_msg(format!("Missing type {type_id} for node: {node:?}",)).context(
+                                TranslationErrorKind::InvalidClangAst(
                                     ClangAstParseErrorKind::MissingType,
-                                )),
+                                )
+                            ),
                         ),
                     );
                     invalid_clang_ast = true;
@@ -947,9 +949,7 @@ impl ConversionContext {
                     self.processed_nodes.insert(new_id, OTHER_TYPE);
                 }
 
-                t => panic!(
-                    "Type conversion not implemented for {t:?} expecting {expected_ty:?}"
-                ),
+                t => panic!("Type conversion not implemented for {t:?} expecting {expected_ty:?}"),
             }
         } else {
             // Convert the node

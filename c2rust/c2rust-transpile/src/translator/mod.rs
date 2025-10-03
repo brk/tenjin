@@ -1462,9 +1462,7 @@ mod refactor_format {
             Some(LitStrOrByteStr::ByteStr(b)) => std::str::from_utf8(b.value().as_slice())
                 .unwrap()
                 .to_owned(),
-            None => panic!(
-                "TENJIN expected format string to be a string literal: {ep:?}"
-            ),
+            None => panic!("TENJIN expected format string to be a string literal: {ep:?}"),
         };
         build_format_macro_from(
             x,
@@ -6206,9 +6204,7 @@ impl<'c> Translation<'c> {
                     // If this DeclRef expanded to a const macro, we actually need to insert a cast,
                     // because the translation of a const macro skips implicit casts in its context.
                     Expr::Path(..) => mk().cast_expr(x, target_ty),
-                    _ => panic!(
-                        "DeclRef {expr:?} of enum {enum_decl:?} is not cast: {x:?}"
-                    ),
+                    _ => panic!("DeclRef {expr:?} of enum {enum_decl:?} is not cast: {x:?}"),
                 });
             }
 

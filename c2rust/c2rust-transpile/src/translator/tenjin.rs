@@ -774,7 +774,7 @@ impl Translation<'_> {
 
                 let res: TranslationResult<_> = Ok(call_expr);
                 res
-            },
+            }
         }
     }
 
