@@ -338,13 +338,14 @@ def want_10j_reference_c2rust_tag():
                 [
                     "git",
                     "clone",
-                    "--branch",
-                    version,
                     "https://github.com/immunant/c2rust.git",
                     str(xj_upstream_c2rust),
                 ],
                 stdout_file=stdout_path,
                 stderr_file=stderr_path,
+            )
+            subprocess.check_call(
+                ["git", "switch", "--detach", version], cwd=str(xj_upstream_c2rust)
             )
 
         rebuild_10j_upstream_c2rust(xj_upstream_c2rust)
