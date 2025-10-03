@@ -1,4 +1,4 @@
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::char;
 use std::collections::{HashMap, HashSet};
 use std::mem;
@@ -11,7 +11,6 @@ use dtoa;
 use failure::{err_msg, format_err, Fail};
 use indexmap::indexmap;
 use indexmap::{IndexMap, IndexSet};
-use itertools::Itertools; // for zip_eq
 use log::{error, info, trace, warn};
 use proc_macro2::{Punct, Spacing::*, Span, TokenStream, TokenTree};
 use syn::spanned::Spanned as _;
@@ -28,12 +27,12 @@ use c2rust_ast_builder::{mk, properties::*, Builder};
 use c2rust_ast_printer::pprust::{self};
 
 use crate::c_ast::iterators::{DFExpr, SomeId};
-use crate::c_ast::*;
 use crate::cfg;
 use crate::convert_type::TypeConverter;
 use crate::renamer::Renamer;
 use crate::with_stmts::WithStmts;
 use crate::{c_ast, format_translation_err};
+use crate::{c_ast::*, TranslateMacros};
 use crate::{ExternCrate, ExternCrateDetails, TranspilerConfig};
 use c2rust_ast_exporter::clang_ast::LRValue;
 
@@ -104,6 +103,7 @@ pub enum ReplaceMode {
     Extern,
 }
 
+/// Options that impact an expression and all of its subexpressions.
 #[derive(Copy, Clone, Debug)]
 pub struct ExprContext {
     used: bool,
@@ -216,6 +216,8 @@ pub struct FuncContext {
     va_list_arg_name: Option<String>,
     /// The va_list decls that are either `va_start`ed or `va_copy`ed.
     va_list_decl_ids: Option<IndexSet<CDeclId>>,
+    /// The name we give to the Rust variable holding all allocations made with `alloca`.
+    alloca_allocations_name: Option<String>,
 }
 
 impl FuncContext {
@@ -224,9 +226,10 @@ impl FuncContext {
     }
 
     pub fn enter_new(&mut self, fn_name: &str) {
-        self.name = Some(fn_name.to_string());
-        self.va_list_arg_name = None;
-        self.va_list_decl_ids = None;
+        *self = Self {
+            name: Some(fn_name.to_string()),
+            ..Default::default()
+        };
     }
 
     pub fn get_name(&self) -> &str {
@@ -347,7 +350,7 @@ impl ParsedGuidance {
                         }
                     }
                     let ty = syn::parse_str::<syn::Type>(unparsed_ty)
-                        .unwrap_or_else(|_| panic!("Failed to parse type: {}", unparsed_ty));
+                        .unwrap_or_else(|_| panic!("Failed to parse type: {unparsed_ty}"));
                     log::warn!("Parsed type key vars_of_type: {:#?}", ty);
                     declspecs_of_type.insert(ty, parsed_declspecs);
                 }
@@ -566,23 +569,7 @@ pub struct Translation<'c> {
     // While expanding an item, store the current file id that item is
     // expanded from. This is needed in order to note imports in items when
     // encountering DeclRefs.
-    cur_file: RefCell<Option<FileId>>,
-}
-
-fn simple_metaitem(name: &str) -> NestedMeta {
-    let meta_item = mk().meta_path(name);
-
-    mk().nested_meta_item(NestedMeta::Meta(meta_item))
-}
-
-fn int_arg_metaitem(name: &str, arg: u128) -> NestedMeta {
-    let lit = mk().int_unsuffixed_lit(arg);
-    let inner = Meta::List(MetaList {
-        path: mk().path(name),
-        paren_token: Default::default(),
-        nested: FromIterator::from_iter(vec![mk().nested_meta_item(NestedMeta::Lit(lit))]),
-    });
-    NestedMeta::Meta(inner)
+    cur_file: Cell<Option<FileId>>,
 }
 
 fn cast_int(val: Box<Expr>, name: &str, need_lit_suffix: bool) -> Box<Expr> {
@@ -631,12 +618,15 @@ fn vec_expr(val: Box<Expr>, count: Box<Expr>) -> Box<Expr> {
 pub fn stmts_block(mut stmts: Vec<Stmt>) -> Block {
     match stmts.pop() {
         None => {}
-        Some(Stmt::Expr(Expr::Block(ExprBlock {
-            block, label: None, ..
-        }))) if stmts.is_empty() => return block,
+        Some(Stmt::Expr(
+            Expr::Block(ExprBlock {
+                block, label: None, ..
+            }),
+            None,
+        )) if stmts.is_empty() => return block,
         Some(mut s) => {
-            if let Stmt::Expr(e) = s {
-                s = Stmt::Semi(e, Default::default());
+            if let Stmt::Expr(e, None) = s {
+                s = Stmt::Expr(e, Some(Default::default()));
             }
             stmts.push(s);
         }
@@ -743,7 +733,8 @@ fn clean_path(mod_names: &RefCell<IndexMap<String, PathBuf>>, path: Option<&path
 pub fn translate_failure(tcfg: &TranspilerConfig, msg: &str) {
     error!("{}", msg);
     if tcfg.fail_on_error {
-        panic!("Translation failed, see error above");
+        error!("Translation failed, exiting");
+        std::process::exit(1);
     }
 }
 
@@ -767,8 +758,6 @@ pub fn translate(
     };
 
     {
-        t.use_crate(ExternCrate::Libc);
-
         // Sort the top-level declarations by file and source location so that we
         // preserve the ordering of all declarations in each file.
         t.ast_context.sort_top_decls();
@@ -779,6 +768,11 @@ pub fn translate(
         // we simplify the translator output by omitting those.
         t.ast_context
             .prune_unwanted_decls(tcfg.preserve_unused_functions);
+
+        // Normalize AST types between Clang < 16 and later versions. Ensures that
+        // binary and unary operators' expr types agree with their argument types
+        // in the presence of typedefs.
+        t.ast_context.bubble_expr_types();
 
         enum Name<'a> {
             Var(&'a str),
@@ -901,12 +895,12 @@ pub fn translate(
             let convert_type = |decl_id: CDeclId, decl: &CDecl| {
                 let decl_file_id = t.ast_context.file_id(decl);
                 if t.tcfg.reorganize_definitions {
-                    *t.cur_file.borrow_mut() = decl_file_id;
+                    t.cur_file.set(decl_file_id);
                 }
                 match t.convert_decl(ctx, decl_id) {
                     Err(e) => {
                         let k = &t.ast_context.get_decl(&decl_id).map(|x| &x.kind);
-                        let msg = format!("Skipping declaration {:?} due to error: {}", k, e);
+                        let msg = format!("Skipping declaration {k:?} due to error: {e}");
                         translate_failure(t.tcfg, &msg);
                     }
                     Ok(converted_decl) => {
@@ -927,7 +921,7 @@ pub fn translate(
                         }
                     }
                 }
-                t.cur_file.borrow_mut().take();
+                t.cur_file.take();
 
                 if t.tcfg.reorganize_definitions && decl_file_id.is_some_and(|id| id != t.main_file)
                 {
@@ -962,36 +956,29 @@ pub fn translate(
             let needs_export = match t.ast_context[*top_id].kind {
                 Function { is_implicit, .. } => !is_implicit,
                 Variable { .. } => true,
-                MacroObject { .. } => tcfg.translate_const_macros,
-                MacroFunction { .. } => tcfg.translate_fn_macros,
+                MacroObject { .. } => true, // Depends on `tcfg.translate_const_macros`, but handled in `fn convert_const_macro_expansion`.
+                MacroFunction { .. } => true, // Depends on `tcfg.translate_fn_macros`, but handled in `fn convert_fn_macro_invocation`.
                 _ => false,
             };
             if needs_export {
-                let decl_opt = t.ast_context.get_decl(top_id);
-                let decl = decl_opt.as_ref().unwrap();
+                let decl = t.ast_context.get_decl(top_id).unwrap();
                 let decl_file_id = t.ast_context.file_id(decl);
 
                 if t.tcfg.reorganize_definitions && decl_file_id.is_some_and(|id| id != t.main_file)
                 {
-                    *t.cur_file.borrow_mut() = decl_file_id;
+                    t.cur_file.set(decl_file_id);
                 }
                 match t.convert_decl(ctx, *top_id) {
                     Err(e) => {
-                        let decl = &t.ast_context.get_decl(top_id);
-                        let msg = match decl {
-                            Some(decl) => {
-                                let decl_identifier = decl.kind.get_name().map_or_else(
-                                    || {
-                                        t.ast_context
-                                            .display_loc(&decl.loc)
-                                            .map_or("Unknown".to_string(), |l| format!("at {}", l))
-                                    },
-                                    |name| name.clone(),
-                                );
-                                format!("Failed to translate {}: {}", decl_identifier, e)
-                            }
-                            _ => format!("Failed to translate declaration: {}", e,),
-                        };
+                        let decl_identifier = decl.kind.get_name().map_or_else(
+                            || {
+                                t.ast_context
+                                    .display_loc(&decl.loc)
+                                    .map_or("Unknown".to_string(), |l| format!("at {l}"))
+                            },
+                            |name| name.clone(),
+                        );
+                        let msg = format!("Failed to translate {decl_identifier}: {e}");
                         translate_failure(t.tcfg, &msg);
                     }
                     Ok(converted_decl) => {
@@ -1012,7 +999,7 @@ pub fn translate(
                         }
                     }
                 }
-                t.cur_file.borrow_mut().take();
+                t.cur_file.take();
 
                 if t.tcfg.reorganize_definitions && decl_file_id.is_some_and(|id| id != t.main_file)
                 {
@@ -1026,7 +1013,7 @@ pub fn translate(
             match t.convert_main(main_id) {
                 Ok(item) => t.items.borrow_mut()[&t.main_file].add_item(item),
                 Err(e) => {
-                    let msg = format!("Failed to translate main: {}", e);
+                    let msg = format!("Failed to translate main: {e}");
                     translate_failure(t.tcfg, &msg)
                 }
             }
@@ -1040,9 +1027,6 @@ pub fn translate(
             store.add_item(initializer_fn);
             store.add_item(initializer_static);
         }
-
-        let pragmas = t.get_pragmas();
-        let crates = t.extern_crates.borrow().clone();
 
         let mut mod_items: Vec<Box<Item>> = Vec::new();
 
@@ -1143,6 +1127,15 @@ pub fn translate(
                 items: all_items.into_iter().map(|x| *x).collect(),
             }
         });
+
+        let pragmas = t.get_pragmas();
+        let extern_crates = t.extern_crates.borrow();
+        let type_converter = t.type_converter.borrow();
+        let crates = extern_crates
+            .union(type_converter.extern_crates_used())
+            .copied()
+            .collect();
+
         (translation, pragmas, crates)
     }
 }
@@ -1157,7 +1150,6 @@ fn item_ident(i: &Item) -> Option<&Ident> {
         ForeignMod(_ifm) => return None,
         Impl(_ii) => return None,
         Macro(im) => return im.ident.as_ref(),
-        Macro2(im2) => &im2.ident,
         Mod(im) => &im.ident,
         Static(is) => &is.ident,
         Struct(is) => &is.ident,
@@ -1188,7 +1180,6 @@ fn item_vis(i: &Item) -> Option<Visibility> {
             ForeignMod(_ifm) => return None,
             Impl(_ii) => return None,
             Macro(_im) => return None,
-            Macro2(im2) => &im2.vis,
             Mod(im) => &im.vis,
             Static(is) => &is.vis,
             Struct(is) => &is.vis,
@@ -1277,14 +1268,14 @@ fn make_submodule(
         items.push(mk().extern_("C").foreign_items(foreign_items));
     }
 
-    let module_builder = mk().vis("pub");
+    let module_builder = mk().pub_();
     let module_builder = if reorganize_definitions {
         let file_path_str = file_path.map_or(mod_name.as_str(), |path| {
             path.to_str().expect("Found invalid unicode")
         });
         module_builder.str_attr(
             vec!["c2rust", "header_src"],
-            format!("{}:{}", file_path_str, include_line_number),
+            format!("{file_path_str}:{include_line_number}"),
         )
     } else {
         module_builder
@@ -1311,21 +1302,15 @@ fn arrange_header(t: &Translation, is_binary: bool) -> (Vec<syn::Attribute>, Vec
         for (key, mut values) in pragmas {
             values.sort_unstable();
             // generate #[key(values)]
-            let value_attr_vec = values
-                .into_iter()
-                .map(|value| mk().nested_meta_item(mk().meta_path(value)))
-                .collect::<Vec<_>>();
-            let item = mk().meta_list(vec![key], value_attr_vec);
-            for attr in mk()
-                .meta_item_attr(AttrStyle::Inner(Default::default()), item)
-                .as_inner_attrs()
-            {
-                out_attrs.push(attr);
-            }
+            let meta = mk().meta_list(vec![key], values);
+            let attr = mk().attribute(AttrStyle::Inner(Default::default()), meta);
+            out_attrs.push(attr);
         }
 
         if t.tcfg.emit_no_std {
-            out_attrs.push(mk().single_attr("no_std").as_inner_attrs()[0].clone());
+            let meta = mk().meta_path("no_std");
+            let attr = mk().attribute(AttrStyle::Inner(Default::default()), meta);
+            out_attrs.push(attr);
         }
 
         if is_binary {
@@ -1349,7 +1334,7 @@ fn arrange_header(t: &Translation, is_binary: bool) -> (Vec<syn::Attribute>, Vec
 
 /// Convert a boolean expression to a c_int
 fn bool_to_int(val: Box<Expr>) -> Box<Expr> {
-    mk().cast_expr(val, mk().path_ty(vec!["libc", "c_int"]))
+    mk().cast_expr(val, mk().path_ty(vec!["core", "ffi", "c_int"]))
 }
 
 /// Add a src_loc = "line:col" attribute to an item/foreign_item
@@ -1357,8 +1342,7 @@ fn add_src_loc_attr(attrs: &mut Vec<syn::Attribute>, src_loc: &Option<SrcLoc>) {
     if let Some(src_loc) = src_loc.as_ref() {
         let loc_str = format!("{}:{}", src_loc.line, src_loc.column);
         let meta = mk().meta_namevalue(vec!["c2rust", "src_loc"], loc_str);
-        let prepared = mk().prepare_meta(meta);
-        let attr = mk().attribute(AttrStyle::Outer, prepared.path, prepared.tokens);
+        let attr = mk().attribute(AttrStyle::Outer, meta);
         attrs.push(attr);
     }
 }
@@ -1387,7 +1371,6 @@ fn item_attrs(item: &mut Item) -> Option<&mut Vec<syn::Attribute>> {
         ForeignMod(ItemForeignMod { ref mut attrs, .. }) => attrs,
         Impl(ItemImpl { ref mut attrs, .. }) => attrs,
         Macro(ItemMacro { ref mut attrs, .. }) => attrs,
-        Macro2(ItemMacro2 { ref mut attrs, .. }) => attrs,
         Mod(ItemMod { ref mut attrs, .. }) => attrs,
         Static(ItemStatic { ref mut attrs, .. }) => attrs,
         Struct(ItemStruct { ref mut attrs, .. }) => attrs,
@@ -1407,31 +1390,6 @@ pub(crate) fn unparen(expr: &Expr) -> &Expr {
         Expr::Paren(ExprParen { ref expr, .. }) => expr,
         _ => expr,
     }
-}
-
-/// This represents all of the ways a C expression can be used in a C program. Making this
-/// distinction is important for:
-///
-///   * not generating a bunch of unnecessary code, e.g., the expression `p = 1` evaluates `1`,
-///     but when used in a statement like `p = 1;`, we don't care about this, so we can translate
-///     to the Rust `p = 1` (even if it evaluates to the unit type). We get this behaviour by
-///     translating expression statements using `ExprUse::Unused`.
-///
-///   * handling `volatile` properly, e.g., suppose `volatile int n, *p;` and `int x;`.
-///     Then, `x = n` is a volatile read of `n` but `p = &n` is not. We get this behaviour
-///     by translating the argument of `&` using `ExprUse::LValue` and the right hand side of `=`
-///
-///     using `ExprUse::RValue`.
-///
-///   * handling `volatile` properly
-///
-/// See `Translation::convert_expr` for more details.
-#[derive(Copy, Clone, Debug, PartialOrd, PartialEq, Ord, Eq)]
-pub enum ExprUse {
-    /// expressions interesting only for their side-effects - we don't care about their values
-    Unused,
-    /// expressions used for their values
-    Used,
 }
 
 /// Declarations can be converted into a normal item, or into a foreign item.
@@ -1504,10 +1462,7 @@ mod refactor_format {
             Some(LitStrOrByteStr::ByteStr(b)) => std::str::from_utf8(b.value().as_slice())
                 .unwrap()
                 .to_owned(),
-            None => panic!(
-                "TENJIN expected format string to be a string literal: {:?}",
-                ep
-            ),
+            None => panic!("TENJIN expected format string to be a string literal: {ep:?}"),
         };
         build_format_macro_from(
             x,
@@ -1723,7 +1678,7 @@ mod refactor_format {
                 CastType::Int(Length::Size) => vec!["libc", "ssize_t"],
                 CastType::Uint(Length::Size) => vec!["libc", "size_t"],
                 CastType::Int(Length::PtrDiff) => vec!["libc", "ptrdiff_t"],
-                _ => panic!("invalid length modifier type: {:?}", self),
+                _ => panic!("invalid length modifier type: {self:?}"),
             }
         }
     }
@@ -2117,7 +2072,7 @@ impl<'c> Translation<'c> {
             mod_names: RefCell::new(IndexMap::new()),
             main_file,
             extern_crates: RefCell::new(IndexSet::new()),
-            cur_file: RefCell::new(None),
+            cur_file: Default::default(),
             parent_fn_map,
         }
     }
@@ -2127,11 +2082,7 @@ impl<'c> Translation<'c> {
     }
 
     pub fn cur_file(&self) -> FileId {
-        if let Some(cur_file) = *self.cur_file.borrow() {
-            cur_file
-        } else {
-            self.main_file
-        }
+        self.cur_file.get().unwrap_or(self.main_file)
     }
 
     fn with_cur_file_item_store<F, T>(&self, f: F) -> T
@@ -2159,7 +2110,6 @@ impl<'c> Translation<'c> {
                 "non_camel_case_types",
                 "non_snake_case",
                 "dead_code",
-                "mutable_transmutes",
                 "unused_mut",
                 "unused_assignments",
             ],
@@ -2396,37 +2346,26 @@ impl<'c> Translation<'c> {
 
         let static_attributes = mk()
             .single_attr("used")
-            .meta_item_attr(
-                AttrStyle::Outer,
-                mk().meta_list(
-                    "cfg_attr",
-                    vec![
-                        mk().nested_meta_item(mk().meta_namevalue("target_os", "linux")),
-                        mk().nested_meta_item(mk().meta_namevalue("link_section", ".init_array")),
-                    ],
-                ),
+            .call_attr(
+                "cfg_attr",
+                vec![
+                    mk().meta_namevalue("target_os", "linux"),
+                    mk().meta_namevalue("link_section", ".init_array"),
+                ],
             )
-            .meta_item_attr(
-                AttrStyle::Outer,
-                mk().meta_list(
-                    "cfg_attr",
-                    vec![
-                        mk().nested_meta_item(mk().meta_namevalue("target_os", "windows")),
-                        mk().nested_meta_item(mk().meta_namevalue("link_section", ".CRT$XIB")),
-                    ],
-                ),
+            .call_attr(
+                "cfg_attr",
+                vec![
+                    mk().meta_namevalue("target_os", "windows"),
+                    mk().meta_namevalue("link_section", ".CRT$XIB"),
+                ],
             )
-            .meta_item_attr(
-                AttrStyle::Outer,
-                mk().meta_list(
-                    "cfg_attr",
-                    vec![
-                        mk().nested_meta_item(mk().meta_namevalue("target_os", "macos")),
-                        mk().nested_meta_item(
-                            mk().meta_namevalue("link_section", "__DATA,__mod_init_func"),
-                        ),
-                    ],
-                ),
+            .call_attr(
+                "cfg_attr",
+                vec![
+                    mk().meta_namevalue("target_os", "macos"),
+                    mk().meta_namevalue("link_section", "__DATA,__mod_init_func"),
+                ],
             );
         let static_array_size = mk().lit_expr(mk().int_unsuffixed_lit(1));
         let static_ty = mk().array_ty(
@@ -2620,7 +2559,7 @@ impl<'c> Translation<'c> {
                 let lifetimes: HashSet<Lifetime> =
                     field_entries.iter().filter_map(field_lifetime).collect();
 
-                let mut reprs = vec![simple_metaitem("C")];
+                let mut reprs = vec![mk().meta_path("C")];
                 let max_field_alignment = if is_packed {
                     // `__attribute__((packed))` forces a max alignment of 1,
                     // overriding `#pragma pack`; this is also what clang does
@@ -2629,8 +2568,8 @@ impl<'c> Translation<'c> {
                     max_field_alignment
                 };
                 match max_field_alignment {
-                    Some(1) => reprs.push(simple_metaitem("packed")),
-                    Some(mf) if mf > 1 => reprs.push(int_arg_metaitem("packed", mf as u128)),
+                    Some(1) => reprs.push(mk().meta_path("packed")),
+                    Some(mf) if mf > 1 => reprs.push(mk().meta_list("packed", vec![mf])),
                     _ => {}
                 }
 
@@ -2652,28 +2591,27 @@ impl<'c> Translation<'c> {
                     assert!(self.ast_context.has_inner_struct_decl(decl_id));
                     let inner_name = self.resolve_decl_inner_name(decl_id);
                     let inner_ty = mk().path_ty(vec![inner_name.clone()]);
-                    let inner_repr_attr = mk().meta_list("repr", reprs);
                     let inner_struct = mk()
                         .span(span)
                         .pub_()
                         .call_attr("derive", derives)
-                        .meta_item_attr(AttrStyle::Outer, inner_repr_attr)
+                        .call_attr("repr", reprs)
                         .struct_item(inner_name.clone(), field_entries, false);
 
-                    // https://github.com/rust-lang/rust/issues/33626
                     let outer_ty = mk().path_ty(vec![name.clone()]);
-                    let outer_reprs = vec![
-                        simple_metaitem("C"),
-                        int_arg_metaitem("align", alignment as u128),
-                        // TODO: copy others from `reprs` above
-                    ];
-                    let repr_attr = mk().meta_list("repr", outer_reprs);
                     let outer_field = mk().pub_().enum_field(mk().ident_ty(inner_name));
                     let outer_struct = mk()
                         .span(span)
                         .pub_()
                         .call_attr("derive", vec!["Copy", "Clone"])
-                        .meta_item_attr(AttrStyle::Outer, repr_attr)
+                        .call_attr(
+                            "repr",
+                            vec![
+                                mk().meta_path("C"),
+                                mk().meta_list("align", vec![alignment]),
+                                // TODO: copy others from `reprs` above
+                            ],
+                        )
                         .struct_item(name, vec![outer_field], true);
 
                     // Emit `const X_PADDING: usize = size_of(Outer) - size_of(Inner);`
@@ -2683,8 +2621,8 @@ impl<'c> Translation<'c> {
                         .resolve_decl_suffix_name(decl_id, PADDING_SUFFIX)
                         .to_owned();
                     let padding_ty = mk().path_ty(vec!["usize"]);
-                    let outer_size = self.compute_size_of_ty(outer_ty)?.to_expr();
-                    let inner_size = self.compute_size_of_ty(inner_ty)?.to_expr();
+                    let outer_size = self.mk_size_of_ty_expr(outer_ty)?.to_expr();
+                    let inner_size = self.mk_size_of_ty_expr(inner_ty)?.to_expr();
                     let padding_value =
                         mk().binary_expr(BinOp::Sub(Default::default()), outer_size, inner_size);
                     let padding_const = mk()
@@ -2696,13 +2634,11 @@ impl<'c> Translation<'c> {
                     Ok(ConvertedDecl::Items(structs))
                 } else {
                     assert!(!self.ast_context.has_inner_struct_decl(decl_id));
-                    let repr_attr = mk().meta_list("repr", reprs);
-
                     let mut mk_ = mk()
                         .span(span)
                         .pub_()
                         .call_attr("derive", derives)
-                        .meta_item_attr(AttrStyle::Outer, repr_attr);
+                        .call_attr("repr", reprs);
 
                     if contains_va_list {
                         mk_ = mk_.generic_over(mk().lt_param(mk().ident("a")))
@@ -2807,7 +2743,7 @@ impl<'c> Translation<'c> {
                     .borrow()
                     .resolve_decl_name(enum_id)
                     .expect("Enums should already be renamed");
-                if let Some(cur_file) = *self.cur_file.borrow() {
+                if let Some(cur_file) = self.cur_file.get() {
                     self.add_import(cur_file, enum_id, &enum_name);
                 }
                 let ty = mk().path_ty(mk().path(vec![enum_name]));
@@ -2975,16 +2911,16 @@ impl<'c> Translation<'c> {
                 let guided_mutbl = self.parsed_guidance.borrow().query_decl_mut(self, decl_id);
                 let ConvertedVariable { ty, mutbl, init: _ } =
                     self.convert_variable(ctx.static_(), None, typ, &guided_type, guided_mutbl)?;
-                // When putting extern statics into submodules, they need to be public to be accessible
-                let visibility = if self.tcfg.reorganize_definitions {
-                    "pub"
-                } else {
-                    ""
-                };
+
                 let mut extern_item = mk_linkage(true, &new_name, ident)
                     .span(span)
-                    .set_mutbl(mutbl)
-                    .vis(visibility);
+                    .set_mutbl(mutbl);
+
+                // When putting extern statics into submodules, they need to be public to be accessible
+                if self.tcfg.reorganize_definitions {
+                    extern_item = extern_item.pub_();
+                };
+
                 if has_thread_duration {
                     extern_item = extern_item.single_attr("thread_local");
                 }
@@ -3086,7 +3022,7 @@ impl<'c> Translation<'c> {
 
                 let mut static_def = if is_externally_visible {
                     mk_linkage(false, new_name, ident).pub_().extern_("C")
-                } else if self.cur_file.borrow().is_some() {
+                } else if self.cur_file.get().is_some() {
                     mk().pub_()
                 } else {
                     mk()
@@ -3138,7 +3074,7 @@ impl<'c> Translation<'c> {
                     self.ast_context[decl_id]
                 );
 
-                let maybe_replacement = self.canonical_macro_replacement(
+                let maybe_replacement = self.recreate_const_macro_from_expansions(
                     ctx.set_const(true).set_expanding_macro(decl_id),
                     &self.ast_context.macro_expansions[&decl_id],
                 );
@@ -3256,23 +3192,60 @@ impl<'c> Translation<'c> {
         derives
     }
 
-    fn canonical_macro_replacement(
+    /// Determine if we're able to convert this const macro expansion.
+    fn can_convert_const_macro_expansion(&self, expr_id: CExprId) -> TranslationResult<()> {
+        match self.tcfg.translate_const_macros {
+            TranslateMacros::None => Err(format_err!("translate_const_macros is None"))?,
+            TranslateMacros::Conservative => {
+                // TODO We still allow `CExprKind::ExplicitCast`s
+                // even though they're broken (see #853).
+
+                // This is a top-down, pessimistic/conservative analysis.
+                // This is somewhat duplicative of `fn convert_expr` simply checking
+                // `ExprContext::is_const` and returning errors where the expr is not `const`,
+                // which is an non-conservative analysis scattered across all of the `fn convert_*`s.
+                // That's what's done for `TranslateMacros::Experimental`,
+                // as opposed to the conservative analysis done here for `TranslateMacros::Conservative`.
+                // When the conservative analysis is incomplete,
+                // it won't translate the macro, but the result will compile.
+                // But when the non-conservative analysis is incomplete,
+                // the resulting code may not transpile,
+                // which is why the conservative analysis is used for `TranslateMacros::Conservative`.
+                if !self.ast_context.is_const_expr(expr_id) {
+                    Err(format_err!("non-const expr {expr_id:?}"))?;
+                }
+                Ok(())
+            }
+            TranslateMacros::Experimental => Ok(()),
+        }
+    }
+
+    /// Given all of the expansions of a const macro,
+    /// try to recreate a Rust `const` translation
+    /// that is equivalent to every expansion.
+    ///
+    /// This may fail, in which case we simply don't emit a `const`
+    /// and leave all of the expansions as fully inlined
+    /// instead of referencing this `const`.
+    ///
+    /// For example, if the types of the macro expansion have no common type,
+    /// which is required for a Rust `const` but not a C const macro,
+    /// this can fail.  Or there could just be a feature we don't yet support.
+    fn recreate_const_macro_from_expansions(
         &self,
         ctx: ExprContext,
-        replacements: &[CExprId],
+        expansions: &[CExprId],
     ) -> TranslationResult<(Box<Expr>, CTypeId)> {
-        let (val, ty) = replacements
+        let (val, ty) = expansions
             .iter()
-            .try_fold::<Option<(WithStmts<Box<Expr>>, CTypeId)>, _, _>(None, |canonical, id| {
-                let ty = self.ast_context[*id]
+            .try_fold::<Option<(WithStmts<Box<Expr>>, CTypeId)>, _, _>(None, |canonical, &id| {
+                self.can_convert_const_macro_expansion(id)?;
+
+                let ty = self.ast_context[id]
                     .kind
                     .get_type()
                     .ok_or_else(|| format_err!("Invalid expression type"))?;
-                let (expr_id, ty) = self
-                    .ast_context
-                    .resolve_expr_type_id(*id)
-                    .unwrap_or((*id, ty));
-                let expr = self.convert_expr(ctx, expr_id)?;
+                let expr = self.convert_expr(ctx, id, None)?;
 
                 // Join ty and cur_ty to the smaller of the two types. If the
                 // types are not cast-compatible, abort the fold.
@@ -3367,8 +3340,7 @@ impl<'c> Translation<'c> {
                         .insert(decl_id, var.as_str())
                         .unwrap_or_else(|| {
                             panic!(
-                                "Failed to insert argument '{}' while converting '{}'",
-                                var, name
+                                "Failed to insert argument '{var}' while converting '{name}'"
                             )
                         });
 
@@ -3378,30 +3350,25 @@ impl<'c> Translation<'c> {
                 args.push(mk().arg(ty, pat));
             }
 
-            if is_variadic {
+            let variadic = if is_variadic {
                 // function definitions
-                if let Some(body_id) = body {
-                    let arg_va_list_name = self.register_va_decls(body_id);
-
+                let mut builder = mk();
+                let arg_va_list_name = if let Some(body_id) = body {
                     // FIXME: detect mutability requirements.
-                    let pat = mk()
-                        .set_mutbl(Mutability::Mutable)
-                        .ident_pat(arg_va_list_name);
-                    args.push(mk().arg(mk().cvar_args_ty(), pat));
+                    builder = builder.set_mutbl(Mutability::Mutable);
+                    Some(self.register_va_decls(body_id))
                 } else {
-                    // function declarations
-                    args.push(mk().arg(mk().cvar_args_ty(), mk().wild_pat()));
-                }
-            }
+                    None
+                };
+
+                Some(builder.variadic_arg(arg_va_list_name))
+            } else {
+                None
+            };
 
             let ret = self.convert_function_return_type(name, return_type)?;
 
-            let decl = mk().fn_decl(
-                new_name,
-                args,
-                is_variadic.then(|| mk().variadic_arg(vec![])),
-                ret,
-            );
+            let decl = mk().fn_decl(new_name, args, variadic, ret);
 
             if let Some(body) = body {
                 // Translating an actual function
@@ -3430,7 +3397,36 @@ impl<'c> Translation<'c> {
                     CStmtKind::Compound(ref stmts) => stmts,
                     _ => panic!("function body expects to be a compound statement"),
                 };
-                body_stmts.append(&mut self.convert_function_body(ctx, name, body_ids, ret)?);
+                let mut converted_body =
+                    self.convert_function_body(ctx, name, body_ids, return_type, ret)?;
+
+                // If `alloca` was used in the function body, include a variable to hold the
+                // allocations.
+                if let Some(alloca_allocations_name) = self
+                    .function_context
+                    .borrow_mut()
+                    .alloca_allocations_name
+                    .take()
+                {
+                    // let mut alloca_allocations: Vec<Vec<u8>> = Vec::new();
+                    let inner_vec = mk().path_ty(vec![mk().path_segment_with_args(
+                        "Vec",
+                        mk().angle_bracketed_args(vec![mk().ident_ty("u8")]),
+                    )]);
+                    let outer_vec = mk().path_ty(vec![mk().path_segment_with_args(
+                        "Vec",
+                        mk().angle_bracketed_args(vec![inner_vec]),
+                    )]);
+                    let alloca_allocations_stmt = mk().local_stmt(Box::new(mk().local(
+                        mk().mutbl().ident_pat(alloca_allocations_name),
+                        Some(outer_vec),
+                        Some(mk().call_expr(mk().path_expr(vec!["Vec", "new"]), vec![])),
+                    )));
+
+                    body_stmts.push(alloca_allocations_stmt);
+                }
+
+                body_stmts.append(&mut converted_body);
                 let mut block = stmts_block(body_stmts);
                 if let Some(span) = self.get_span(SomeId::Stmt(body)) {
                     block.set_span(span);
@@ -3445,11 +3441,11 @@ impl<'c> Translation<'c> {
                 let mut mk_ = if is_main {
                     mk()
                 } else if (is_global && !is_inline) || is_extern_inline {
-                    mk_linkage(false, new_name, name).pub_()
-                } else if self.cur_file.borrow().is_some() {
-                    mk().pub_()
+                    mk_linkage(false, new_name, name).extern_("C").pub_()
+                } else if self.cur_file.get().is_some() {
+                    mk().extern_("C").pub_()
                 } else {
-                    mk()
+                    mk().extern_("C")
                 };
 
                 // XREF:TENJIN-GUIDANCE-STRAWMAN
@@ -3502,15 +3498,12 @@ impl<'c> Translation<'c> {
                 ))
             } else {
                 // Translating an extern function declaration
+                let mut mk_ = mk_linkage(true, new_name, name).span(span);
 
                 // When putting extern fns into submodules, they need to be public to be accessible
-                let visibility = if self.tcfg.reorganize_definitions {
-                    "pub"
-                } else {
-                    ""
+                if self.tcfg.reorganize_definitions {
+                    mk_ = mk_.pub_();
                 };
-
-                let mut mk_ = mk_linkage(true, new_name, name).span(span).vis(visibility);
 
                 for attr in attrs {
                     mk_ = match attr {
@@ -3563,7 +3556,7 @@ impl<'c> Translation<'c> {
         if self.tcfg.dump_structures {
             eprintln!("Relooped structures:");
             for s in &relooped {
-                eprintln!("  {:#?}", s);
+                eprintln!("  {s:#?}");
             }
         }
 
@@ -3632,11 +3625,12 @@ impl<'c> Translation<'c> {
         ctx: ExprContext,
         name: &str,
         body_ids: &[CStmtId],
+        ret_ty: Option<CQualTypeId>,
         ret: cfg::ImplicitReturnType,
     ) -> TranslationResult<Vec<Stmt>> {
         // Function body scope
         self.with_scope(|| {
-            let (graph, store) = cfg::Cfg::from_stmts(self, ctx, body_ids, ret)?;
+            let (graph, store) = cfg::Cfg::from_stmts(self, ctx, body_ids, ret, ret_ty)?;
             self.convert_cfg(name, graph, store, IndexSet::new(), true)
         })
     }
@@ -3661,6 +3655,7 @@ impl<'c> Translation<'c> {
                 }
             }
 
+            // `pointer::is_null` became stably const in Rust 1.84.
             let is_null = mk().method_call_expr(e, "is_null", vec![]);
             if negated {
                 mk().unary_expr(UnOp::Not(Default::default()), is_null)
@@ -3671,24 +3666,26 @@ impl<'c> Translation<'c> {
 
         let null_pointer_case =
             |negated: bool, ptr: CExprId| -> TranslationResult<WithStmts<Box<Expr>>> {
-                let val = self.convert_expr(ctx.used().decay_ref(), ptr)?;
+                let val = self.convert_expr(ctx.used().decay_ref(), ptr, None)?;
                 let ptr_type = self.ast_context[ptr]
                     .kind
                     .get_type()
                     .ok_or_else(|| format_err!("bad pointer type for condition"))?;
-                Ok(val.map(|e| {
-                    if self.ast_context.is_function_pointer(ptr_type) {
-                        if negated {
-                            mk().method_call_expr(e, "is_some", vec![])
+                val.and_then(|e| {
+                    Ok(WithStmts::new_val(
+                        if self.ast_context.is_function_pointer(ptr_type) {
+                            if negated {
+                                mk().method_call_expr(e, "is_some", vec![])
+                            } else {
+                                mk().method_call_expr(e, "is_none", vec![])
+                            }
                         } else {
-                            mk().method_call_expr(e, "is_none", vec![])
-                        }
-                    } else {
-                        let mb_guided_type =
-                            self.parsed_guidance.borrow_mut().query_expr_type(self, ptr);
-                        null_check_with_guidance(e, negated, mb_guided_type)
-                    }
-                }))
+                            let mb_guided_type =
+                                self.parsed_guidance.borrow_mut().query_expr_type(self, ptr);
+                            null_check_with_guidance(e, negated, mb_guided_type)
+                        },
+                    ))
+                })
             };
 
         match self.ast_context[cond_id].kind {
@@ -3725,8 +3722,8 @@ impl<'c> Translation<'c> {
                 // in https://github.com/rust-lang/rust/issues/53772, you cant compare a reference (lhs) to
                 // a ptr (rhs) (even though the reverse works!). We could also be smarter here and just
                 // specify Yes for that particular case, given enough analysis.
-                let val = self.convert_expr(ctx.used().decay_ref(), cond_id)?;
-                Ok(val.map(|e| self.match_bool(target, ty_id, e)))
+                let val = self.convert_expr(ctx.used().decay_ref(), cond_id, None)?;
+                val.result_map(|e| self.match_bool(ctx, target, ty_id, e))
             }
         }
     }
@@ -3844,11 +3841,11 @@ impl<'c> Translation<'c> {
                     .renamer
                     .borrow_mut()
                     .insert(decl_id, ident)
-                    .unwrap_or_else(|| panic!("Failed to insert variable '{}'", ident));
+                    .unwrap_or_else(|| panic!("Failed to insert variable '{ident}'"));
 
                 if self.ast_context.is_va_list(typ.ctype) {
                     // translate `va_list` variables to `VaListImpl`s and omit the initializer.
-                    let pat_mut = mk().set_mutbl("mut").ident_pat(rust_name);
+                    let pat_mut = mk().mutbl().ident_pat(rust_name);
                     let ty = {
                         let path = vec!["core", "ffi", "VaListImpl"];
                         mk().path_ty(mk().abs_path(path))
@@ -3881,7 +3878,15 @@ impl<'c> Translation<'c> {
                 );
 
                 stmts.append(init.stmts_mut());
-                let init = init.into_value();
+                // A `const` context is not "already unsafe" the way code within a `fn` is
+                // (since we translate all `fn`s as `unsafe`). Therefore, in `const` contexts,
+                // expose any underlying unsafety in the initializer with an `unsafe` block.
+                let init = if ctx.is_const {
+                    init.to_unsafe_pure_expr()
+                        .expect("init should not have any statements")
+                } else {
+                    init.into_value()
+                };
 
                 log::trace!(
                     "TENJIN TRACE: convert decl var line {}, stmts+init len = {}",
@@ -3903,13 +3908,8 @@ impl<'c> Translation<'c> {
                 }
                 .expect("Expected decl initializer to not have any statements");
 
-                let hack_disable_type_annotation = rust_name == "s1" || rust_name == "s2";
-
-                let mutspec = if hack_disable_type_annotation {
-                    Mutability::Immutable
-                } else {
-                    mutbl
-                };
+                let mut_guidance = self.parsed_guidance.borrow().query_decl_mut(self, decl_id);
+                let mutspec = mut_guidance.unwrap_or(mutbl);
                 let pat_mut = mk().set_mutbl(mutspec).ident_pat(rust_name.clone());
                 let local_mut = mk().local(pat_mut, Some(ty.clone()), Some(zeroed));
                 if has_self_reference {
@@ -3936,9 +3936,8 @@ impl<'c> Translation<'c> {
 
                     let pat = mk().set_mutbl(mutbl).ident_pat(rust_name.clone());
 
-                    let type_annotation = if hack_disable_type_annotation
-                        || (self.tcfg.reduce_type_annotations
-                            && !self.should_assign_type_annotation(typ.ctype, initializer))
+                    let type_annotation = if self.tcfg.reduce_type_annotations
+                        && !self.should_assign_type_annotation(typ.ctype, initializer)
                     {
                         None
                     } else {
@@ -4045,7 +4044,7 @@ impl<'c> Translation<'c> {
                             return true;
                         }
 
-                        // None assignments don't prove enough type information unless there are follow-up assignments
+                        // None assignments don't provide enough type information unless there are follow-up assignments
                         if let Some(CExprKind::ImplicitCast(_, _, CastKind::NullToPointer, _, _)) =
                             initializer_kind
                         {
@@ -4110,7 +4109,7 @@ impl<'c> Translation<'c> {
         guided_mutbl: Option<Mutability>,
     ) -> TranslationResult<ConvertedVariable> {
         let init = match initializer {
-            Some(x) => self.convert_expr_guided(ctx.used(), x, guided_type),
+            Some(x) => self.convert_expr_guided(ctx.used(), x, Some(typ), guided_type),
             None => self.implicit_default_expr_guided(guided_type, typ.ctype, ctx.is_static),
         };
 
@@ -4152,7 +4151,7 @@ impl<'c> Translation<'c> {
     }
 
     fn convert_type(&self, type_id: CTypeId) -> TranslationResult<Box<Type>> {
-        if let Some(cur_file) = *self.cur_file.borrow() {
+        if let Some(cur_file) = self.cur_file.get() {
             self.import_type(type_id, cur_file);
         }
         self.type_converter.borrow_mut().convert(
@@ -4169,10 +4168,10 @@ impl<'c> Translation<'c> {
             return Ok(mk().path_expr(vec!["None"]));
         }
 
-        let pointee = match self.ast_context.resolve_type(type_id).kind {
-            CTypeKind::Pointer(pointee) => pointee,
-            _ => return Err(TranslationError::generic("null_ptr requires a pointer")),
-        };
+        let pointee = self
+            .ast_context
+            .get_pointee_qual_type(type_id)
+            .ok_or(TranslationError::generic("null_ptr requires a pointer"))?;
         let ty = self.convert_type(type_id)?;
         let mut zero = mk().lit_expr(mk().int_unsuffixed_lit(0));
         if is_static && !pointee.qualifiers.is_const {
@@ -4315,24 +4314,26 @@ impl<'c> Translation<'c> {
                     type_id = elt;
 
                     // Convert this expression
-                    let expr = self.convert_expr(ctx.used(), expr_id)?.and_then(|expr| {
-                        let name = self
-                            .renamer
-                            .borrow_mut()
-                            .insert(CDeclId(expr_id.0), "vla")
-                            .unwrap(); // try using declref name?
-                                       // TODO: store the name corresponding to expr_id
+                    let expr = self
+                        .convert_expr(ctx.used(), expr_id, None)?
+                        .and_then(|expr| {
+                            let name = self
+                                .renamer
+                                .borrow_mut()
+                                .insert(CDeclId(expr_id.0), "vla")
+                                .unwrap(); // try using declref name?
+                                           // TODO: store the name corresponding to expr_id
 
-                        let local = mk().local(
-                            mk().ident_pat(name),
-                            None,
-                            Some(mk().cast_expr(expr, mk().path_ty(vec!["usize"]))),
-                        );
+                            let local = mk().local(
+                                mk().ident_pat(name),
+                                None,
+                                Some(mk().cast_expr(expr, mk().path_ty(vec!["usize"]))),
+                            );
 
-                        let res: TranslationResult<WithStmts<()>> =
-                            Ok(WithStmts::new(vec![mk().local_stmt(Box::new(local))], ()));
-                        res
-                    })?;
+                            let res: TranslationResult<WithStmts<()>> =
+                                Ok(WithStmts::new(vec![mk().local_stmt(Box::new(local))], ()));
+                            res
+                        })?;
 
                     stmts.extend(expr.into_stmts());
                 }
@@ -4349,13 +4350,14 @@ impl<'c> Translation<'c> {
         &self,
         ctx: ExprContext,
         type_id: CTypeId,
+        override_ty: Option<CQualTypeId>,
     ) -> TranslationResult<WithStmts<Box<Expr>>> {
         if let CTypeKind::VariableArray(elts, len) = self.ast_context.resolve_type(type_id).kind {
             let len = len.expect("Sizeof a VLA type with count expression omitted");
 
-            let elts = self.compute_size_of_type(ctx, elts)?;
+            let elts = self.compute_size_of_type(ctx, elts, override_ty)?;
             return elts.and_then(|lhs| {
-                let len = self.convert_expr(ctx.used().not_static(), len)?;
+                let len = self.convert_expr(ctx.used().not_static(), len, override_ty)?;
                 Ok(len.map(|len| {
                     let rhs = cast_int(len, "usize", true);
                     mk().binary_expr(BinOp::Mul(Default::default()), lhs, rhs)
@@ -4363,16 +4365,27 @@ impl<'c> Translation<'c> {
             });
         }
         let ty = self.convert_type(type_id)?;
-        self.compute_size_of_ty(ty)
+        let mut result = self.mk_size_of_ty_expr(ty);
+        // cast to expected ty if one is known
+        if let Some(expected_ty) = override_ty {
+            trace!(
+                "Converting result of sizeof to {:?}",
+                self.ast_context.resolve_type(expected_ty.ctype)
+            );
+            let result_ty = self.convert_type(expected_ty.ctype)?;
+            result = result.map(|x| x.map(|x| mk().cast_expr(x, result_ty)));
+        }
+        result
     }
 
-    fn compute_size_of_ty(&self, ty: Box<Type>) -> TranslationResult<WithStmts<Box<Expr>>> {
+    fn mk_size_of_ty_expr(&self, ty: Box<Type>) -> TranslationResult<WithStmts<Box<Expr>>> {
         match *ty {
             Type::Array(ta) if tenjin::is_known_size_1_type(&ta.elem) => {
                 return Ok(WithStmts::new_val(Box::new(ta.len)));
             }
             _ => {}
         }
+
         let name = "size_of";
         let params = mk().angle_bracketed_args(vec![ty]);
         let path = vec![
@@ -4459,16 +4472,36 @@ impl<'c> Translation<'c> {
         None
     }
 
-    // Fixing this would require major refactors for marginal benefit.
-    #[allow(clippy::vec_box)]
+    /// Convert multiple expressions (while collecting a context of statements) given either all or
+    /// none of their expected types
+    #[allow(clippy::vec_box/*, reason = "not worth a substantial refactor"*/)]
     fn convert_exprs(
         &self,
         ctx: ExprContext,
         exprs: &[CExprId],
+        arg_tys: Option<&[CQualTypeId]>,
+    ) -> TranslationResult<WithStmts<Vec<Box<Expr>>>> {
+        assert!(arg_tys.map(|tys| tys.len() == exprs.len()).unwrap_or(true));
+        exprs
+            .iter()
+            .enumerate()
+            .map(|(n, arg)| self.convert_expr(ctx, *arg, arg_tys.map(|tys| tys[n])))
+            .collect()
+    }
+
+    /// Variant of `convert_exprs` for when only a prefix of the expression types are known due to
+    /// the relevant signature being varargs
+    #[allow(clippy::vec_box/*, reason = "not worth a substantial refactor"*/)]
+    fn convert_exprs_partial(
+        &self,
+        ctx: ExprContext,
+        exprs: &[CExprId],
+        arg_tys: &[CQualTypeId],
     ) -> TranslationResult<WithStmts<Vec<Box<Expr>>>> {
         exprs
             .iter()
-            .map(|arg| self.convert_expr(ctx, *arg))
+            .enumerate()
+            .map(|(n, arg)| self.convert_expr(ctx, *arg, arg_tys.get(n).copied()))
             .collect()
     }
 
@@ -4478,47 +4511,53 @@ impl<'c> Translation<'c> {
         &self,
         ctx: ExprContext,
         exprs: &[CExprId],
-        mut arg_guidances: Vec<Option<tenjin::GuidedType>>,
+        arg_tys: Option<&[CQualTypeId]>,
+        arg_guidances: Vec<Option<tenjin::GuidedType>>,
     ) -> TranslationResult<WithStmts<Vec<Box<Expr>>>> {
         // arg_guidances, which is based on the called function signature,
         // may be shorter than exprs, e.g. for variadic functions.
-        // If so, pad it out.
-        while arg_guidances.len() < exprs.len() {
-            arg_guidances.push(None);
-        }
-        // If arg_guidances is longer than exprs, truncate it.
-        // This indicates code which supplies too few arguments to a function.
-        while arg_guidances.len() > exprs.len() {
-            arg_guidances.pop();
-        }
+        // It may also be too long, for call sites which supply too few exprs.
         exprs
             .iter()
-            .zip_eq(arg_guidances)
-            .map(|(arg, guidance)| self.convert_expr_guided(ctx, *arg, &guidance))
+            .enumerate()
+            .map(|(n, arg)| {
+                self.convert_expr_guided(
+                    ctx,
+                    *arg,
+                    arg_tys.map(|tys| tys[n]),
+                    arg_guidances.get(n).unwrap_or(&None),
+                )
+            })
             .collect()
     }
 
     /// Translate a C expression into a Rust one, possibly collecting side-effecting statements
     /// to run before the expression.
     ///
-    /// The `use_` argument informs us how the C expression we are translating is used in the C
-    /// program. See `ExprUse` for more information.
+    /// `ctx.is_used()` informs us how the C expression we are translating is used in the C
+    /// program.
     ///
-    /// In the case that `use_` is unused, all side-effecting components will be in the
+    /// In the case that `ctx.is_unused()`, all side-effecting components will be in the
     /// `stmts` field of the output and it is expected that the `val` field of the output will be
     /// ignored.
+    ///
+    /// `override_ty` is the type expected by the surrounding expression context.
+    /// This can be different from the type of the AST node itself
+    /// and in many cases should override it.
     pub fn convert_expr(
         &self,
         ctx: ExprContext,
         expr_id: CExprId,
+        override_ty: Option<CQualTypeId>,
     ) -> TranslationResult<WithStmts<Box<Expr>>> {
-        self.convert_expr_guided(ctx, expr_id, &None)
+        self.convert_expr_guided(ctx, expr_id, override_ty, &None)
     }
 
     pub fn convert_expr_guided(
         &self,
         mut ctx: ExprContext,
         expr_id: CExprId,
+        override_ty: Option<CQualTypeId>,
         guided_type: &Option<tenjin::GuidedType>,
     ) -> TranslationResult<WithStmts<Box<Expr>>> {
         let Located {
@@ -4532,15 +4571,14 @@ impl<'c> Translation<'c> {
             self.ast_context[expr_id]
         );
 
-        if self.tcfg.translate_const_macros {
-            if let Some(converted) = self.convert_macro_expansion(ctx, expr_id)? {
-                return Ok(converted);
-            }
+        if let Some(converted) = self.convert_const_macro_expansion(ctx, expr_id, override_ty)? {
+            return Ok(converted);
         }
 
-        if self.tcfg.translate_fn_macros {
+        {
             let text = self.ast_context.macro_expansion_text.get(&expr_id);
-            if let Some(converted) = text.and_then(|text| self.convert_macro_invocation(ctx, text))
+            if let Some(converted) =
+                text.and_then(|text| self.convert_fn_macro_invocation(ctx, text))
             {
                 return Ok(converted);
             }
@@ -4567,10 +4605,10 @@ impl<'c> Translation<'c> {
             UnaryType(_ty, kind, opt_expr, arg_ty) => {
                 let result = match kind {
                     UnTypeOp::SizeOf => match opt_expr {
-                        None => self.compute_size_of_type(ctx, arg_ty.ctype)?,
+                        None => self.compute_size_of_type(ctx, arg_ty.ctype, override_ty)?,
                         Some(_) => {
                             let inner = self.variable_array_base_type(arg_ty.ctype);
-                            let inner_size = self.compute_size_of_type(ctx, inner)?;
+                            let inner_size = self.compute_size_of_type(ctx, inner, override_ty)?;
 
                             if let Some(sz) = self.compute_size_of_expr(arg_ty.ctype) {
                                 inner_size.map(|x| {
@@ -4586,14 +4624,14 @@ impl<'c> Translation<'c> {
                     UnTypeOp::PreferredAlignOf => self.compute_align_of_type(arg_ty.ctype, true)?,
                 };
 
-                Ok(result.map(|x| mk().cast_expr(x, mk().path_ty(vec!["libc", "c_ulong"]))))
+                Ok(result)
             }
 
-            ConstantExpr(_ty, child, value) => {
+            ConstantExpr(ty, child, value) => {
                 if let Some(constant) = value {
                     self.convert_constant(constant).map(WithStmts::new_val)
                 } else {
-                    self.convert_expr(ctx, child)
+                    self.convert_expr(ctx, child, Some(ty))
                 }
             }
 
@@ -4604,6 +4642,15 @@ impl<'c> Translation<'c> {
                     .ok_or_else(|| format_err!("Missing declref {:?}", decl_id))?
                     .kind;
                 if ctx.is_const {
+                    // TODO Determining which declarations have been declared within the scope of the const macro expr
+                    // vs. which are out-of-scope of the const macro is non-trivial,
+                    // so for now, we don't allow const macros referencing any declarations.
+                    return Err(format_translation_err!(
+                        self.ast_context.display_loc(src_loc),
+                        "Cannot yet refer to declarations in a const expr",
+                    ));
+
+                    #[allow(unreachable_code)] // TODO temporary (see above).
                     if let CDeclKind::Variable {
                         has_static_duration: true,
                         ..
@@ -4636,8 +4683,8 @@ impl<'c> Translation<'c> {
 
                 // Import the referenced global decl into our submodule
                 if self.tcfg.reorganize_definitions {
-                    if let Some(cur_file) = self.cur_file.borrow().as_ref() {
-                        self.add_import(*cur_file, decl_id, &rustname);
+                    if let Some(cur_file) = self.cur_file.get() {
+                        self.add_import(cur_file, decl_id, &rustname);
                         // match decl {
                         //     CDeclKind::Variable { is_defn: false, .. } => {}
                         //     _ => self.add_import(cur_file, decl_id, &rustname),
@@ -4685,13 +4732,26 @@ impl<'c> Translation<'c> {
                         if let Some(actual_ty) = actual_ty {
                             // If we're casting a concrete function to
                             // a K&R function pointer type, use transmute
-                            if let Some(cur_file) = *self.cur_file.borrow() {
+                            if let Some(cur_file) = self.cur_file.get() {
                                 self.import_type(qual_ty.ctype, cur_file);
                             }
                             val = transmute_expr(actual_ty, ty, val);
                             set_unsafe = true;
                         } else {
-                            val = mk().cast_expr(val, ty);
+                            let decl_kind = &self.ast_context[decl_id].kind;
+                            let kind_with_declared_args =
+                                self.ast_context.fn_decl_ty_with_declared_args(decl_kind);
+
+                            if let Some(ty) = self
+                                .ast_context
+                                .type_for_kind(&kind_with_declared_args)
+                                .map(CQualTypeId::new)
+                            {
+                                let ty = self.convert_type(ty.ctype)?;
+                                val = mk().cast_expr(val, ty);
+                            } else {
+                                val = mk().cast_expr(val, ty);
+                            }
                         }
                     }
                 }
@@ -4702,6 +4762,13 @@ impl<'c> Translation<'c> {
                     val = mk().method_call_expr(val, "as_mut_ptr", vec![]);
                 }
 
+                // if the context wants a different type, add a cast
+                if let Some(expected_ty) = override_ty {
+                    if expected_ty != qual_ty {
+                        val = mk().cast_expr(val, self.convert_type(expected_ty.ctype)?);
+                    }
+                }
+
                 let mut res = WithStmts::new_val(val);
                 res.merge_unsafe(set_unsafe);
                 Ok(res)
@@ -4709,7 +4776,7 @@ impl<'c> Translation<'c> {
 
             OffsetOf(ty, ref kind) => match kind {
                 OffsetOfKind::Constant(val) => Ok(WithStmts::new_val(self.mk_int_lit(
-                    ty,
+                    override_ty.unwrap_or(ty),
                     *val,
                     IntBase::Dec,
                 )?)),
@@ -4739,7 +4806,7 @@ impl<'c> Translation<'c> {
 
                     // Index Expr
                     let expr = self
-                        .convert_expr(ctx, *expr_id)?
+                        .convert_expr(ctx, *expr_id, None)?
                         .to_pure_expr()
                         .ok_or_else(|| {
                             format_err!("Expected Variable offsetof to be a side-effect free")
@@ -4766,14 +4833,16 @@ impl<'c> Translation<'c> {
                     ));
 
                     // Cast type
-                    let cast_ty = self.convert_type(ty.ctype)?;
+                    let cast_ty = self.convert_type(override_ty.unwrap_or(ty).ctype)?;
                     let cast_expr = mk().cast_expr(mac, cast_ty);
 
                     Ok(WithStmts::new_val(cast_expr))
                 }
             },
 
-            Literal(ty, ref kind) => self.convert_literal(ctx, ty, kind, guided_type),
+            Literal(ty, ref kind) => {
+                self.convert_literal(ctx, override_ty.unwrap_or(ty), kind, guided_type)
+            }
 
             ImplicitCast(ty, expr, kind, opt_field_id, _)
             | ExplicitCast(ty, expr, kind, opt_field_id, _) => {
@@ -4790,28 +4859,74 @@ impl<'c> Translation<'c> {
                     _ => {}
                 }
 
-                let source_ty = self.ast_context[expr]
+                let mut source_ty = self.ast_context[expr]
                     .kind
                     .get_qual_type()
                     .ok_or_else(|| format_err!("bad source type"))?;
 
                 let val = if is_explicit {
+                    // If we're casting a function, look for its declared ty to use as a more
+                    // precise source type. The AST node's type will not preserve typedef arg types
+                    // but the function's declaration will.
+                    if let Some(func_decl) = self.ast_context.fn_declref_decl(expr) {
+                        let kind_with_declared_args =
+                            self.ast_context.fn_decl_ty_with_declared_args(func_decl);
+                        let func_ty = self
+                            .ast_context
+                            .type_for_kind(&kind_with_declared_args)
+                            .unwrap_or_else(|| {
+                                panic!("no type for kind {kind_with_declared_args:?}")
+                            });
+                        let func_ptr_ty = self
+                            .ast_context
+                            .type_for_kind(&CTypeKind::Pointer(CQualTypeId::new(func_ty)))
+                            .unwrap_or_else(|| {
+                                panic!("no type for kind {kind_with_declared_args:?}")
+                            });
+
+                        source_ty = CQualTypeId::new(func_ptr_ty);
+                    }
+
                     let stmts = self.compute_variable_array_sizes(ctx, ty.ctype)?;
-                    let mut val = self.convert_expr(ctx, expr)?;
+                    let mut val = self.convert_expr(ctx, expr, None)?;
                     val.prepend_stmts(stmts);
                     val
                 } else {
-                    self.convert_expr_guided(ctx, expr, guided_type)?
+                    // In general, if we are casting the result of an expression, then the inner
+                    // expression should be translated to whatever type it normally would.
+                    // But for literals, if we don't absolutely have to cast, we would rather the
+                    // literal is translated according to the type we're expecting, and then we can
+                    // skip the cast entirely.
+                    if let (Some(ty), CExprKind::Literal(_ty, lit)) =
+                        (override_ty, &self.ast_context[expr].kind)
+                    {
+                        if self.literal_kind_matches_ty(lit, ty) {
+                            return self.convert_expr_guided(ctx, expr, override_ty, guided_type);
+                        }
+                    }
+                    // LValueToRValue casts don't actually change the type, so it still makes sense
+                    // to translate their inner expression with the expected type from outside the
+                    // cast.
+                    if kind == CastKind::LValueToRValue
+                        && Some(source_ty.ctype) != override_ty.map(|x| x.ctype)
+                    {
+                        self.convert_expr_guided(ctx, expr, override_ty, guided_type)?
+                    } else {
+                        self.convert_expr_guided(ctx, expr, None, guided_type)?
+                    }
                 };
                 // Shuffle Vector "function" builtins will add a cast to the output of the
                 // builtin call which is unnecessary for translation purposes
                 if self.casting_simd_builtin_call(expr, is_explicit, kind) {
                     return Ok(val);
                 }
+
+                let target_ty = override_ty.unwrap_or(ty);
+
                 self.convert_cast(
                     ctx,
                     source_ty,
-                    ty,
+                    target_ty,
                     val,
                     Some(expr),
                     Some(kind),
@@ -4822,10 +4937,10 @@ impl<'c> Translation<'c> {
             }
 
             Unary(type_id, op, arg, lrvalue) => {
-                self.convert_unary_operator(ctx, op, type_id, arg, lrvalue)
+                self.convert_unary_operator(ctx, op, override_ty.unwrap_or(type_id), arg, lrvalue)
             }
 
-            Conditional(_, cond, lhs, rhs) => {
+            Conditional(ty, cond, lhs, rhs) => {
                 if ctx.is_const {
                     return Err(format_translation_err!(
                         self.ast_context.display_loc(src_loc),
@@ -4834,8 +4949,8 @@ impl<'c> Translation<'c> {
                 }
                 let cond = self.convert_condition(ctx, true, cond)?;
 
-                let lhs = self.convert_expr(ctx, lhs)?;
-                let rhs = self.convert_expr(ctx, rhs)?;
+                let lhs = self.convert_expr(ctx, lhs, Some(override_ty.unwrap_or(ty)))?;
+                let rhs = self.convert_expr(ctx, rhs, Some(override_ty.unwrap_or(ty)))?;
 
                 if ctx.is_unused() {
                     let is_unsafe = lhs.is_unsafe() || rhs.is_unsafe();
@@ -4869,7 +4984,7 @@ impl<'c> Translation<'c> {
             BinaryConditional(ty, lhs, rhs) => {
                 if ctx.is_unused() {
                     let mut lhs = self.convert_condition(ctx, false, lhs)?;
-                    let rhs = self.convert_expr(ctx, rhs)?;
+                    let rhs = self.convert_expr(ctx, rhs, None)?;
                     lhs.merge_unsafe(rhs.is_unsafe());
 
                     lhs.and_then(|val| {
@@ -4889,11 +5004,11 @@ impl<'c> Translation<'c> {
                         |NamedReference {
                              rvalue: lhs_val, ..
                          }| {
-                            let cond = self.match_bool(true, ty.ctype, lhs_val.clone());
+                            let cond = self.match_bool(ctx, true, ty.ctype, lhs_val.clone())?;
                             let ite = mk().ifte_expr(
                                 cond,
                                 mk().block(vec![mk().expr_stmt(lhs_val)]),
-                                Some(self.convert_expr(ctx, rhs)?.to_expr()),
+                                Some(self.convert_expr(ctx, rhs, None)?.to_expr()),
                             );
                             Ok(ite)
                         },
@@ -4902,7 +5017,15 @@ impl<'c> Translation<'c> {
             }
 
             Binary(type_id, op, lhs, rhs, opt_lhs_type_id, opt_res_type_id) => self
-                .convert_binary_expr(ctx, type_id, op, lhs, rhs, opt_lhs_type_id, opt_res_type_id)
+                .convert_binary_expr(
+                    ctx,
+                    override_ty.unwrap_or(type_id),
+                    op,
+                    lhs,
+                    rhs,
+                    opt_lhs_type_id,
+                    opt_res_type_id,
+                )
                 .map_err(|e| e.add_loc(self.ast_context.display_loc(src_loc))),
 
             ArraySubscript(_, ref lhs, ref rhs, _) => {
@@ -4938,7 +5061,7 @@ impl<'c> Translation<'c> {
                     ));
                 }
 
-                let rhs = self.convert_expr(ctx.used(), *rhs)?;
+                let rhs = self.convert_expr(ctx.used(), *rhs, None)?;
                 rhs.and_then(|rhs| {
                     let simple_index_array = if ctx.needs_address() {
                         // We can't necessarily index into an array if we're using
@@ -4991,26 +5114,36 @@ impl<'c> Translation<'c> {
                             CTypeKind::ConstantArray(..) => None,
                             CTypeKind::IncompleteArray(..) => None,
                             CTypeKind::VariableArray(elt, _) => Some(elt),
-                            ref other => panic!("Unexpected array type {:?}", other),
+                            ref other => panic!("Unexpected array type {other:?}"),
                         };
 
-                        let lhs = self.convert_expr(ctx.used(), arr)?;
-                        Ok(lhs.map(|lhs| {
+                        let lhs = self.convert_expr(ctx.used(), arr, None)?;
+                        lhs.and_then(|lhs| {
                             // stmts.extend(lhs.stmts_mut());
                             // is_unsafe = is_unsafe || lhs.is_unsafe();
 
                             // Don't dereference the offset if we're still within the variable portion
                             if let Some(elt_type_id) = var_elt_type_id {
                                 let mul = self.compute_size_of_expr(elt_type_id);
-                                self.pointer_offset(Some(arr), lhs, rhs, mul, false, true)
+                                Ok(WithStmts::new_unsafe_val(self.pointer_offset(
+                                    Some(arr),
+                                    lhs,
+                                    rhs,
+                                    mul,
+                                    false,
+                                    true,
+                                )))
                             } else {
-                                mk().index_expr(lhs, cast_int(rhs, "usize", false))
+                                Ok(WithStmts::new_val(
+                                    mk().index_expr(lhs, cast_int(rhs, "usize", false)),
+                                ))
                             }
-                        }))
+                        })
                     } else {
                         // LHS must be ref decayed for the offset method call's self param
                         let arr = *lhs;
-                        let lhs = self.convert_expr(ctx.used().decay_ref(), arr)?;
+                        let mut lhs = self.convert_expr(ctx.used().decay_ref(), arr, None)?;
+                        lhs.set_unsafe(); // `pointer_offset` is unsafe.
                         lhs.result_map(|lhs| {
                             // stmts.extend(lhs.stmts_mut());
                             // is_unsafe = is_unsafe || lhs.is_unsafe();
@@ -5052,6 +5185,15 @@ impl<'c> Translation<'c> {
                     Some(CTypeKind::Function(_, _, is_variadic, _, _)) => *is_variadic,
                     _ => false,
                 };
+
+                let mut arg_tys = if let Some(CDeclKind::Function { parameters, .. }) =
+                    self.ast_context.fn_declref_decl(func_id)
+                {
+                    self.ast_context.tys_of_params(parameters)
+                } else {
+                    None
+                };
+
                 let func = match self.ast_context[func_id].kind {
                     // Direct function call
                     CExprKind::ImplicitCast(_, fexp, CastKind::FunctionToPointerDecay, _, _)
@@ -5059,7 +5201,7 @@ impl<'c> Translation<'c> {
                     // callee is a declref
                     if matches!(self.ast_context[fexp].kind, CExprKind::DeclRef(..)) =>
                         {
-                            self.convert_expr(ctx.used(), fexp)?
+                            self.convert_expr(ctx.used(), fexp, None)?
                         }
 
                     // Builtin function call
@@ -5069,7 +5211,7 @@ impl<'c> Translation<'c> {
 
                     // Function pointer call
                     _ => {
-                        let callee = self.convert_expr(ctx.used(), func_id)?;
+                        let mut callee = self.convert_expr(ctx.used(), func_id, None)?;
                         let make_fn_ty = |ret_ty: Box<Type>| {
                             let ret_ty = match *ret_ty {
                                 Type::Tuple(TypeTuple { elems: ref v, .. }) if v.is_empty() => ReturnType::Default,
@@ -5077,7 +5219,7 @@ impl<'c> Translation<'c> {
                             };
                             let bare_ty = (
                                 vec![mk().bare_arg(mk().infer_ty(), None::<Box<Ident>>); args.len()],
-                                None::<Variadic>,
+                                None::<BareVariadic>,
                                 ret_ty
                             );
                             mk().barefn_ty(bare_ty)
@@ -5087,6 +5229,7 @@ impl<'c> Translation<'c> {
                                 // K&R function pointer without arguments
                                 let ret_ty = self.convert_type(ret_ty.ctype)?;
                                 let target_ty = make_fn_ty(ret_ty);
+                                callee.set_unsafe();
                                 callee.map(|fn_ptr| {
                                     let fn_ptr = unwrap_function_pointer(fn_ptr);
                                     transmute_expr(mk().infer_ty(), target_ty, fn_ptr)
@@ -5096,14 +5239,17 @@ impl<'c> Translation<'c> {
                                 // We have to infer the return type from our expression type
                                 let ret_ty = self.convert_type(call_expr_ty.ctype)?;
                                 let target_ty = make_fn_ty(ret_ty);
+                                callee.set_unsafe();
                                 callee.map(|fn_ptr| {
                                     transmute_expr(mk().infer_ty(), target_ty, fn_ptr)
                                 })
                             }
-                            Some(_) => {
+                            Some(CTypeKind::Function(_, ty_arg_tys, ..)) => {
+                                arg_tys = Some(ty_arg_tys.clone());
                                 // Normal function pointer
                                 callee.map(unwrap_function_pointer)
                             }
+                            Some(_) => panic!("function pointer did not point to CTYpeKind::Function: {fn_ty:?}"),
                         }
                     }
                 };
@@ -5115,7 +5261,16 @@ impl<'c> Translation<'c> {
                     // We want to decay refs only when function is variadic
                     ctx.decay_ref = DecayRef::from(is_variadic);
 
-                    self.convert_call(call_expr_ty.ctype, func, ctx, args, arg_guidances)
+                    self.convert_call(
+                        call_expr_ty,
+                        func,
+                        ctx,
+                        args,
+                        arg_tys.as_deref(),
+                        override_ty,
+                        is_variadic,
+                        arg_guidances,
+                    )
                 })?;
 
                 self.convert_side_effects_expr(
@@ -5127,7 +5282,7 @@ impl<'c> Translation<'c> {
 
             Member(qual_ty, expr, decl, kind, _) => {
                 if ctx.is_unused() {
-                    self.convert_expr(ctx, expr)
+                    self.convert_expr(ctx, expr, None)
                 } else {
                     let guided_type = self
                         .parsed_guidance
@@ -5143,16 +5298,16 @@ impl<'c> Translation<'c> {
                     }
 
                     let mut val = match kind {
-                        MemberKind::Dot => self.convert_expr(ctx, expr)?,
+                        MemberKind::Dot => self.convert_expr(ctx, expr, None)?,
                         MemberKind::Arrow => {
                             if let CExprKind::Unary(_, c_ast::UnOp::AddressOf, subexpr_id, _) =
                                 self.ast_context[expr].kind
                             {
                                 // Special-case the `(&x)->field` pattern
                                 // Convert it directly into `x.field`
-                                self.convert_expr(ctx, subexpr_id)?
+                                self.convert_expr(ctx, subexpr_id, None)?
                             } else {
-                                let val = self.convert_expr(ctx, expr)?;
+                                let val = self.convert_expr(ctx, expr, None)?;
                                 if skip_ptr_deref {
                                     val
                                 } else {
@@ -5206,13 +5361,21 @@ impl<'c> Translation<'c> {
                         });
                     }
 
+                    // if the context wants a different type, add a cast
+                    if let Some(expected_ty) = override_ty {
+                        if expected_ty != qual_ty {
+                            let ty = self.convert_type(expected_ty.ctype)?;
+                            val = val.map(|v| mk().cast_expr(v, ty));
+                        }
+                    }
+
                     Ok(val)
                 }
             }
 
-            Paren(_, val) => self.convert_expr(ctx, val),
+            Paren(_, val) => self.convert_expr(ctx, val, override_ty),
 
-            CompoundLiteral(_, val) => self.convert_expr(ctx, val),
+            CompoundLiteral(_, val) => self.convert_expr(ctx, val, override_ty),
 
             InitList(ty, ref ids, opt_union_field_id, _) => {
                 self.convert_init_list(ctx, ty, ids, opt_union_field_id)
@@ -5222,7 +5385,7 @@ impl<'c> Translation<'c> {
                 self.implicit_default_expr_guided(guided_type, ty.ctype, ctx.is_static)
             }
 
-            Predefined(_, val_id) => self.convert_expr(ctx, val_id),
+            Predefined(_, val_id) => self.convert_expr(ctx, val_id, override_ty),
 
             Statements(_, compound_stmt_id) => {
                 self.convert_statement_expression(ctx, compound_stmt_id)
@@ -5232,9 +5395,9 @@ impl<'c> Translation<'c> {
 
             Choose(_, _cond, lhs, rhs, is_cond_true) => {
                 let chosen_expr = if is_cond_true {
-                    self.convert_expr(ctx, lhs)?
+                    self.convert_expr(ctx, lhs, override_ty)?
                 } else {
-                    self.convert_expr(ctx, rhs)?
+                    self.convert_expr(ctx, rhs, override_ty)?
                 };
 
                 // TODO: Support compile-time choice between lhs and rhs based on cond.
@@ -5269,23 +5432,36 @@ impl<'c> Translation<'c> {
     #[allow(clippy::vec_box)]
     fn convert_call(
         &self,
-        call_type_id: CTypeId,
+        call_expr_ty: CQualTypeId,
         func: Box<Expr>,
         ctx: ExprContext,
         cargs: &[CExprId],
+        carg_tys: Option<&[CQualTypeId]>,
+        override_ty: Option<CQualTypeId>,
+        is_variadic: bool,
         arg_guidances: Option<Vec<Option<tenjin::GuidedType>>>,
     ) -> TranslationResult<WithStmts<Box<Expr>>> {
         // First do selective call conversion, which may not need to convert all subexpressions.
-        match self.call_form_cases_preconversion(call_type_id, ctx, &func, cargs)? {
+        match self.call_form_cases_preconversion(call_expr_ty.ctype, ctx, &func, cargs)? {
             Some(converted) => Ok(converted),
             None => {
                 let args = if let Some(arg_guidances) = arg_guidances {
-                    self.convert_exprs_guided(ctx.used(), cargs, arg_guidances)?
+                    self.convert_exprs_guided(ctx.used(), cargs, carg_tys, arg_guidances)?
+                } else if is_variadic {
+                    let arg_tys = carg_tys.unwrap_or_default();
+                    self.convert_exprs_partial(ctx.used(), cargs, arg_tys)?
                 } else {
-                    self.convert_exprs(ctx.used(), cargs)?
+                    let arg_tys = if let Some(arg_tys) = carg_tys {
+                        assert!(arg_tys.len() == cargs.len());
+                        Some(arg_tys)
+                    } else {
+                        None
+                    };
+
+                    self.convert_exprs(ctx.used(), cargs, arg_tys)?
                 };
                 args.result_map(|args| {
-                    self.convert_call_with_args(ctx, call_type_id, func, args, cargs)
+                    self.convert_call_with_args(ctx, call_expr_ty, override_ty, func, args, cargs)
                 })
             }
         }
@@ -5305,86 +5481,109 @@ impl<'c> Translation<'c> {
         Ok(expr)
     }
 
-    fn convert_macro_expansion(
+    /// Convert the expansion of a const-like macro.
+    ///
+    /// See [`TranspilerConfig::translate_const_macros`].
+    ///
+    /// [`TranspilerConfig::translate_const_macros`]: crate::TranspilerConfig::translate_const_macros
+    fn convert_const_macro_expansion(
         &self,
         ctx: ExprContext,
         expr_id: CExprId,
+        override_ty: Option<CQualTypeId>,
     ) -> TranslationResult<Option<WithStmts<Box<Expr>>>> {
-        if let Some(macs) = self.ast_context.macro_invocations.get(&expr_id) {
-            // Find the first macro after the macro we're currently
-            // expanding, if any.
-            if let Some(macro_id) = macs
-                .splitn(2, |macro_id| ctx.expanding_macro(macro_id))
-                .last()
-                .unwrap()
-                .first()
-            {
-                trace!("  found macro expansion: {:?}", macro_id);
-                // Ensure that we've converted this macro and that it has a
-                // valid definition
-                let expansion = self.macro_expansions.borrow().get(macro_id).cloned();
-                let macro_ty = match expansion {
-                    // expansion exists
-                    Some(Some(expansion)) => expansion.ty,
+        let macros = match self.ast_context.macro_invocations.get(&expr_id) {
+            Some(macros) => macros.as_slice(),
+            None => return Ok(None),
+        };
 
-                    // expansion wasn't possible
-                    Some(None) => return Ok(None),
+        // Find the first macro after the macro we're currently expanding, if any.
+        let first_macro = macros
+            .splitn(2, |macro_id| ctx.expanding_macro(macro_id))
+            .last()
+            .unwrap()
+            .first();
+        let macro_id = match first_macro {
+            Some(macro_id) => macro_id,
+            None => return Ok(None),
+        };
 
-                    // We haven't tried to expand it yet
-                    None => {
-                        self.convert_decl(ctx, *macro_id)?;
-                        if let Some(Some(expansion)) = self.macro_expansions.borrow().get(macro_id)
-                        {
-                            expansion.ty
-                        } else {
-                            return Ok(None);
-                        }
-                    }
-                };
-                let rustname = self
-                    .renamer
-                    .borrow_mut()
-                    .get(macro_id)
-                    .ok_or_else(|| format_err!("Macro name not declared"))?;
+        trace!("  found macro expansion: {macro_id:?}");
+        // Ensure that we've converted this macro and that it has a valid definition.
+        let expansion = self.macro_expansions.borrow().get(macro_id).cloned();
+        let macro_ty = match expansion {
+            // Expansion exists.
+            Some(Some(expansion)) => expansion.ty,
 
-                if let Some(cur_file) = self.cur_file.borrow().as_ref() {
-                    self.add_import(*cur_file, *macro_id, &rustname);
-                }
+            // Expansion wasn't possible.
+            Some(None) => return Ok(None),
 
-                let val = WithStmts::new_val(mk().path_expr(vec![rustname]));
-
-                let expr_kind = &self.ast_context[expr_id].kind;
-                if let Some(expr_ty) = expr_kind.get_qual_type() {
-                    return self
-                        .convert_cast(
-                            ctx,
-                            CQualTypeId::new(macro_ty),
-                            expr_ty,
-                            val,
-                            None,
-                            None,
-                            None,
-                            &None,
-                            false,
-                        )
-                        .map(Some);
+            // We haven't tried to expand it yet.
+            None => {
+                self.convert_decl(ctx, *macro_id)?;
+                if let Some(Some(expansion)) = self.macro_expansions.borrow().get(macro_id) {
+                    expansion.ty
                 } else {
-                    return Ok(Some(val));
+                    return Ok(None);
                 }
-
-                // TODO: May need to handle volatile reads here, see
-                // DeclRef below
             }
+        };
+        let rust_name = self
+            .renamer
+            .borrow_mut()
+            .get(macro_id)
+            .ok_or_else(|| format_err!("Macro name not declared"))?;
+
+        if let Some(cur_file) = self.cur_file.get() {
+            self.add_import(cur_file, *macro_id, &rust_name);
         }
 
-        Ok(None)
+        let val = WithStmts::new_val(mk().path_expr(vec![rust_name]));
+
+        let expr_kind = &self.ast_context[expr_id].kind;
+        // TODO We'd like to get rid of this cast eventually (see #1321).
+        // Currently, const macros do not get the correct `override_ty` themselves,
+        // so they aren't declared with the correct portable type,
+        // but its uses are expecting the correct portable type,
+        // so we need to cast it to the `override_ty` here.
+        let expr_ty = override_ty.or_else(|| expr_kind.get_qual_type());
+        if let Some(expr_ty) = expr_ty {
+            self.convert_cast(
+                ctx,
+                CQualTypeId::new(macro_ty),
+                expr_ty,
+                val,
+                None,
+                None,
+                None,
+                &None,
+                false,
+            )
+            .map(Some)
+        } else {
+            Ok(Some(val))
+        }
+
+        // TODO: May need to handle volatile reads here.
+        // See `DeclRef` below.
     }
 
-    fn convert_macro_invocation(
+    /// Convert the expansion of a function-like macro.
+    ///
+    /// See [`TranspilerConfig::translate_fn_macros`].
+    ///
+    /// [`TranspilerConfig::translate_fn_macros`]: crate::TranspilerConfig::translate_fn_macros
+    fn convert_fn_macro_invocation(
         &self,
         _ctx: ExprContext,
         text: &str,
     ) -> Option<WithStmts<Box<Expr>>> {
+        match self.tcfg.translate_fn_macros {
+            TranslateMacros::None => return None,
+            TranslateMacros::Conservative => return None, // Nothing is supported for `Conservative` yet.
+            TranslateMacros::Experimental => {}
+        }
+
         let mut split = text.splitn(2, '(');
         let ident = split.next()?.trim();
         let args = split.next()?.trim_end_matches(')');
@@ -5425,13 +5624,13 @@ impl<'c> Translation<'c> {
         compound_stmt_id: CStmtId,
     ) -> TranslationResult<WithStmts<Box<Expr>>> {
         fn as_semi_break_stmt(stmt: &Stmt, lbl: &cfg::Label) -> Option<Option<Box<Expr>>> {
-            if let Stmt::Semi(
+            if let Stmt::Expr(
                 Expr::Break(ExprBreak {
                     label: Some(blbl),
                     expr: ret_val,
                     ..
                 }),
-                _,
+                Some(_),
             ) = stmt
             {
                 if blbl.ident == mk().label(lbl.pretty_print()).name.ident {
@@ -5446,19 +5645,20 @@ impl<'c> Translation<'c> {
                 let n = substmt_ids.len();
                 let result_id = substmt_ids[n - 1];
 
-                let name = format!("<stmt-expr_{:?}>", compound_stmt_id);
+                let name = format!("<stmt-expr_{compound_stmt_id:?}>");
                 let lbl = cfg::Label::FromC(compound_stmt_id, None);
 
                 let mut stmts = match self.ast_context[result_id].kind {
                     CStmtKind::Expr(expr_id) => {
                         let ret = cfg::ImplicitReturnType::StmtExpr(ctx, expr_id, lbl.clone());
-                        self.convert_function_body(ctx, &name, &substmt_ids[0..(n - 1)], ret)?
+                        self.convert_function_body(ctx, &name, &substmt_ids[0..(n - 1)], None, ret)?
                     }
 
                     _ => self.convert_function_body(
                         ctx,
                         &name,
                         substmt_ids,
+                        None,
                         cfg::ImplicitReturnType::Void,
                     )?,
                 };
@@ -5509,8 +5709,8 @@ impl<'c> Translation<'c> {
     fn convert_cast(
         &self,
         ctx: ExprContext,
-        source_ty: CQualTypeId,
-        ty: CQualTypeId,
+        source_cty: CQualTypeId,
+        target_cty: CQualTypeId,
         val: WithStmts<Box<Expr>>,
         expr: Option<CExprId>,
         kind: Option<CastKind>,
@@ -5518,8 +5718,8 @@ impl<'c> Translation<'c> {
         guided_type: &Option<tenjin::GuidedType>,
         is_explicit: bool,
     ) -> TranslationResult<WithStmts<Box<Expr>>> {
-        let source_ty_kind = &self.ast_context.resolve_type(source_ty.ctype).kind;
-        let target_ty_kind = &self.ast_context.resolve_type(ty.ctype).kind;
+        let source_ty_kind = &self.ast_context.resolve_type(source_cty.ctype).kind;
+        let target_ty_kind = &self.ast_context.resolve_type(target_cty.ctype).kind;
 
         if source_ty_kind == target_ty_kind {
             return Ok(val);
@@ -5600,11 +5800,11 @@ impl<'c> Translation<'c> {
         match kind {
             CastKind::BitCast | CastKind::NoOp => {
                 val.and_then(|x| {
-                    if self.ast_context.is_function_pointer(ty.ctype)
-                        || self.ast_context.is_function_pointer(source_ty.ctype)
+                    if self.ast_context.is_function_pointer(target_cty.ctype)
+                        || self.ast_context.is_function_pointer(source_cty.ctype)
                     {
-                        let source_ty = self.convert_type(source_ty.ctype)?;
-                        let target_ty = self.convert_type(ty.ctype)?;
+                        let source_ty = self.convert_type(source_cty.ctype)?;
+                        let target_ty = self.convert_type(target_cty.ctype)?;
                         Ok(WithStmts::new_unsafe_val(transmute_expr(
                             source_ty, target_ty, x,
                         )))
@@ -5656,17 +5856,26 @@ impl<'c> Translation<'c> {
                                 }
                             }
                         }
-                        let target_ty = self.convert_type(ty.ctype)?;
+                        let target_ty = self.convert_type(target_cty.ctype)?;
                         Ok(WithStmts::new_val(mk().cast_expr(x, target_ty)))
                     }
                 })
             }
 
-            CastKind::IntegralToPointer if self.ast_context.is_function_pointer(ty.ctype) => {
-                let target_ty = self.convert_type(ty.ctype)?;
+            CastKind::IntegralToPointer
+                if self.ast_context.is_function_pointer(target_cty.ctype) =>
+            {
+                let target_ty = self.convert_type(target_cty.ctype)?;
                 val.and_then(|x| {
+                    self.use_crate(ExternCrate::Libc);
                     let intptr_t = mk().path_ty(vec!["libc", "intptr_t"]);
                     let intptr = mk().cast_expr(x, intptr_t.clone());
+                    if ctx.is_const {
+                        return Err(format_translation_err!(
+                            None,
+                            "cannot transmute integers to Option<fn ...> in `const` context",
+                        ));
+                    }
                     Ok(WithStmts::new_unsafe_val(transmute_expr(
                         intptr_t, target_ty, intptr,
                     )))
@@ -5678,34 +5887,53 @@ impl<'c> Translation<'c> {
             | CastKind::IntegralCast
             | CastKind::FloatingCast
             | CastKind::FloatingToIntegral
-            | CastKind::IntegralToFloating => {
-                let target_ty = self.convert_type(ty.ctype)?;
-                let target_ty_ctype = &self.ast_context.resolve_type(ty.ctype).kind;
+            | CastKind::IntegralToFloating
+            | CastKind::BooleanToSignedIntegral => {
+                if kind == CastKind::PointerToIntegral && ctx.is_const {
+                    return Err(format_translation_err!(
+                        None,
+                        "cannot observe pointer values in `const` context",
+                    ));
+                }
+                let target_ty = self.convert_type(target_cty.ctype)?;
+                let source_ty = self.convert_type(source_cty.ctype)?;
 
-                let source_ty_ctype_id = source_ty.ctype;
+                if let CTypeKind::LongDouble = target_ty_kind {
+                    if ctx.is_const {
+                        return Err(format_translation_err!(
+                                None,
+                                "f128 cannot be used in constants because `f128::f128::new` is not `const`",
+                            ));
+                    }
 
-                let source_ty = self.convert_type(source_ty_ctype_id)?;
-                if let CTypeKind::LongDouble = target_ty_ctype {
                     self.use_crate(ExternCrate::F128);
 
                     let fn_path = mk().path_expr(vec!["f128", "f128", "new"]);
                     Ok(val.map(|val| mk().call_expr(fn_path, vec![val])))
-                } else if let CTypeKind::LongDouble = self.ast_context[source_ty_ctype_id].kind {
-                    self.f128_cast_to(val, target_ty_ctype)
-                } else if let &CTypeKind::Enum(enum_decl_id) = target_ty_ctype {
+                } else if let CTypeKind::LongDouble = self.ast_context[source_cty.ctype].kind {
+                    self.f128_cast_to(val, target_ty_kind)
+                } else if let &CTypeKind::Enum(enum_decl_id) = target_ty_kind {
                     // Casts targeting `enum` types...
                     let expr =
                         expr.ok_or_else(|| format_err!("Casts to enums require a C ExprId"))?;
-                    Ok(self.enum_cast(ty.ctype, enum_decl_id, expr, val, source_ty, target_ty))
-                } else if target_ty_ctype.is_floating_type() && source_ty_kind.is_bool() {
+                    Ok(self.enum_cast(
+                        target_cty.ctype,
+                        enum_decl_id,
+                        expr,
+                        val,
+                        source_ty,
+                        target_ty,
+                    ))
+                } else if target_ty_kind.is_floating_type() && source_ty_kind.is_bool() {
                     val.and_then(|x| {
                         Ok(WithStmts::new_val(mk().cast_expr(
                             mk().cast_expr(x, mk().path_ty(vec!["u8"])),
                             target_ty,
                         )))
                     })
-                } else if target_ty_ctype.is_pointer() && source_ty_kind.is_bool() {
+                } else if target_ty_kind.is_pointer() && source_ty_kind.is_bool() {
                     val.and_then(|x| {
+                        self.use_crate(ExternCrate::Libc);
                         Ok(WithStmts::new_val(mk().cast_expr(
                             mk().cast_expr(x, mk().path_ty(vec!["libc", "size_t"])),
                             target_ty,
@@ -5715,7 +5943,7 @@ impl<'c> Translation<'c> {
                     // Other numeric casts translate to Rust `as` casts,
                     // unless the cast is to a function pointer then use `transmute`.
                     val.and_then(|x| {
-                        if self.ast_context.is_function_pointer(source_ty_ctype_id) {
+                        if self.ast_context.is_function_pointer(source_cty.ctype) {
                             Ok(WithStmts::new_unsafe_val(transmute_expr(
                                 source_ty, target_ty, x,
                             )))
@@ -5742,27 +5970,41 @@ impl<'c> Translation<'c> {
                 // and to be a pointer as a function argument we would get
                 // spurious casts when trying to treat it like a VaList which
                 // has reference semantics.
-                if self.ast_context.is_va_list(ty.ctype) {
+                if self.ast_context.is_va_list(target_cty.ctype) {
                     return Ok(val);
                 }
 
-                let pointee = match self.ast_context.resolve_type(ty.ctype).kind {
-                    CTypeKind::Pointer(pointee) => pointee,
-                    _ => panic!("Dereferencing a non-pointer"),
-                };
+                let pointee = self
+                    .ast_context
+                    .get_pointee_qual_type(target_cty.ctype)
+                    .unwrap_or_else(|| panic!("dereferencing a non-pointer"));
 
                 let is_const = pointee.qualifiers.is_const;
 
+                // Handle literals by looking at the next level of expr nesting. Avoid doing this
+                // for expressions that will be translated as const macros, because emitting the
+                // name of the const macro only occurs if we process the expr_id with a direct call
+                // to `convert_expr`.
                 let expr_kind = expr.map(|e| &self.ast_context.index(e).kind);
+                let translate_as_macro = expr
+                    .map(|e| {
+                        self.convert_const_macro_expansion(ctx, e, None)
+                            .ok()
+                            .flatten()
+                            .is_some()
+                    })
+                    .unwrap_or(false);
                 match expr_kind {
-                    Some(&CExprKind::Literal(_, CLiteral::String(ref bytes, 1))) if is_const => {
+                    Some(&CExprKind::Literal(_, CLiteral::String(ref bytes, 1)))
+                        if is_const && !translate_as_macro =>
+                    {
                         if guided_type.as_ref().is_some_and(|g| g.pretty == "String") {
                             return Ok(WithStmts::new_val(
                                 self.convert_literal_to_rust_string(bytes, 1),
                             ));
                         }
 
-                        let target_ty = self.convert_type(ty.ctype)?;
+                        let target_ty = self.convert_type(target_cty.ctype)?;
 
                         let mut bytes = bytes.to_owned();
                         bytes.push(0);
@@ -5774,9 +6016,7 @@ impl<'c> Translation<'c> {
                     }
                     _ => {
                         // Variable length arrays are already represented as pointers.
-                        if let CTypeKind::VariableArray(..) =
-                            self.ast_context.resolve_type(source_ty.ctype).kind
-                        {
+                        if let CTypeKind::VariableArray(..) = source_ty_kind {
                             Ok(val)
                         } else {
                             // XREF:TENJIN-GUIDANCE-STRAWMAN
@@ -5805,6 +6045,19 @@ impl<'c> Translation<'c> {
                             };
                             let call = val.map(|x| mk().method_call_expr(x, method, vec![]));
 
+                            // If the target pointee type is different from the source element type,
+                            // then we need to cast the ptr type as well.
+                            let call = match source_ty_kind.element_ty() {
+                                None => call,
+                                Some(source_element_ty) if source_element_ty == pointee.ctype => {
+                                    call
+                                }
+                                Some(_) => {
+                                    let target_ty = self.convert_type(target_cty.ctype)?;
+                                    call.map(|ptr| mk().cast_expr(ptr, target_ty))
+                                }
+                            };
+
                             // Static arrays can now use as_ptr. Can also cast that const ptr to a
                             // mutable pointer as we do here:
                             if ctx.is_static && !is_const {
@@ -5823,7 +6076,9 @@ impl<'c> Translation<'c> {
 
             CastKind::NullToPointer => {
                 assert!(val.stmts().is_empty());
-                Ok(WithStmts::new_val(self.null_ptr(ty.ctype, ctx.is_static)?))
+                Ok(WithStmts::new_val(
+                    self.null_ptr(target_cty.ctype, ctx.is_static)?,
+                ))
             }
 
             CastKind::ToUnion => {
@@ -5852,14 +6107,9 @@ impl<'c> Translation<'c> {
                 if let Some(expr) = expr {
                     self.convert_condition(ctx, true, expr)
                 } else {
-                    Ok(val.map(|e| self.match_bool(true, source_ty.ctype, e)))
+                    val.result_map(|e| self.match_bool(ctx, true, source_cty.ctype, e))
                 }
             }
-
-            // I don't know how to actually cause clang to generate this
-            CastKind::BooleanToSignedIntegral => Err(TranslationError::generic(
-                "TODO boolean to signed integral not supported",
-            )),
 
             CastKind::FloatingRealToComplex
             | CastKind::FloatingComplexToIntegralComplex
@@ -5876,6 +6126,8 @@ impl<'c> Translation<'c> {
             CastKind::VectorSplat => Err(TranslationError::generic(
                 "TODO vector splat casts not supported",
             )),
+
+            CastKind::AtomicToNonAtomic | CastKind::NonAtomicToAtomic => Ok(val),
         }
     }
 
@@ -5939,7 +6191,7 @@ impl<'c> Translation<'c> {
         // Extract the IDs of the `EnumConstant` decls underlying the enum.
         let variants = match self.ast_context.index(enum_decl).kind {
             CDeclKind::Enum { ref variants, .. } => variants,
-            _ => panic!("{:?} does not point to an `enum` declaration", enum_decl),
+            _ => panic!("{enum_decl:?} does not point to an `enum` declaration"),
         };
 
         match self.ast_context.index(expr).kind {
@@ -5949,7 +6201,10 @@ impl<'c> Translation<'c> {
             CExprKind::DeclRef(_, decl_id, _) if variants.contains(&decl_id) => {
                 return val.map(|x| match *unparen(&x) {
                     Expr::Cast(ExprCast { ref expr, .. }) => expr.clone(),
-                    _ => panic!("DeclRef {:?} of enum {:?} is not cast", expr, enum_decl),
+                    // If this DeclRef expanded to a const macro, we actually need to insert a cast,
+                    // because the translation of a const macro skips implicit casts in its context.
+                    Expr::Path(..) => mk().cast_expr(x, target_ty),
+                    _ => panic!("DeclRef {expr:?} of enum {enum_decl:?} is not cast: {x:?}"),
                 });
             }
 
@@ -6016,9 +6271,12 @@ impl<'c> Translation<'c> {
             ))
         } else if resolved_ty.is_floating_type() {
             match self.ast_context[ty_id].kind {
-                CTypeKind::LongDouble => Ok(WithStmts::new_val(
-                    mk().path_expr(vec!["f128", "f128", "ZERO"]),
-                )),
+                CTypeKind::LongDouble => {
+                    self.use_crate(ExternCrate::F128);
+                    Ok(WithStmts::new_val(
+                        mk().path_expr(vec!["f128", "f128", "ZERO"]),
+                    ))
+                }
                 _ => Ok(WithStmts::new_val(
                     mk().lit_expr(mk().float_unsuffixed_lit("0.")),
                 )),
@@ -6060,8 +6318,8 @@ impl<'c> Translation<'c> {
         type_id: CTypeId,
         is_static: bool,
     ) -> TranslationResult<WithStmts<Box<Expr>>> {
-        if let Some(file_id) = self.cur_file.borrow().as_ref() {
-            self.import_type(type_id, *file_id);
+        if let Some(file_id) = self.cur_file.get() {
+            self.import_type(type_id, file_id);
         }
 
         // Look up the decl in the cache and return what we find (if we find anything)
@@ -6193,30 +6451,42 @@ impl<'c> Translation<'c> {
     }
 
     /// Convert a boolean expression to a boolean for use in && or || or if
-    #[allow(clippy::collapsible_match)]
-    fn match_bool(&self, target: bool, ty_id: CTypeId, val: Box<Expr>) -> Box<Expr> {
+    fn match_bool(
+        &self,
+        ctx: ExprContext,
+        target: bool,
+        ty_id: CTypeId,
+        val: Box<Expr>,
+    ) -> TranslationResult<Box<Expr>> {
         if self.type_overrides.borrow().contains_key(&ty_id) {
             // If we have a type override, use it
             let ty = self.type_overrides.borrow()[&ty_id].clone();
             if ty.pretty == "bool" {
-                return if target {
+                return Ok(if target {
                     val
                 } else {
                     mk().unary_expr(UnOp::Not(Default::default()), val)
-                };
+                });
             }
-            return mk().cast_expr(val, Box::new(ty.parsed));
+            return Ok(mk().cast_expr(val, Box::new(ty.parsed)));
         }
 
         let ty = &self.ast_context.resolve_type(ty_id).kind;
 
-        if self.ast_context.is_function_pointer(ty_id) {
+        Ok(if self.ast_context.is_function_pointer(ty_id) {
             if target {
                 mk().method_call_expr(val, "is_some", vec![])
             } else {
                 mk().method_call_expr(val, "is_none", vec![])
             }
         } else if ty.is_pointer() {
+            // TODO: `pointer::is_null` becomes stably const in Rust 1.84.
+            if ctx.is_const {
+                return Err(format_translation_err!(
+                    None,
+                    "cannot check nullity of pointer in `const` context",
+                ));
+            }
             let mut res = mk().method_call_expr(val, "is_null", vec![]);
             if target {
                 res = mk().unary_expr(UnOp::Not(Default::default()), res)
@@ -6233,8 +6503,8 @@ impl<'c> Translation<'c> {
             // is already in the form `(x <op> y) as <ty>` where `<op>` is a Rust operator
             // that returns a boolean, we can simple output `x <op> y` or `!(x <op> y)`.
             if let Expr::Cast(ExprCast { expr: ref arg, .. }) = *unparen(&val) {
-                if let Expr::Binary(ExprBinary { op, .. }) = *unparen(arg) {
-                    match op {
+                if let Expr::Binary(ExprBinary {
+                    op:
                         BinOp::Or(_)
                         | BinOp::And(_)
                         | BinOp::Eq(_)
@@ -6242,20 +6512,20 @@ impl<'c> Translation<'c> {
                         | BinOp::Lt(_)
                         | BinOp::Le(_)
                         | BinOp::Gt(_)
-                        | BinOp::Ge(_) => {
-                            if target {
-                                // If target == true, just return the argument
-                                return Box::new(unparen(arg).clone());
-                            } else {
-                                // If target == false, return !arg
-                                return mk().unary_expr(
-                                    UnOp::Not(Default::default()),
-                                    Box::new(unparen(arg).clone()),
-                                );
-                            }
-                        }
-                        _ => {}
-                    }
+                        | BinOp::Ge(_),
+                    ..
+                }) = *unparen(arg)
+                {
+                    return Ok(if target {
+                        // If target == true, just return the argument
+                        Box::new(unparen(arg).clone())
+                    } else {
+                        // If target == false, return !arg
+                        mk().unary_expr(
+                            UnOp::Not(Default::default()),
+                            Box::new(unparen(arg).clone()),
+                        )
+                    });
                 }
             }
 
@@ -6277,7 +6547,7 @@ impl<'c> Translation<'c> {
             } else {
                 mk().binary_expr(BinOp::Eq(Default::default()), val, zero)
             }
-        }
+        })
     }
 
     /// Pointer offset that casts its argument to isize
@@ -6413,7 +6683,13 @@ impl<'c> Translation<'c> {
         match type_kind {
             // libc can be accessed from anywhere as of Rust 2019 by full path
             Void | Char | SChar | UChar | Short | UShort | Int | UInt | Long | ULong | LongLong
-            | ULongLong | Int128 | UInt128 | Half | BFloat16 | Float | Double | LongDouble => {}
+            | ULongLong | Int128 | UInt128 | Half | BFloat16 | Float | Double | LongDouble
+            | Float128 => {}
+            // other libc types
+            WChar | IntMax | UIntMax => {}
+            // Built-in Rust sized types
+            Int8 | Int16 | Int32 | Int64 | IntPtr | UInt8 | UInt16 | UInt32 | UInt64 | UIntPtr
+            | Size | SSize | PtrDiff => {}
             // Bool uses the bool type, so no dependency on libc
             Bool => {}
             Paren(ctype)
@@ -6459,7 +6735,7 @@ impl<'c> Translation<'c> {
             Vector(..) => {
                 // Handled in `import_simd_typedef`
             }
-            TypeOfExpr(_) | BuiltinFn => {}
+            TypeOfExpr(_) | BuiltinFn | Atomic(..) => {}
             UnhandledSveType => {
                 // TODO: handle SVE types
             }
