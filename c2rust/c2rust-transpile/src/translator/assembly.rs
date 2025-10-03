@@ -147,7 +147,7 @@ fn parse_constraints(
     let mut constraints = constraints.as_str();
 
     // Convert (simple) constraints to ones rustc understands
-    while constraints != "" {
+    while !constraints.is_empty() {
         let (c, rest) = constraints.split_at(1);
         let c = c.chars().next().unwrap();
         match c {
@@ -170,7 +170,7 @@ fn parse_constraints(
                 if !(is_explicit_reg || is_tied) {
                     // Attempt to parse machine-specific constraints
                     if let Some((machine_constraints, is_mem)) =
-                        translate_machine_constraint(&constraints, arch)
+                        translate_machine_constraint(constraints, arch)
                     {
                         llvm_constraints = machine_constraints.into();
                         mem_only = is_mem;
@@ -410,20 +410,20 @@ fn rewrite_reserved_reg_operands(
 
     for (n_moved, (idx, reg, mods)) in rewrite_idxs.into_iter().enumerate() {
         let operand = &mut operands[idx];
-        let name = format!("restmp{}", n_moved);
+        let name = format!("restmp{n_moved}");
         if let Some((_idx, _in_expr)) = operand.in_expr {
             let move_input = if att_syntax {
-                format!("mov %{}, {{{}:{}}}\n", reg, name, mods)
+                format!("mov %{reg}, {{{name}:{mods}}}\n")
             } else {
-                format!("mov {{{}:{}}}\n, {}", name, mods, reg)
+                format!("mov {{{name}:{mods}}}\n, {reg}")
             };
             prolog.push_str(&move_input);
         }
         if let Some((_idx, _out_expr)) = operand.out_expr {
             let move_output = if att_syntax {
-                format!("\nmov {{{}:{}}}, %{}", name, mods, reg)
+                format!("\nmov {{{name}:{mods}}}, %{reg}")
             } else {
-                format!("\nmov {}, {{{}:{}}}", reg, name, mods)
+                format!("\nmov {reg}, {{{name}:{mods}}}")
             };
             epilog.push_str(&move_output);
         }
@@ -786,7 +786,7 @@ impl Translation<'_> {
                     });
                 }
                 // Constraint could not be parsed, drop it
-                Err(e) => eprintln!("{}", e),
+                Err(e) => eprintln!("{e}"),
             }
         }
         // Add unmatched inputs
@@ -797,7 +797,7 @@ impl Translation<'_> {
             let (dir_spec, mem_only, parsed) = match parse_constraints(&input.constraints, arch) {
                 Ok(x) => x,
                 Err(e) => {
-                    eprintln!("{}", e);
+                    eprintln!("{e}");
                     continue;
                 }
             };
@@ -813,7 +813,7 @@ impl Translation<'_> {
 
         // Determine whether the assembly is in AT&T syntax
         let att_syntax = match arch {
-            Arch::X86 | Arch::X86_64 => asm_is_att_syntax(&asm),
+            Arch::X86 | Arch::X86_64 => asm_is_att_syntax(asm),
             _ => false,
         };
 
@@ -1007,7 +1007,7 @@ impl Translation<'_> {
             // We must drop clobbers of reserved registers, even though this
             // really means we're misinforming the compiler of what's been
             // overwritten. Warn verbosely.
-            let quoted = format!("\"{}\"", clobber);
+            let quoted = format!("\"{clobber}\"");
             if reg_is_reserved(&quoted, arch).is_some() {
                 warn!(
                     "Attempting to clobber reserved register ({}), dropping clobber! \

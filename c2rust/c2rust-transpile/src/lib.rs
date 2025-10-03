@@ -228,7 +228,7 @@ fn str_to_ident_checked(s: &str, check_reserved: bool) -> String {
 
     // make sure the name does not clash with keywords
     if check_reserved && RESERVED_NAMES.contains(&s.as_str()) {
-        format!("r#{}", s)
+        format!("r#{s}")
     } else {
         s
     }
@@ -547,11 +547,11 @@ fn transpile_single(
         Ok(cxt) => cxt,
     };
 
-    println!("Transpiling {}", file);
+    println!("Transpiling {file}");
 
     if tcfg.dump_untyped_context {
         println!("CBOR Clang AST");
-        println!("{:#?}", untyped_context);
+        println!("{untyped_context:#?}");
     }
 
     // Convert this into a typed AST
@@ -565,7 +565,7 @@ fn transpile_single(
 
     if tcfg.dump_typed_context {
         println!("Clang AST");
-        println!("{:#?}", typed_context);
+        println!("{typed_context:#?}");
     }
 
     if tcfg.pretty_typed_context {

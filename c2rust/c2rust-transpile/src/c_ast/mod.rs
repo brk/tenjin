@@ -437,11 +437,8 @@ impl TypedAstContext {
     pub fn beneath_implicit_casts(&self, expr_id: CExprId) -> CExprId {
         let expr = &self.index(expr_id).kind;
         use CExprKind::*;
-        match expr {
-            ImplicitCast(_, subexpr, _, _, _) => {
-                return self.beneath_implicit_casts(*subexpr);
-            }
-            _ => {}
+        if let ImplicitCast(_, subexpr, _, _, _) = expr {
+            return self.beneath_implicit_casts(*subexpr);
         }
         expr_id
     }
@@ -654,7 +651,7 @@ impl TypedAstContext {
             // or how to detect a `sizeof` of a VLA, which is non-`const`,
             // although it seems we don't handle `sizeof(VLAs)`
             // correctly in macros elsewhere already.
-            UnaryType(_, _, expr, _) => expr.map_or(true, is_const),
+            UnaryType(_, _, expr, _) => expr.is_none_or(is_const),
             // Not sure what a `OffsetOfKind::Variable` means.
             OffsetOf(_, _) => true,
             // `ptr::offset` (ptr `BinOp::Add`) was `const` stabilized in `1.61.0`.
@@ -718,7 +715,7 @@ impl TypedAstContext {
             } => {
                 is_const_expr(scrutinee)
                     && is_const(true_variant)
-                    && false_variant.map_or(true, is_const)
+                    && false_variant.is_none_or(is_const)
             }
             Switch { scrutinee, body } => is_const_expr(scrutinee) && is_const(body),
             While { condition, body } => is_const_expr(condition) && is_const(body),
@@ -729,14 +726,14 @@ impl TypedAstContext {
                 increment,
                 body,
             } => {
-                init.map_or(true, is_const)
-                    && condition.map_or(true, is_const_expr)
-                    && increment.map_or(true, is_const_expr)
+                init.is_none_or(is_const)
+                    && condition.is_none_or(is_const_expr)
+                    && increment.is_none_or(is_const_expr)
                     && is_const(body)
             }
             Break => true,
             Continue => true,
-            Return(expr) => expr.map_or(true, is_const_expr),
+            Return(expr) => expr.is_none_or(is_const_expr),
             Decls(ref _decls) => true,
             Asm { .. } => false,
             Attributed {
@@ -1152,7 +1149,7 @@ impl Index<CTypeId> for TypedAstContext {
 
     fn index(&self, index: CTypeId) -> &CType {
         match self.c_types.get(&index) {
-            None => panic!("Could not find {:?} in TypedAstContext", index),
+            None => panic!("Could not find {index:?} in TypedAstContext"),
             Some(ty) => ty,
         }
     }
@@ -1184,7 +1181,7 @@ impl Index<CDeclId> for TypedAstContext {
 
     fn index(&self, index: CDeclId) -> &CDecl {
         match self.c_decls.get(&index) {
-            None => panic!("Could not find {:?} in TypedAstContext", index),
+            None => panic!("Could not find {index:?} in TypedAstContext"),
             Some(ty) => ty,
         }
     }
@@ -1195,7 +1192,7 @@ impl Index<CStmtId> for TypedAstContext {
 
     fn index(&self, index: CStmtId) -> &CStmt {
         match self.c_stmts.get(&index) {
-            None => panic!("Could not find {:?} in TypedAstContext", index),
+            None => panic!("Could not find {index:?} in TypedAstContext"),
             Some(ty) => ty,
         }
     }

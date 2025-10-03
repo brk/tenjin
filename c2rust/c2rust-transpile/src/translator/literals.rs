@@ -16,8 +16,8 @@ impl Translation<'_> {
     ) -> TranslationResult<Box<Expr>> {
         let lit = match base {
             IntBase::Dec => mk().int_unsuffixed_lit(val),
-            IntBase::Hex => mk().float_unsuffixed_lit(&format!("0x{:x}", val)),
-            IntBase::Oct => mk().float_unsuffixed_lit(&format!("0o{:o}", val)),
+            IntBase::Hex => mk().float_unsuffixed_lit(&format!("0x{val:x}")),
+            IntBase::Oct => mk().float_unsuffixed_lit(&format!("0o{val:o}")),
         };
 
         let target_ty = self.convert_type(ty.ctype)?;
@@ -29,7 +29,7 @@ impl Translation<'_> {
     pub fn enum_for_i64(&self, enum_type_id: CTypeId, value: i64) -> Box<Expr> {
         let def_id = match self.ast_context.resolve_type(enum_type_id).kind {
             CTypeKind::Enum(def_id) => def_id,
-            _ => panic!("{:?} does not point to an `enum` type", enum_type_id),
+            _ => panic!("{enum_type_id:?} does not point to an `enum` type"),
         };
 
         let (variants, underlying_type_id) = match self.ast_context[def_id].kind {
@@ -38,7 +38,7 @@ impl Translation<'_> {
                 integral_type,
                 ..
             } => (variants, integral_type),
-            _ => panic!("{:?} does not point to an `enum` declaration", def_id),
+            _ => panic!("{def_id:?} does not point to an `enum` declaration"),
         };
 
         for &variant_id in variants {
@@ -54,7 +54,7 @@ impl Translation<'_> {
                         return mk().path_expr(vec![name]);
                     }
                 }
-                _ => panic!("{:?} does not point to an enum variant", variant_id),
+                _ => panic!("{variant_id:?} does not point to an enum variant"),
             }
         }
 
@@ -152,7 +152,7 @@ impl Translation<'_> {
                     }
                     CTypeKind::Double => mk().lit_expr(mk().float_lit(&str, "f64")),
                     CTypeKind::Float => mk().lit_expr(mk().float_lit(&str, "f32")),
-                    ref k => panic!("Unsupported floating point literal type {:?}", k),
+                    ref k => panic!("Unsupported floating point literal type {k:?}"),
                 };
                 Ok(WithStmts::new_val(val))
             }
@@ -329,8 +329,7 @@ impl Translation<'_> {
                             .map(to_array_element)
                             .chain(
                                 // Pad out the array literal with default values to the desired size
-                                std::iter::repeat(self.implicit_default_expr(ty, ctx.is_static))
-                                    .take(n - ids.len()),
+                                std::iter::repeat_n(self.implicit_default_expr(ty, ctx.is_static), n - ids.len()),
                             )
                             .collect::<TranslationResult<WithStmts<_>>>()?
                             .map(|vals| mk().array_expr(vals)))

@@ -32,7 +32,7 @@ impl From<c_ast::BinOp> for BinOp {
             c_ast::BinOp::And => BinOp::And(Default::default()),
             c_ast::BinOp::Or => BinOp::Or(Default::default()),
 
-            _ => panic!("C BinOp {:?} is not a valid Rust BinOp", op),
+            _ => panic!("C BinOp {op:?} is not a valid Rust BinOp"),
         }
     }
 }
@@ -520,7 +520,8 @@ impl Translation<'_> {
                                 val.map(|val| mk().cast_expr(val, write_type))
                             };
 
-                            let write = if is_volatile {
+                            
+                            if is_volatile {
                                 val.and_then(|val| {
                                     TranslationResult::Ok(WithStmts::new_unsafe_val(
                                         self.volatile_write(write, initial_lhs_type_id, val)?,
@@ -528,8 +529,7 @@ impl Translation<'_> {
                                 })?
                             } else {
                                 val.map(|val| mk().assign_expr(write, val))
-                            };
-                            write
+                            }
                         }
 
                         // Everything else

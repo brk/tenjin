@@ -350,7 +350,7 @@ impl ParsedGuidance {
                         }
                     }
                     let ty = syn::parse_str::<syn::Type>(unparsed_ty)
-                        .unwrap_or_else(|_| panic!("Failed to parse type: {}", unparsed_ty));
+                        .unwrap_or_else(|_| panic!("Failed to parse type: {unparsed_ty}"));
                     log::warn!("Parsed type key vars_of_type: {:#?}", ty);
                     declspecs_of_type.insert(ty, parsed_declspecs);
                 }
@@ -900,7 +900,7 @@ pub fn translate(
                 match t.convert_decl(ctx, decl_id) {
                     Err(e) => {
                         let k = &t.ast_context.get_decl(&decl_id).map(|x| &x.kind);
-                        let msg = format!("Skipping declaration {:?} due to error: {}", k, e);
+                        let msg = format!("Skipping declaration {k:?} due to error: {e}");
                         translate_failure(t.tcfg, &msg);
                     }
                     Ok(converted_decl) => {
@@ -974,11 +974,11 @@ pub fn translate(
                             || {
                                 t.ast_context
                                     .display_loc(&decl.loc)
-                                    .map_or("Unknown".to_string(), |l| format!("at {}", l))
+                                    .map_or("Unknown".to_string(), |l| format!("at {l}"))
                             },
                             |name| name.clone(),
                         );
-                        let msg = format!("Failed to translate {}: {}", decl_identifier, e);
+                        let msg = format!("Failed to translate {decl_identifier}: {e}");
                         translate_failure(t.tcfg, &msg);
                     }
                     Ok(converted_decl) => {
@@ -1013,7 +1013,7 @@ pub fn translate(
             match t.convert_main(main_id) {
                 Ok(item) => t.items.borrow_mut()[&t.main_file].add_item(item),
                 Err(e) => {
-                    let msg = format!("Failed to translate main: {}", e);
+                    let msg = format!("Failed to translate main: {e}");
                     translate_failure(t.tcfg, &msg)
                 }
             }
@@ -1275,7 +1275,7 @@ fn make_submodule(
         });
         module_builder.str_attr(
             vec!["c2rust", "header_src"],
-            format!("{}:{}", file_path_str, include_line_number),
+            format!("{file_path_str}:{include_line_number}"),
         )
     } else {
         module_builder
@@ -1463,8 +1463,7 @@ mod refactor_format {
                 .unwrap()
                 .to_owned(),
             None => panic!(
-                "TENJIN expected format string to be a string literal: {:?}",
-                ep
+                "TENJIN expected format string to be a string literal: {ep:?}"
             ),
         };
         build_format_macro_from(
@@ -1681,7 +1680,7 @@ mod refactor_format {
                 CastType::Int(Length::Size) => vec!["libc", "ssize_t"],
                 CastType::Uint(Length::Size) => vec!["libc", "size_t"],
                 CastType::Int(Length::PtrDiff) => vec!["libc", "ptrdiff_t"],
-                _ => panic!("invalid length modifier type: {:?}", self),
+                _ => panic!("invalid length modifier type: {self:?}"),
             }
         }
     }
@@ -3343,8 +3342,7 @@ impl<'c> Translation<'c> {
                         .insert(decl_id, var.as_str())
                         .unwrap_or_else(|| {
                             panic!(
-                                "Failed to insert argument '{}' while converting '{}'",
-                                var, name
+                                "Failed to insert argument '{var}' while converting '{name}'"
                             )
                         });
 
@@ -3560,7 +3558,7 @@ impl<'c> Translation<'c> {
         if self.tcfg.dump_structures {
             eprintln!("Relooped structures:");
             for s in &relooped {
-                eprintln!("  {:#?}", s);
+                eprintln!("  {s:#?}");
             }
         }
 
@@ -3845,7 +3843,7 @@ impl<'c> Translation<'c> {
                     .renamer
                     .borrow_mut()
                     .insert(decl_id, ident)
-                    .unwrap_or_else(|| panic!("Failed to insert variable '{}'", ident));
+                    .unwrap_or_else(|| panic!("Failed to insert variable '{ident}'"));
 
                 if self.ast_context.is_va_list(typ.ctype) {
                     // translate `va_list` variables to `VaListImpl`s and omit the initializer.
@@ -5118,7 +5116,7 @@ impl<'c> Translation<'c> {
                             CTypeKind::ConstantArray(..) => None,
                             CTypeKind::IncompleteArray(..) => None,
                             CTypeKind::VariableArray(elt, _) => Some(elt),
-                            ref other => panic!("Unexpected array type {:?}", other),
+                            ref other => panic!("Unexpected array type {other:?}"),
                         };
 
                         let lhs = self.convert_expr(ctx.used(), arr, None)?;
@@ -5451,20 +5449,18 @@ impl<'c> Translation<'c> {
             None => {
                 let args = if let Some(arg_guidances) = arg_guidances {
                     self.convert_exprs_guided(ctx.used(), cargs, carg_tys, arg_guidances)?
+                } else if is_variadic {
+                    let arg_tys = carg_tys.unwrap_or_default();
+                    self.convert_exprs_partial(ctx.used(), cargs, arg_tys)?
                 } else {
-                    if is_variadic {
-                        let arg_tys = carg_tys.unwrap_or_default();
-                        self.convert_exprs_partial(ctx.used(), cargs, arg_tys)?
+                    let arg_tys = if let Some(arg_tys) = carg_tys {
+                        assert!(arg_tys.len() == cargs.len());
+                        Some(arg_tys)
                     } else {
-                        let arg_tys = if let Some(arg_tys) = carg_tys {
-                            assert!(arg_tys.len() == cargs.len());
-                            Some(arg_tys)
-                        } else {
-                            None
-                        };
+                        None
+                    };
 
-                        self.convert_exprs(ctx.used(), cargs, arg_tys)?
-                    }
+                    self.convert_exprs(ctx.used(), cargs, arg_tys)?
                 };
                 args.result_map(|args| {
                     self.convert_call_with_args(ctx, call_expr_ty, override_ty, func, args, cargs)
@@ -5651,7 +5647,7 @@ impl<'c> Translation<'c> {
                 let n = substmt_ids.len();
                 let result_id = substmt_ids[n - 1];
 
-                let name = format!("<stmt-expr_{:?}>", compound_stmt_id);
+                let name = format!("<stmt-expr_{compound_stmt_id:?}>");
                 let lbl = cfg::Label::FromC(compound_stmt_id, None);
 
                 let mut stmts = match self.ast_context[result_id].kind {
@@ -6197,7 +6193,7 @@ impl<'c> Translation<'c> {
         // Extract the IDs of the `EnumConstant` decls underlying the enum.
         let variants = match self.ast_context.index(enum_decl).kind {
             CDeclKind::Enum { ref variants, .. } => variants,
-            _ => panic!("{:?} does not point to an `enum` declaration", enum_decl),
+            _ => panic!("{enum_decl:?} does not point to an `enum` declaration"),
         };
 
         match self.ast_context.index(expr).kind {
@@ -6211,8 +6207,7 @@ impl<'c> Translation<'c> {
                     // because the translation of a const macro skips implicit casts in its context.
                     Expr::Path(..) => mk().cast_expr(x, target_ty),
                     _ => panic!(
-                        "DeclRef {:?} of enum {:?} is not cast: {x:?}",
-                        expr, enum_decl
+                        "DeclRef {expr:?} of enum {enum_decl:?} is not cast: {x:?}"
                     ),
                 });
             }
