@@ -1491,6 +1491,12 @@ mod refactor_format {
         let mut new_s = String::with_capacity(fmt_literal.len());
         let mut casts = HashMap::new();
 
+        // In C, dynamic widths anonymously come before the value they apply to.
+        // In Rust, they are conventionally referenced by name and passed at the
+        // end of the argument list. We will track indexes and use them to generate
+        // labels of the form vvN for the Nth argument.
+        let mut labeled = Vec::new(); // arg indices of dynamic exprs
+
         let mut idx = 0;
         Parser::new(&fmt_literal, |piece| match piece {
             Piece::Text(s) => {
@@ -1516,8 +1522,8 @@ mod refactor_format {
                 new_s.push_str(&s[last..]);
             }
             Piece::Conv(c) => {
-                c.push_spec(&mut new_s);
-                c.add_casts(&mut idx, &mut casts);
+                c.push_spec(&mut new_s, idx);
+                c.add_casts(&mut idx, &mut casts, &mut labeled);
             }
         })
         .parse();
@@ -1547,8 +1553,14 @@ mod refactor_format {
                 e.to_token_stream(),
             ))
         };
+
         macro_tts.push(expr_tt(new_fmt_str_expr));
+
+        // Add non-dynamic width arguments
         for (i, arg) in args_after_fmt.iter().enumerate() {
+            if labeled.contains(&i) {
+                continue;
+            }
             if let Some(cast) = casts.get(&i) {
                 let cexpr = cargs_after_fmt
                     .get(i)
@@ -1559,6 +1571,28 @@ mod refactor_format {
                 macro_tts.push(tt);
             }
         }
+
+        // Add dynamic width arguments at the end
+        for (i, arg) in args_after_fmt.iter().enumerate() {
+            if !labeled.contains(&i) {
+                continue;
+            }
+            if let Some(cast) = casts.get(&i) {
+                let cexpr = cargs_after_fmt
+                    .get(i)
+                    .expect("missing CExprId for format argument");
+                let tt = expr_tt(cast.apply(x, arg.clone(), *cexpr, &fmt_string_span));
+                //macro_tts.push(TokenTree::Token(Token {kind: TokenKind::Comma, span: DUMMY_SP}));
+                macro_tts.push(TokenTree::Punct(Punct::new(',', Alone)));
+                macro_tts.push(TokenTree::Ident(Ident::new(
+                    &format!("vv{}", i),
+                    Span::call_site(),
+                )));
+                macro_tts.push(TokenTree::Punct(Punct::new('=', Alone)));
+                macro_tts.push(tt);
+            }
+        }
+
         let b = if let Some(span) = span {
             mk().span(span)
         } else {
@@ -1752,13 +1786,20 @@ mod refactor_format {
             }
         }
 
-        fn add_casts(&self, idx: &mut usize, casts: &mut HashMap<usize, CastType>) {
+        fn add_casts(
+            &self,
+            idx: &mut usize,
+            casts: &mut HashMap<usize, CastType>,
+            labeled: &mut Vec<usize>,
+        ) {
             if self.width == Some(Amount::NextArg) {
                 casts.insert(*idx, CastType::Usize);
+                labeled.push(*idx);
                 *idx += 1;
             }
             if self.prec == Some(Amount::NextArg) {
                 casts.insert(*idx, CastType::Usize);
+                labeled.push(*idx);
                 *idx += 1;
             }
 
@@ -1775,7 +1816,8 @@ mod refactor_format {
             *idx += 1;
         }
 
-        fn push_spec(&self, buf: &mut String) {
+        fn push_spec(&self, buf: &mut String, base_idx: usize) {
+            let mut curr_idx = base_idx;
             buf.push_str("{:");
 
             // See https://doc.rust-lang.org/std/fmt/#syntax
@@ -1807,7 +1849,10 @@ mod refactor_format {
             if let Some(amt) = self.width {
                 match amt {
                     Amount::Number(n) => buf.push_str(&n.to_string()),
-                    Amount::NextArg => buf.push('*'),
+                    Amount::NextArg => {
+                        buf.push_str(&format!("vv{}$", curr_idx));
+                        curr_idx += 1;
+                    }
                 }
             }
 
@@ -1815,7 +1860,9 @@ mod refactor_format {
                 buf.push('.');
                 match amt {
                     Amount::Number(n) => buf.push_str(&n.to_string()),
-                    Amount::NextArg => buf.push('*'),
+                    Amount::NextArg => {
+                        buf.push_str(&format!("vv{}$", curr_idx));
+                    }
                 }
             }
 
