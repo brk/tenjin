@@ -254,6 +254,7 @@ def do_translate(
 
     c2rust_transpile_flags = [
         "--translate-const-macros",
+        "conservative",
         "--reduce-type-annotations",
         "--disable-refactoring",
     ]

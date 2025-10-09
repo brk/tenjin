@@ -4524,7 +4524,7 @@ impl<'c> Translation<'c> {
                 self.convert_expr_guided(
                     ctx,
                     *arg,
-                    arg_tys.map(|tys| tys[n]),
+                    arg_tys.and_then(|tys| tys.get(n).copied()),
                     arg_guidances.get(n).unwrap_or(&None),
                 )
             })
