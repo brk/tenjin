@@ -14,9 +14,9 @@ input_file: c2rust-transpile/tests/snapshots/tenjin_bool.c
 use std::process::ExitCode;
 pub const true_0: core::ffi::c_int = 1 as core::ffi::c_int;
 unsafe fn main_0() -> core::ffi::c_int {
-    let mut isAdmin: bool = 1 as core::ffi::c_int != 0;
+    let mut isAdmin: bool = true;
     let mut isSubscriber: bool = true_0 != 0;
-    let mut isValid: bool = 0 as core::ffi::c_int != 0;
+    let mut isValid: bool = false;
     if !isValid && isSubscriber as core::ffi::c_int != 0 && isAdmin as core::ffi::c_int != 0 {
         return 1 as core::ffi::c_int;
     }

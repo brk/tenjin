@@ -6606,6 +6606,23 @@ impl<'c> Translation<'c> {
             };
 
             // The backup is to just compare against zero
+            // For literals, or casts thereof, we can statically evaluate the comparison.
+            if let Expr::Lit(ExprLit {
+                lit: Lit::Int(ref int_lit),
+                ..
+            }) = *tenjin::expr_strip_casts(&val)
+            {
+                let int_val = int_lit.base10_parse::<u128>().unwrap();
+                // target | val | evaluated
+                // -----------------------
+                //   true |  0  |   false
+                //   true |  _  |   true
+                //  false |  0  |   true
+                //  false |  _  |   false
+                let evaluated = (int_val != 0) == target;
+                return Ok(mk().lit_expr(mk().bool_lit(evaluated)));
+            }
+
             let zero = if ty.is_floating_type() {
                 mk().lit_expr(mk().float_unsuffixed_lit("0."))
             } else {
