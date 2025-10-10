@@ -1638,7 +1638,8 @@ mod refactor_format {
                     }
 
                     // CStr::from_ptr(e as *const libc::c_char).to_str().unwrap()
-                    let e = mk().cast_expr(e, mk().ptr_ty(mk().path_ty(vec!["libc", "c_char"])));
+                    let e =
+                        mk().cast_expr(e, mk().ptr_ty(mk().path_ty(vec!["core", "ffi", "c_char"])));
                     let cs = mk().call_expr(
                         // TODO(kkysen) change `"std"` to `"core"` after `#![feature(core_c_str)]` is stabilized in `1.63.0`
                         mk().path_expr(vec!["std", "ffi", "CStr", "from_ptr"]),
@@ -1662,16 +1663,16 @@ mod refactor_format {
 
         fn as_rust_ty(&self) -> Vec<&str> {
             match *self {
-                CastType::Int(Length::None) => vec!["libc", "c_int"],
-                CastType::Uint(Length::None) => vec!["libc", "c_uint"],
-                CastType::Int(Length::Char) => vec!["libc", "c_schar"],
-                CastType::Uint(Length::Char) => vec!["libc", "c_uchar"],
-                CastType::Int(Length::Short) => vec!["libc", "c_short"],
-                CastType::Uint(Length::Short) => vec!["libc", "c_ushort"],
-                CastType::Int(Length::Long) => vec!["libc", "c_long"],
-                CastType::Uint(Length::Long) => vec!["libc", "c_ulong"],
-                CastType::Int(Length::LongLong) => vec!["libc", "c_longlong"],
-                CastType::Uint(Length::LongLong) => vec!["libc", "c_ulonglong"],
+                CastType::Int(Length::None) => vec!["core", "ffi", "c_int"],
+                CastType::Uint(Length::None) => vec!["core", "ffi", "c_uint"],
+                CastType::Int(Length::Char) => vec!["core", "ffi", "c_schar"],
+                CastType::Uint(Length::Char) => vec!["core", "ffi", "c_uchar"],
+                CastType::Int(Length::Short) => vec!["core", "ffi", "c_short"],
+                CastType::Uint(Length::Short) => vec!["core", "ffi", "c_ushort"],
+                CastType::Int(Length::Long) => vec!["core", "ffi", "c_long"],
+                CastType::Uint(Length::Long) => vec!["core", "ffi", "c_ulong"],
+                CastType::Int(Length::LongLong) => vec!["core", "ffi", "c_longlong"],
+                CastType::Uint(Length::LongLong) => vec!["core", "ffi", "c_ulonglong"],
                 // FIXME: should we use the types emitted by the transpiler instead?
                 CastType::Int(Length::IntMax) => vec!["libc", "intmax_t"],
                 CastType::Uint(Length::IntMax) => vec!["libc", "uintmax_t"],
@@ -4524,7 +4525,7 @@ impl<'c> Translation<'c> {
                 self.convert_expr_guided(
                     ctx,
                     *arg,
-                    arg_tys.map(|tys| tys[n]),
+                    arg_tys.and_then(|tys| tys.get(n).copied()),
                     arg_guidances.get(n).unwrap_or(&None),
                 )
             })
