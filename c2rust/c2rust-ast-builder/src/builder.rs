@@ -712,24 +712,20 @@ impl Builder {
     }
 
     pub fn cast_expr(self, e: Box<Expr>, t: Box<Type>) -> Box<Expr> {
+        let mut target_expr = e;
         // If the expression is itself a cast of an integer literal, and the
         // inner cast does not change the value, we can omit the inner cast.
-        if let Expr::Cast(inner) = &*e {
+        if let Expr::Cast(inner) = &*target_expr {
             if tenjin::int_lit_cast_never_truncates(&inner.expr, &inner.ty) {
                 // If the inner cast is redundant, we can just return the inner expression.
-                return Box::new(parenthesize_if_necessary(Expr::Cast(ExprCast {
-                    attrs: self.attrs,
-                    as_token: Token![as](self.span),
-                    expr: inner.expr.clone(),
-                    ty: t,
-                })));
+                target_expr = inner.expr.clone();
             }
         }
 
         Box::new(parenthesize_if_necessary(Expr::Cast(ExprCast {
             attrs: self.attrs,
             as_token: Token![as](self.span),
-            expr: e,
+            expr: target_expr,
             ty: t,
         })))
     }
