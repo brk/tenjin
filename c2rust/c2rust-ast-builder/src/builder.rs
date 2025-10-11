@@ -712,6 +712,22 @@ impl Builder {
     }
 
     pub fn cast_expr(self, e: Box<Expr>, t: Box<Type>) -> Box<Expr> {
+        // If the expression being casted is a constructor applied to a casted expression,
+        // we don't need the outer cast.
+        if let Expr::Call(ExprCall { func, args, .. }) = &*e {
+            if args.len() == 1 {
+                if let Expr::Path(ExprPath { path, .. }) = &**func {
+                    if let Expr::Cast(_) = args[0] {
+                        if let Some(seg) = path.segments.last() {
+                            if seg.ident == "Some" {
+                                return e;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         let mut target_expr = e;
         // If the expression is itself a cast of an integer literal, and the
         // inner cast does not change the value, we can omit the inner cast.
