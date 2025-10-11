@@ -716,7 +716,7 @@ impl Builder {
         // If the expression is itself a cast of an integer literal, and the
         // inner cast does not change the value, we can omit the inner cast.
         if let Expr::Cast(inner) = &*target_expr {
-            if tenjin::int_lit_cast_never_truncates(&inner.expr, &inner.ty) {
+            if inner.ty == t || tenjin::int_lit_cast_never_truncates(&inner.expr, &inner.ty) {
                 // If the inner cast is redundant, we can just return the inner expression.
                 target_expr = inner.expr.clone();
             }
