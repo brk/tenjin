@@ -1751,6 +1751,10 @@ mod refactor_format {
                 ConvType::Int(_) | ConvType::Uint(_) | ConvType::Hex(_, _) | ConvType::Float
             )
         }
+
+        fn is_char(&self) -> bool {
+            matches!(*self, ConvType::Char)
+        }
     }
 
     #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -1830,7 +1834,15 @@ mod refactor_format {
                     buf.push('<');
                 }
             } else if !self.ty.is_numeric() {
-                buf.push('>');
+                // For characters, use of precision results in UB, so we only need
+                // explicit justification if the width is specified.
+                if self.ty.is_char() {
+                    if self.width.is_some() {
+                        buf.push('>');
+                    }
+                } else {
+                    buf.push('>');
+                }
             }
 
             if self.flags.show_sign {
