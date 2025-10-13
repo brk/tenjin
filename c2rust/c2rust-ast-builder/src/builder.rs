@@ -712,24 +712,36 @@ impl Builder {
     }
 
     pub fn cast_expr(self, e: Box<Expr>, t: Box<Type>) -> Box<Expr> {
+        // If the expression being casted is a constructor applied to a casted expression,
+        // we don't need the outer cast.
+        if let Expr::Call(ExprCall { func, args, .. }) = &*e {
+            if args.len() == 1 {
+                if let Expr::Path(ExprPath { path, .. }) = &**func {
+                    if let Expr::Cast(_) = args[0] {
+                        if let Some(seg) = path.segments.last() {
+                            if seg.ident == "Some" {
+                                return e;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        let mut target_expr = e;
         // If the expression is itself a cast of an integer literal, and the
         // inner cast does not change the value, we can omit the inner cast.
-        if let Expr::Cast(inner) = &*e {
-            if tenjin::int_lit_cast_never_truncates(&inner.expr, &inner.ty) {
+        if let Expr::Cast(inner) = &*target_expr {
+            if inner.ty == t || tenjin::int_lit_cast_never_truncates(&inner.expr, &inner.ty) {
                 // If the inner cast is redundant, we can just return the inner expression.
-                return Box::new(parenthesize_if_necessary(Expr::Cast(ExprCast {
-                    attrs: self.attrs,
-                    as_token: Token![as](self.span),
-                    expr: inner.expr.clone(),
-                    ty: t,
-                })));
+                target_expr = inner.expr.clone();
             }
         }
 
         Box::new(parenthesize_if_necessary(Expr::Cast(ExprCast {
             attrs: self.attrs,
             as_token: Token![as](self.span),
-            expr: e,
+            expr: target_expr,
             ty: t,
         })))
     }
@@ -2370,6 +2382,9 @@ mod tenjin {
                 return Some(i8::MAX as i64);
             }
             if final_segment_str == "c_schar" {
+                return Some(i8::MAX as i64);
+            }
+            if final_segment_str == "c_uchar" {
                 return Some(i8::MAX as i64);
             }
         }

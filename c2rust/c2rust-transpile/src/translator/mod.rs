@@ -534,7 +534,7 @@ pub struct Translation<'c> {
     // Translation environment
     pub ast_context: TypedAstContext,
     pub tcfg: &'c TranspilerConfig,
-    parsed_guidance: RefCell<ParsedGuidance>,
+    pub parsed_guidance: RefCell<ParsedGuidance>,
     type_overrides: RefCell<HashMap<CTypeId, tenjin::GuidedType>>,
 
     // Accumulated outputs
@@ -3690,7 +3690,7 @@ impl<'c> Translation<'c> {
     ) -> TranslationResult<Vec<Stmt>> {
         // Function body scope
         self.with_scope(|| {
-            let (graph, store) = cfg::Cfg::from_stmts(self, ctx, body_ids, ret, ret_ty)?;
+            let (graph, store) = cfg::Cfg::from_stmts(self, ctx, body_ids, name, ret, ret_ty)?;
             self.convert_cfg(name, graph, store, IndexSet::new(), true)
         })
     }
@@ -5782,7 +5782,17 @@ impl<'c> Translation<'c> {
         let target_ty_kind = &self.ast_context.resolve_type(target_cty.ctype).kind;
 
         if source_ty_kind == target_ty_kind {
-            return Ok(val);
+            if let Some(guided_type) = guided_type {
+                let target_ty = self.convert_type(target_cty.ctype)?;
+                if guided_type.parsed == *target_ty {
+                    // Guided type matches target type, so we can skip the cast
+                    return Ok(val);
+                }
+                // Guided type does not match target type, so we need to cast to the guided type,
+                // which we handle below in the fallthrough path.
+            } else {
+                return Ok(val);
+            }
         }
 
         let kind = kind.unwrap_or_else(|| {

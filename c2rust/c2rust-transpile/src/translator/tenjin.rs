@@ -73,6 +73,7 @@ fn is_path_exactly_2(path: &Path, a: &str, b: &str) -> bool {
 }
 
 fn is_known_size_1_path(path: &Path) -> bool {
+    // TODO-TENJIN: expand this list
     match path.segments.len() {
         1 => matches!(
             path.segments[0].ident.to_string().as_str(),
@@ -188,10 +189,18 @@ pub fn cast_expr_guided(
     guided_type: &Option<tenjin::GuidedType>,
 ) -> Box<Expr> {
     if let Some(guided_type) = guided_type {
-        // If we want a char and have a character literal, we don't need a cast.
-        if guided_type.pretty == "char" && tenjin::expr_is_lit_char(&e) {
-            return e;
+        if guided_type.pretty == "char" {
+            // If we want a char and have a character literal, we don't need a cast.
+            if tenjin::expr_is_lit_char(&e) {
+                return e;
+            }
+            // Otherwise, we need to get a char either via 'as u8 as char'
+            // or via 'char::from_u32(...).unwrap()'. For now, we'll limit ourselves
+            // to doing the former.
+            let e_as_u8 = mk().cast_expr(e, mk().path_ty(vec!["u8"]));
+            return mk().cast_expr(e_as_u8, Box::new(guided_type.parsed.clone()));
         }
+        return mk().cast_expr(e, Box::new(guided_type.parsed.clone()));
     }
     mk().cast_expr(e, t)
 }

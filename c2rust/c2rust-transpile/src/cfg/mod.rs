@@ -567,6 +567,7 @@ impl Cfg<Label, StmtOrDecl> {
         translator: &Translation,
         ctx: ExprContext,
         stmt_ids: &[CStmtId],
+        name: &str,
         ret: ImplicitReturnType,
         ret_ty: Option<CQualTypeId>,
     ) -> TranslationResult<(Self, DeclStmtStore)> {
@@ -583,7 +584,7 @@ impl Cfg<Label, StmtOrDecl> {
             c_label_to_goto.entry(target).or_default().insert(x);
         }
 
-        let mut cfg_builder = CfgBuilder::new(c_label_to_goto);
+        let mut cfg_builder = CfgBuilder::new(c_label_to_goto, name);
         let entry = cfg_builder.entry.clone();
         cfg_builder.per_stmt_stack.push(PerStmt::new(
             stmt_ids.first().cloned(),
@@ -802,6 +803,7 @@ impl<Lbl: Clone + Ord + Hash + Debug, Stmt> Cfg<Lbl, Stmt> {
 struct CfgBuilder {
     /// Identifies the 'BasicBlock' to start with in the graph
     entry: Label,
+    fn_name: String,
 
     per_stmt_stack: Vec<PerStmt>,
 
@@ -1320,11 +1322,12 @@ impl CfgBuilder {
     }
 
     /// Create a new `CfgBuilder` with a single entry label.
-    fn new(c_label_to_goto: IndexMap<CLabelId, IndexSet<CStmtId>>) -> CfgBuilder {
+    fn new(c_label_to_goto: IndexMap<CLabelId, IndexSet<CStmtId>>, fn_name: &str) -> CfgBuilder {
         let entry = Label::Synthetic(0);
 
         CfgBuilder {
             entry,
+            fn_name: fn_name.to_string(),
 
             per_stmt_stack: vec![],
 
@@ -1429,7 +1432,13 @@ impl CfgBuilder {
             }
 
             CStmtKind::Return(expr) => {
-                let val = match expr.map(|i| translator.convert_expr(ctx.used(), i, ret_ty)) {
+                let val = match expr.map(|i| {
+                    let ret_ty_guidance = translator
+                        .parsed_guidance
+                        .borrow_mut()
+                        .query_fn_return_type(self.fn_name.as_str());
+                    translator.convert_expr_guided(ctx.used(), i, ret_ty, &ret_ty_guidance)
+                }) {
                     Some(r) => Some(r?),
                     None => None,
                 };

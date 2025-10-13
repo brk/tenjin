@@ -94,8 +94,12 @@ impl Translation<'_> {
         guided_type: &Option<tenjin::GuidedType>,
     ) -> TranslationResult<WithStmts<Box<Expr>>> {
         match *lit {
+            CLiteral::Integer(val, _)
+                if guided_type.as_ref().is_some_and(|g| g.pretty == "char") =>
+            {
+                self.convert_literal(ctx, ty, &CLiteral::Character(val), guided_type)
+            }
             CLiteral::Integer(val, base) => Ok(WithStmts::new_val(self.mk_int_lit(ty, val, base)?)),
-
             CLiteral::Character(val) => {
                 let val = val as u32;
                 let expr = match char::from_u32(val) {
