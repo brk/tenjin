@@ -183,6 +183,16 @@ pub fn expr_in_u64(expr: Box<Expr>) -> Box<Expr> {
     cast_box
 }
 
+fn to_char_lossy(expr: Box<Expr>) -> Box<Expr> {
+    // Converts an expression of integral type to char, using lossy conversion.
+    // This is appropriate for calls to tolower() and similar functions,
+    // which in C accept an int argument that must either be EOF or
+    // representable as an unsigned char.
+    let u8_ty = mk().path_ty(vec!["u8"]);
+    let char_ty = mk().path_ty(vec!["char"]);
+    mk().cast_expr(mk().cast_expr(expr, u8_ty), char_ty)
+}
+
 pub fn cast_expr_guided(
     e: Box<Expr>,
     t: Box<Type>,
@@ -197,8 +207,7 @@ pub fn cast_expr_guided(
             // Otherwise, we need to get a char either via 'as u8 as char'
             // or via 'char::from_u32(...).unwrap()'. For now, we'll limit ourselves
             // to doing the former.
-            let e_as_u8 = mk().cast_expr(e, mk().path_ty(vec!["u8"]));
-            return mk().cast_expr(e_as_u8, Box::new(guided_type.parsed.clone()));
+            return to_char_lossy(e);
         }
         return mk().cast_expr(e, Box::new(guided_type.parsed.clone()));
     }
@@ -812,8 +821,56 @@ impl Translation<'_> {
                 _ if tenjin::is_path_exactly_1(path, "strcspn") => {
                     self.recognize_preconversion_call_strcspn_guided(ctx, func, cargs)
                 }
+                _ if tenjin::is_path_exactly_1(path, "isalnum") => {
+                    self.recognize_ctype_is_1(ctx, "isalnum", "c.is_ascii_alphanumeric()", cargs)
+                }
+                _ if tenjin::is_path_exactly_1(path, "isalpha") => {
+                    self.recognize_ctype_is_1(ctx, "isalpha", "c.is_ascii_alphabetic()", cargs)
+                }
+                _ if tenjin::is_path_exactly_1(path, "islower") => {
+                    self.recognize_ctype_is_1(ctx, "islower", "c.is_ascii_lowercase()", cargs)
+                }
+                _ if tenjin::is_path_exactly_1(path, "isupper") => {
+                    self.recognize_ctype_is_1(ctx, "isupper", "c.is_ascii_uppercase()", cargs)
+                }
+                _ if tenjin::is_path_exactly_1(path, "isdigit") => {
+                    self.recognize_ctype_is_1(ctx, "isdigit", "c.is_ascii_digit()", cargs)
+                }
+                _ if tenjin::is_path_exactly_1(path, "isxdigit") => {
+                    self.recognize_ctype_is_1(ctx, "isxdigit", "c.is_ascii_hexdigit()", cargs)
+                }
+                _ if tenjin::is_path_exactly_1(path, "iscntrl") => {
+                    self.recognize_ctype_is_1(ctx, "iscntrl", "c.is_ascii_control()", cargs)
+                }
+                _ if tenjin::is_path_exactly_1(path, "isgraph") => {
+                    self.recognize_ctype_is_1(ctx, "isgraph", "c.is_ascii_graphic()", cargs)
+                }
+                _ if tenjin::is_path_exactly_1(path, "isspace") => self.recognize_ctype_is_1(
+                    ctx,
+                    "isspace",
+                    "(c.is_ascii_whitespace() || c == '\\x0b')",
+                    cargs,
+                ),
+                _ if tenjin::is_path_exactly_1(path, "isprint") => self.recognize_ctype_is_1(
+                    ctx,
+                    "isprint",
+                    "(c.is_ascii_graphic() || c == ' ')",
+                    cargs,
+                ),
+                _ if tenjin::is_path_exactly_1(path, "ispunct") => {
+                    self.recognize_ctype_is_1(ctx, "ispunct", "c.is_ascii_punctuation()", cargs)
+                }
                 _ if tenjin::is_path_exactly_1(path, "isblank") => {
-                    self.recognize_preconversion_call_isblank_guided(ctx, func, cargs)
+                    self.recognize_ctype_is_1(ctx, "isblank", "(c == ' ' || c == '\\t')", cargs)
+                }
+                _ if tenjin::is_path_exactly_1(path, "tolower") => {
+                    self.recognize_preconversion_call_tolower_guided(ctx, func, cargs)
+                }
+                _ if tenjin::is_path_exactly_1(path, "toupper") => {
+                    self.recognize_preconversion_call_toupper_guided(ctx, func, cargs)
+                }
+                _ if tenjin::is_path_exactly_1(path, "toascii") => {
+                    self.recognize_preconversion_call_toascii_guided(ctx, func, cargs)
                 }
                 _ if self.parsed_guidance.borrow().no_math_errno
                     && (tenjin::is_path_exactly_1(path, "pow")
@@ -1085,17 +1142,66 @@ impl Translation<'_> {
     }
 
     #[allow(clippy::borrowed_box)]
-    fn recognize_preconversion_call_isblank_guided(
+    fn recognize_ctype_is_1(
+        &self,
+        ctx: ExprContext,
+        c_fn_name: &str,
+        rust_char_impl: &str,
+        cargs: &[CExprId],
+    ) -> TranslationResult<Option<WithStmts<Box<Expr>>>> {
+        if cargs.len() == 1 {
+            if let Some(var_cdecl_id_foo) = self.c_expr_get_var_decl_id(cargs[0]) {
+                if self
+                    .parsed_guidance
+                    .borrow_mut()
+                    .query_decl_type(self, var_cdecl_id_foo)
+                    .is_some_and(|g| g.pretty == "char")
+                {
+                    let rust_helper_name = format!("{}_char_i", c_fn_name);
+                    self.with_cur_file_item_store(|item_store| {
+                        item_store.add_item_str_once(&format!(
+                            "fn {}(c: char) -> core::ffi::c_int {{ ({}) as core::ffi::c_int }}",
+                            rust_helper_name, rust_char_impl
+                        ));
+                    });
+
+                    let expr_foo = self.convert_expr(ctx.used(), cargs[0], None)?;
+                    let bare_foo: Box<Expr> =
+                        Box::new(tenjin::expr_strip_casts(&(expr_foo.to_expr())).clone());
+                    let call =
+                        mk().call_expr(mk().path_expr(vec![&rust_helper_name]), vec![bare_foo]);
+                    return Ok(Some(WithStmts::new_val(call)));
+                }
+            }
+
+            // Fallthrough: no guidance, or expr was not a simple variable.
+            let rust_helper_name = format!("xj_{}", c_fn_name);
+            self.with_cur_file_item_store(|item_store| {
+                item_store.add_item_str_once(&format!(
+                    "fn {}(c: core::ffi::c_int) -> core::ffi::c_int {{ if c == -1 {{ 0 }} else {{ let c = c as u8 as char; ({}) as core::ffi::c_int }} }}",
+                    rust_helper_name, rust_char_impl
+                ));
+            });
+
+            let expr_foo = self.convert_expr(ctx.used(), cargs[0], None)?;
+            let call = mk().call_expr(
+                mk().path_expr(vec![&rust_helper_name]),
+                vec![expr_foo.to_expr()],
+            );
+            return Ok(Some(WithStmts::new_val(call)));
+        }
+
+        Ok(None)
+    }
+
+    #[allow(clippy::borrowed_box)]
+    fn recognize_preconversion_call_tolower_guided(
         &self,
         ctx: ExprContext,
         func: &Box<Expr>,
         cargs: &[CExprId],
     ) -> TranslationResult<Option<WithStmts<Box<Expr>>>> {
-        if tenjin::expr_is_ident(func, "isblank") && cargs.len() == 1 {
-            // isblank(FOO)
-            //    when FOO is a simple variable with type char
-            // should be translated to
-            // isblank_char(FOO)
+        if tenjin::expr_is_ident(func, "tolower") && cargs.len() == 1 {
             if let Some(var_cdecl_id_foo) = self.c_expr_get_var_decl_id(cargs[0]) {
                 if self
                     .parsed_guidance
@@ -1107,7 +1213,7 @@ impl Translation<'_> {
                         // For now we return an integer code rather than a bool,
                         // to better match the C function signature.
                         item_store.add_item_str_once(
-                            "fn isblank_char_i(c: char) -> libc::c_int { (c == ' ' || c == '\\t') as libc::c_int }",
+                            "fn tolower_char_i(c: char) -> core::ffi::c_int { c.to_ascii_lowercase() as core::ffi::c_int }",
                         );
                     });
 
@@ -1116,11 +1222,121 @@ impl Translation<'_> {
                     // which matches the argument of the function we're redirecting to.
                     let bare_foo: Box<Expr> =
                         Box::new(tenjin::expr_strip_casts(&(expr_foo.to_expr())).clone());
-                    let isblank_call =
-                        mk().call_expr(mk().path_expr(vec!["isblank_char_i"]), vec![bare_foo]);
-                    return Ok(Some(WithStmts::new_val(isblank_call)));
+                    let tolower_call =
+                        mk().call_expr(mk().path_expr(vec!["tolower_char_i"]), vec![bare_foo]);
+                    return Ok(Some(WithStmts::new_val(tolower_call)));
                 }
             }
+            // Fallthrough: no guidance, or expr was not a simple variable.
+
+            self.with_cur_file_item_store(|item_store| {
+                    item_store.add_item_str_once(
+                        "fn xj_tolower(c: core::ffi::c_int) -> core::ffi::c_int { if c == -1 { -1 } else { (c as u8 as char).to_ascii_lowercase() as core::ffi::c_int } }",
+                    );
+                });
+
+            let expr_foo = self.convert_expr(ctx.used(), cargs[0], None)?;
+            let tolower_call =
+                mk().call_expr(mk().path_expr(vec!["xj_tolower"]), vec![expr_foo.to_expr()]);
+            return Ok(Some(WithStmts::new_val(tolower_call)));
+        }
+
+        Ok(None)
+    }
+
+    #[allow(clippy::borrowed_box)]
+    fn recognize_preconversion_call_toupper_guided(
+        &self,
+        ctx: ExprContext,
+        func: &Box<Expr>,
+        cargs: &[CExprId],
+    ) -> TranslationResult<Option<WithStmts<Box<Expr>>>> {
+        if tenjin::expr_is_ident(func, "toupper") && cargs.len() == 1 {
+            if let Some(var_cdecl_id_foo) = self.c_expr_get_var_decl_id(cargs[0]) {
+                if self
+                    .parsed_guidance
+                    .borrow_mut()
+                    .query_decl_type(self, var_cdecl_id_foo)
+                    .is_some_and(|g| g.pretty == "char")
+                {
+                    self.with_cur_file_item_store(|item_store| {
+                        // For now we return an integer code rather than a bool,
+                        // to better match the C function signature.
+                        item_store.add_item_str_once(
+                            "fn toupper_char_i(c: char) -> core::ffi::c_int { c.to_ascii_uppercase() as core::ffi::c_int }",
+                        );
+                    });
+
+                    let expr_foo = self.convert_expr(ctx.used(), cargs[0], None)?;
+                    // Stripping casts is correct because we know the underlying type is char,
+                    // which matches the argument of the function we're redirecting to.
+                    let bare_foo: Box<Expr> =
+                        Box::new(tenjin::expr_strip_casts(&(expr_foo.to_expr())).clone());
+                    let toupper_call =
+                        mk().call_expr(mk().path_expr(vec!["toupper_char_i"]), vec![bare_foo]);
+                    return Ok(Some(WithStmts::new_val(toupper_call)));
+                }
+            }
+            // Fallthrough: no guidance, or expr was not a simple variable.
+
+            self.with_cur_file_item_store(|item_store| {
+                    item_store.add_item_str_once(
+                        "fn xj_toupper(c: core::ffi::c_int) -> core::ffi::c_int { if c == -1 { -1 } else { (c as u8 as char).to_ascii_uppercase() as core::ffi::c_int } }",
+                    );
+                });
+
+            let expr_foo = self.convert_expr(ctx.used(), cargs[0], None)?;
+            let toupper_call =
+                mk().call_expr(mk().path_expr(vec!["xj_toupper"]), vec![expr_foo.to_expr()]);
+            return Ok(Some(WithStmts::new_val(toupper_call)));
+        }
+
+        Ok(None)
+    }
+
+    #[allow(clippy::borrowed_box)]
+    fn recognize_preconversion_call_toascii_guided(
+        &self,
+        ctx: ExprContext,
+        func: &Box<Expr>,
+        cargs: &[CExprId],
+    ) -> TranslationResult<Option<WithStmts<Box<Expr>>>> {
+        if tenjin::expr_is_ident(func, "toascii") && cargs.len() == 1 {
+            if let Some(var_cdecl_id_foo) = self.c_expr_get_var_decl_id(cargs[0]) {
+                if self
+                    .parsed_guidance
+                    .borrow_mut()
+                    .query_decl_type(self, var_cdecl_id_foo)
+                    .is_some_and(|g| g.pretty == "char")
+                {
+                    self.with_cur_file_item_store(|item_store| {
+                        item_store.add_item_str_once(
+                            "fn toascii_char_i(c: char) -> core::ffi::c_int { char::from_u32((c as u32) & 0x7f).unwrap() as core::ffi::c_int }",
+                        );
+                    });
+
+                    let expr_foo = self.convert_expr(ctx.used(), cargs[0], None)?;
+                    // Stripping casts is correct because we know the underlying type is char,
+                    // which matches the argument of the function we're redirecting to.
+                    let bare_foo: Box<Expr> =
+                        Box::new(tenjin::expr_strip_casts(&(expr_foo.to_expr())).clone());
+                    let toascii_call =
+                        mk().call_expr(mk().path_expr(vec!["toascii_char_i"]), vec![bare_foo]);
+                    return Ok(Some(WithStmts::new_val(toascii_call)));
+                }
+            }
+            // Fallthrough: no guidance, or expr was not a simple variable.
+
+            self.with_cur_file_item_store(|item_store| {
+                item_store.add_item_str_once(
+                    "fn xj_toascii(c: core::ffi::c_int) -> core::ffi::c_int { c & 0x7f }",
+                );
+            });
+
+            let expr_foo = self.convert_expr(ctx.used(), cargs[0], None)?;
+            let toascii_call =
+                mk().call_expr(mk().path_expr(vec!["xj_toascii"]), vec![expr_foo.to_expr()]);
+            return Ok(Some(WithStmts::new_val(toascii_call)));
         }
 
         Ok(None)
