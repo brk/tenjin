@@ -821,8 +821,47 @@ impl Translation<'_> {
                 _ if tenjin::is_path_exactly_1(path, "strcspn") => {
                     self.recognize_preconversion_call_strcspn_guided(ctx, func, cargs)
                 }
+                _ if tenjin::is_path_exactly_1(path, "isalnum") => {
+                    self.recognize_ctype_is_1(ctx, "isalnum", "c.is_ascii_alphanumeric()", cargs)
+                }
+                _ if tenjin::is_path_exactly_1(path, "isalpha") => {
+                    self.recognize_ctype_is_1(ctx, "isalpha", "c.is_ascii_alphabetic()", cargs)
+                }
+                _ if tenjin::is_path_exactly_1(path, "islower") => {
+                    self.recognize_ctype_is_1(ctx, "islower", "c.is_ascii_lowercase()", cargs)
+                }
+                _ if tenjin::is_path_exactly_1(path, "isupper") => {
+                    self.recognize_ctype_is_1(ctx, "isupper", "c.is_ascii_uppercase()", cargs)
+                }
+                _ if tenjin::is_path_exactly_1(path, "isdigit") => {
+                    self.recognize_ctype_is_1(ctx, "isdigit", "c.is_ascii_digit()", cargs)
+                }
+                _ if tenjin::is_path_exactly_1(path, "isxdigit") => {
+                    self.recognize_ctype_is_1(ctx, "isxdigit", "c.is_ascii_hexdigit()", cargs)
+                }
+                _ if tenjin::is_path_exactly_1(path, "iscntrl") => {
+                    self.recognize_ctype_is_1(ctx, "iscntrl", "c.is_ascii_control()", cargs)
+                }
+                _ if tenjin::is_path_exactly_1(path, "isgraph") => {
+                    self.recognize_ctype_is_1(ctx, "isgraph", "c.is_ascii_graphic()", cargs)
+                }
+                _ if tenjin::is_path_exactly_1(path, "isspace") => self.recognize_ctype_is_1(
+                    ctx,
+                    "isspace",
+                    "(c.is_ascii_whitespace() || c == '\\x0b')",
+                    cargs,
+                ),
+                _ if tenjin::is_path_exactly_1(path, "isprint") => self.recognize_ctype_is_1(
+                    ctx,
+                    "isprint",
+                    "(c.is_ascii_graphic() || c == ' ')",
+                    cargs,
+                ),
+                _ if tenjin::is_path_exactly_1(path, "ispunct") => {
+                    self.recognize_ctype_is_1(ctx, "ispunct", "c.is_ascii_punctuation()", cargs)
+                }
                 _ if tenjin::is_path_exactly_1(path, "isblank") => {
-                    self.recognize_preconversion_call_isblank_guided(ctx, func, cargs)
+                    self.recognize_ctype_is_1(ctx, "isblank", "(c == ' ' || c == '\\t')", cargs)
                 }
                 _ if tenjin::is_path_exactly_1(path, "tolower") => {
                     self.recognize_preconversion_call_tolower_guided(ctx, func, cargs)
@@ -1103,17 +1142,14 @@ impl Translation<'_> {
     }
 
     #[allow(clippy::borrowed_box)]
-    fn recognize_preconversion_call_isblank_guided(
+    fn recognize_ctype_is_1(
         &self,
         ctx: ExprContext,
-        func: &Box<Expr>,
+        c_fn_name: &str,
+        rust_char_impl: &str,
         cargs: &[CExprId],
     ) -> TranslationResult<Option<WithStmts<Box<Expr>>>> {
-        if tenjin::expr_is_ident(func, "isblank") && cargs.len() == 1 {
-            // isblank(FOO)
-            //    when FOO is a simple variable with type char
-            // should be translated to
-            // isblank_char(FOO)
+        if cargs.len() == 1 {
             if let Some(var_cdecl_id_foo) = self.c_expr_get_var_decl_id(cargs[0]) {
                 if self
                     .parsed_guidance
@@ -1121,36 +1157,38 @@ impl Translation<'_> {
                     .query_decl_type(self, var_cdecl_id_foo)
                     .is_some_and(|g| g.pretty == "char")
                 {
+                    let rust_helper_name = format!("{}_char_i", c_fn_name);
                     self.with_cur_file_item_store(|item_store| {
-                        // For now we return an integer code rather than a bool,
-                        // to better match the C function signature.
-                        item_store.add_item_str_once(
-                            "fn isblank_char_i(c: char) -> core::ffi::c_int { (c == ' ' || c == '\\t') as core::ffi::c_int }",
-                        );
+                        item_store.add_item_str_once(&format!(
+                            "fn {}(c: char) -> core::ffi::c_int {{ ({}) as core::ffi::c_int }}",
+                            rust_helper_name, rust_char_impl
+                        ));
                     });
 
                     let expr_foo = self.convert_expr(ctx.used(), cargs[0], None)?;
-                    // Stripping casts is correct because we know the underlying type is char,
-                    // which matches the argument of the function we're redirecting to.
                     let bare_foo: Box<Expr> =
                         Box::new(tenjin::expr_strip_casts(&(expr_foo.to_expr())).clone());
-                    let isblank_call =
-                        mk().call_expr(mk().path_expr(vec!["isblank_char_i"]), vec![bare_foo]);
-                    return Ok(Some(WithStmts::new_val(isblank_call)));
+                    let call =
+                        mk().call_expr(mk().path_expr(vec![&rust_helper_name]), vec![bare_foo]);
+                    return Ok(Some(WithStmts::new_val(call)));
                 }
             }
 
             // Fallthrough: no guidance, or expr was not a simple variable.
+            let rust_helper_name = format!("xj_{}", c_fn_name);
             self.with_cur_file_item_store(|item_store| {
-                    item_store.add_item_str_once(
-                        "fn xj_isblank(c: core::ffi::c_int) -> core::ffi::c_int { if c == -1 { -1 } else { let c = c as u8 as char; (c == ' ' || c == '\\t') as core::ffi::c_int } }",
-                    );
-                });
+                item_store.add_item_str_once(&format!(
+                    "fn {}(c: core::ffi::c_int) -> core::ffi::c_int {{ if c == -1 {{ 0 }} else {{ let c = c as u8 as char; ({}) as core::ffi::c_int }} }}",
+                    rust_helper_name, rust_char_impl
+                ));
+            });
 
             let expr_foo = self.convert_expr(ctx.used(), cargs[0], None)?;
-            let isblank_call =
-                mk().call_expr(mk().path_expr(vec!["xj_isblank"]), vec![expr_foo.to_expr()]);
-            return Ok(Some(WithStmts::new_val(isblank_call)));
+            let call = mk().call_expr(
+                mk().path_expr(vec![&rust_helper_name]),
+                vec![expr_foo.to_expr()],
+            );
+            return Ok(Some(WithStmts::new_val(call)));
         }
 
         Ok(None)
