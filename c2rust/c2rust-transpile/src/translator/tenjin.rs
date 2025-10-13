@@ -830,6 +830,9 @@ impl Translation<'_> {
                 _ if tenjin::is_path_exactly_1(path, "toupper") => {
                     self.recognize_preconversion_call_toupper_guided(ctx, func, cargs)
                 }
+                _ if tenjin::is_path_exactly_1(path, "toascii") => {
+                    self.recognize_preconversion_call_toascii_guided(ctx, func, cargs)
+                }
                 _ if self.parsed_guidance.borrow().no_math_errno
                     && (tenjin::is_path_exactly_1(path, "pow")
                         || tenjin::is_path_exactly_1(path, "powf")
@@ -1236,6 +1239,54 @@ impl Translation<'_> {
             let toupper_call =
                 mk().call_expr(mk().path_expr(vec!["xj_toupper"]), vec![expr_foo.to_expr()]);
             return Ok(Some(WithStmts::new_val(toupper_call)));
+        }
+
+        Ok(None)
+    }
+
+    #[allow(clippy::borrowed_box)]
+    fn recognize_preconversion_call_toascii_guided(
+        &self,
+        ctx: ExprContext,
+        func: &Box<Expr>,
+        cargs: &[CExprId],
+    ) -> TranslationResult<Option<WithStmts<Box<Expr>>>> {
+        if tenjin::expr_is_ident(func, "toascii") && cargs.len() == 1 {
+            if let Some(var_cdecl_id_foo) = self.c_expr_get_var_decl_id(cargs[0]) {
+                if self
+                    .parsed_guidance
+                    .borrow_mut()
+                    .query_decl_type(self, var_cdecl_id_foo)
+                    .is_some_and(|g| g.pretty == "char")
+                {
+                    self.with_cur_file_item_store(|item_store| {
+                        item_store.add_item_str_once(
+                            "fn toascii_char_i(c: char) -> core::ffi::c_int { char::from_u32((c as u32) & 0x7f).unwrap() as core::ffi::c_int }",
+                        );
+                    });
+
+                    let expr_foo = self.convert_expr(ctx.used(), cargs[0], None)?;
+                    // Stripping casts is correct because we know the underlying type is char,
+                    // which matches the argument of the function we're redirecting to.
+                    let bare_foo: Box<Expr> =
+                        Box::new(tenjin::expr_strip_casts(&(expr_foo.to_expr())).clone());
+                    let toascii_call =
+                        mk().call_expr(mk().path_expr(vec!["toascii_char_i"]), vec![bare_foo]);
+                    return Ok(Some(WithStmts::new_val(toascii_call)));
+                }
+            }
+            // Fallthrough: no guidance, or expr was not a simple variable.
+
+            self.with_cur_file_item_store(|item_store| {
+                item_store.add_item_str_once(
+                    "fn xj_toascii(c: core::ffi::c_int) -> core::ffi::c_int { c & 0x7f }",
+                );
+            });
+
+            let expr_foo = self.convert_expr(ctx.used(), cargs[0], None)?;
+            let toascii_call =
+                mk().call_expr(mk().path_expr(vec!["xj_toascii"]), vec![expr_foo.to_expr()]);
+            return Ok(Some(WithStmts::new_val(toascii_call)));
         }
 
         Ok(None)
