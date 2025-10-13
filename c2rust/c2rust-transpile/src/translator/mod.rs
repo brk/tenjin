@@ -534,7 +534,7 @@ pub struct Translation<'c> {
     // Translation environment
     pub ast_context: TypedAstContext,
     pub tcfg: &'c TranspilerConfig,
-    parsed_guidance: RefCell<ParsedGuidance>,
+    pub parsed_guidance: RefCell<ParsedGuidance>,
     type_overrides: RefCell<HashMap<CTypeId, tenjin::GuidedType>>,
 
     // Accumulated outputs
@@ -3690,7 +3690,7 @@ impl<'c> Translation<'c> {
     ) -> TranslationResult<Vec<Stmt>> {
         // Function body scope
         self.with_scope(|| {
-            let (graph, store) = cfg::Cfg::from_stmts(self, ctx, body_ids, ret, ret_ty)?;
+            let (graph, store) = cfg::Cfg::from_stmts(self, ctx, body_ids, name, ret, ret_ty)?;
             self.convert_cfg(name, graph, store, IndexSet::new(), true)
         })
     }
