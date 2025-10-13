@@ -1125,7 +1125,7 @@ impl Translation<'_> {
                         // For now we return an integer code rather than a bool,
                         // to better match the C function signature.
                         item_store.add_item_str_once(
-                            "fn isblank_char_i(c: char) -> libc::c_int { (c == ' ' || c == '\\t') as libc::c_int }",
+                            "fn isblank_char_i(c: char) -> core::ffi::c_int { (c == ' ' || c == '\\t') as core::ffi::c_int }",
                         );
                     });
 
@@ -1139,6 +1139,18 @@ impl Translation<'_> {
                     return Ok(Some(WithStmts::new_val(isblank_call)));
                 }
             }
+
+            // Fallthrough: no guidance, or expr was not a simple variable.
+            self.with_cur_file_item_store(|item_store| {
+                    item_store.add_item_str_once(
+                        "fn xj_isblank(c: core::ffi::c_int) -> core::ffi::c_int { if c == -1 { -1 } else { let c = c as u8 as char; (c == ' ' || c == '\\t') as core::ffi::c_int } }",
+                    );
+                });
+
+            let expr_foo = self.convert_expr(ctx.used(), cargs[0], None)?;
+            let isblank_call =
+                mk().call_expr(mk().path_expr(vec!["xj_isblank"]), vec![expr_foo.to_expr()]);
+            return Ok(Some(WithStmts::new_val(isblank_call)));
         }
 
         Ok(None)
