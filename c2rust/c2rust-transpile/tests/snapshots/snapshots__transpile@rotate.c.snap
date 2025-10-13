@@ -13,7 +13,7 @@ input_file: c2rust-transpile/tests/snapshots/rotate.c
 )]
 #[no_mangle]
 pub unsafe extern "C" fn rotate_left_8(mut x: core::ffi::c_uchar) -> core::ffi::c_uchar {
-    return x.rotate_left(1 as core::ffi::c_uchar as u32);
+    return x.rotate_left(1 as u32);
 }
 #[no_mangle]
 pub unsafe extern "C" fn rotate_left_16(mut x: core::ffi::c_ushort) -> core::ffi::c_ushort {
@@ -25,7 +25,7 @@ pub unsafe extern "C" fn rotate_left_32(mut x: core::ffi::c_uint) -> core::ffi::
 }
 #[no_mangle]
 pub unsafe extern "C" fn rotate_right_8(mut x: core::ffi::c_uchar) -> core::ffi::c_uchar {
-    return x.rotate_right(1 as core::ffi::c_uchar as u32);
+    return x.rotate_right(1 as u32);
 }
 #[no_mangle]
 pub unsafe extern "C" fn rotate_right_16(mut x: core::ffi::c_ushort) -> core::ffi::c_ushort {

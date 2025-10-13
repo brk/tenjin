@@ -73,6 +73,7 @@ fn is_path_exactly_2(path: &Path, a: &str, b: &str) -> bool {
 }
 
 fn is_known_size_1_path(path: &Path) -> bool {
+    // TODO-TENJIN: expand this list
     match path.segments.len() {
         1 => matches!(
             path.segments[0].ident.to_string().as_str(),

@@ -2384,6 +2384,9 @@ mod tenjin {
             if final_segment_str == "c_schar" {
                 return Some(i8::MAX as i64);
             }
+            if final_segment_str == "c_uchar" {
+                return Some(i8::MAX as i64);
+            }
         }
         match path.segments[0].ident.to_string().as_str() {
             "u8" | "i8" | "char" => Some(i8::MAX as i64),
