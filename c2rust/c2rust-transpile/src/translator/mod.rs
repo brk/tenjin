@@ -5782,7 +5782,17 @@ impl<'c> Translation<'c> {
         let target_ty_kind = &self.ast_context.resolve_type(target_cty.ctype).kind;
 
         if source_ty_kind == target_ty_kind {
-            return Ok(val);
+            if let Some(guided_type) = guided_type {
+                let target_ty = self.convert_type(target_cty.ctype)?;
+                if guided_type.parsed == *target_ty {
+                    // Guided type matches target type, so we can skip the cast
+                    return Ok(val);
+                }
+                // Guided type does not match target type, so we need to cast to the guided type,
+                // which we handle below in the fallthrough path.
+            } else {
+                return Ok(val);
+            }
         }
 
         let kind = kind.unwrap_or_else(|| {
