@@ -3,19 +3,24 @@ use std::char;
 use std::collections::{HashMap, HashSet};
 use std::mem;
 use std::ops::Index;
-use std::path::{self, PathBuf};
-use std::result::Result; // To override syn::Result from glob import
+use std::path::{Path, PathBuf};
 
 use dtoa;
-
 use failure::{err_msg, format_err, Fail};
 use indexmap::indexmap;
 use indexmap::{IndexMap, IndexSet};
 use log::{error, info, trace, warn};
 use proc_macro2::{Punct, Spacing::*, Span, TokenStream, TokenTree};
 use syn::spanned::Spanned as _;
-use syn::*;
-use syn::{BinOp, UnOp}; // To override c_ast::{BinOp,UnOp} from glob import
+use syn::{
+    AttrStyle, BareVariadic, Block, Expr, ExprBinary, ExprBlock, ExprBreak, ExprCast, ExprField,
+    ExprIndex, ExprParen, ExprUnary, Field, FnArg, ForeignItem, ForeignItemFn, ForeignItemMacro,
+    ForeignItemStatic, ForeignItemType, Ident, Item, ItemConst, ItemEnum, ItemExternCrate, ItemFn,
+    ItemForeignMod, ItemImpl, ItemMacro, ItemMod, ItemStatic, ItemStruct, ItemTrait,
+    ItemTraitAlias, ItemType, ItemUnion, ItemUse, Lifetime, Lit, Macro, MacroDelimiter,
+    PathSegment, ReturnType, Stmt, Type, TypeTuple, Visibility,
+};
+use syn::{BinOp, UnOp}; // To override `c_ast::{BinOp,UnOp}` from glob import.
 
 use crate::diagnostics::TranslationResult;
 use crate::rust_ast::comment_store::CommentStore;
@@ -24,7 +29,7 @@ use crate::rust_ast::set_span::SetSpan;
 use crate::rust_ast::{pos_to_span, SpanExt};
 use crate::translator::named_references::NamedReference;
 use c2rust_ast_builder::{mk, properties::*, Builder};
-use c2rust_ast_printer::pprust::{self};
+use c2rust_ast_printer::pprust;
 
 use crate::c_ast::iterators::{DFExpr, SomeId};
 use crate::cfg;
@@ -694,8 +699,8 @@ fn prefix_names(translation: &mut Translation, prefix: &str) {
 // on whether there is a collision or not prepend the prior directory name to the path name.
 // To check for collisions, a IndexMap with the path name(key) and the path(value) associated with
 // the name. If the path name is in use, but the paths differ there is a collision.
-fn clean_path(mod_names: &RefCell<IndexMap<String, PathBuf>>, path: Option<&path::Path>) -> String {
-    fn path_to_str(path: &path::Path) -> String {
+fn clean_path(mod_names: &RefCell<IndexMap<String, PathBuf>>, path: Option<&Path>) -> String {
+    fn path_to_str(path: &Path) -> String {
         path.file_name()
             .unwrap()
             .to_str()
@@ -704,7 +709,7 @@ fn clean_path(mod_names: &RefCell<IndexMap<String, PathBuf>>, path: Option<&path
     }
 
     let mut file_path: String = path.map_or("internal".to_string(), path_to_str);
-    let path = path.unwrap_or_else(|| path::Path::new(""));
+    let path = path.unwrap_or_else(|| Path::new(""));
     let mut mod_names = mod_names.borrow_mut();
     if !mod_names.contains_key(&file_path.clone()) {
         mod_names.insert(file_path.clone(), path.to_path_buf());
@@ -741,10 +746,10 @@ pub fn translate_failure(tcfg: &TranspilerConfig, msg: &str) {
 pub fn translate(
     ast_context: TypedAstContext,
     tcfg: &TranspilerConfig,
-    main_file: PathBuf,
+    main_file: &Path,
     parent_fn_map: HashMap<CDeclId, CDeclId>,
 ) -> (String, PragmaVec, CrateSet) {
-    let mut t = Translation::new(ast_context, tcfg, main_file.as_path(), parent_fn_map);
+    let mut t = Translation::new(ast_context, tcfg, main_file, parent_fn_map);
     let ctx = ExprContext {
         used: true,
         is_static: false,
@@ -758,10 +763,6 @@ pub fn translate(
     };
 
     {
-        // Sort the top-level declarations by file and source location so that we
-        // preserve the ordering of all declarations in each file.
-        t.ast_context.sort_top_decls();
-
         t.locate_comments();
 
         // Headers often pull in declarations that are unused;
@@ -781,7 +782,7 @@ pub fn translate(
             None,
         }
 
-        fn some_type_name(s: Option<&str>) -> Name {
+        fn some_type_name(s: Option<&str>) -> Name<'_> {
             match s {
                 None => Name::Anonymous,
                 Some(r) => Name::Type(r),
@@ -950,25 +951,36 @@ pub fn translate(
             }
         }
 
-        // Export top-level value declarations
-        for top_id in &t.ast_context.c_decls_top {
-            use CDeclKind::*;
-            let needs_export = match t.ast_context[*top_id].kind {
-                Function { is_implicit, .. } => !is_implicit,
-                Variable { .. } => true,
-                MacroObject { .. } => true, // Depends on `tcfg.translate_const_macros`, but handled in `fn convert_const_macro_expansion`.
-                MacroFunction { .. } => true, // Depends on `tcfg.translate_fn_macros`, but handled in `fn convert_fn_macro_invocation`.
-                _ => false,
-            };
-            if needs_export {
-                let decl = t.ast_context.get_decl(top_id).unwrap();
+        // Export top-level value declarations.
+        // We do this in a conversion pass and then an insertion pass
+        // so that the conversion order can differ from the order they're emitted in.
+        let mut converted_decls = t
+            .ast_context
+            .c_decls_top
+            .iter()
+            .filter_map(|&top_id| {
+                use CDeclKind::*;
+                let needs_export = match t.ast_context[top_id].kind {
+                    Function { is_implicit, .. } => !is_implicit,
+                    Variable { .. } => true,
+                    MacroObject { .. } => true, // Depends on `tcfg.translate_const_macros`, but handled in `fn convert_const_macro_expansion`.
+                    MacroFunction { .. } => true, // Depends on `tcfg.translate_fn_macros`, but handled in `fn convert_fn_macro_invocation`.
+                    _ => false,
+                };
+                if !needs_export {
+                    return None;
+                }
+
+                let decl = t.ast_context.get_decl(&top_id).unwrap();
                 let decl_file_id = t.ast_context.file_id(decl);
 
                 if t.tcfg.reorganize_definitions && decl_file_id.is_some_and(|id| id != t.main_file)
                 {
                     t.cur_file.set(decl_file_id);
                 }
-                match t.convert_decl(ctx, *top_id) {
+
+                // TODO use `.inspect_err` once stabilized in Rust 1.76.
+                let converted = match t.convert_decl(ctx, top_id) {
                     Err(e) => {
                         let decl_identifier = decl.kind.get_name().map_or_else(
                             || {
@@ -980,31 +992,47 @@ pub fn translate(
                         );
                         let msg = format!("Failed to translate {decl_identifier}: {e}");
                         translate_failure(t.tcfg, &msg);
+                        Err(e)
                     }
-                    Ok(converted_decl) => {
-                        use ConvertedDecl::*;
-                        match converted_decl {
-                            Item(item) => {
-                                t.insert_item(item, decl);
-                            }
-                            ForeignItem(item) => {
-                                t.insert_foreign_item(*item, decl);
-                            }
-                            Items(items) => {
-                                for item in items {
-                                    t.insert_item(item, decl);
-                                }
-                            }
-                            NoItem => {}
-                        }
-                    }
+                    Ok(converted) => Ok(converted),
                 }
+                .ok()?;
+
                 t.cur_file.take();
 
-                if t.tcfg.reorganize_definitions && decl_file_id.is_some_and(|id| id != t.main_file)
-                {
-                    t.generate_submodule_imports(*top_id, decl_file_id);
+                Some((top_id, converted))
+            })
+            .collect::<HashMap<_, _>>();
+
+        t.ast_context.sort_top_decls_for_emitting();
+
+        for top_id in &t.ast_context.c_decls_top {
+            let decl = t.ast_context.get_decl(top_id).unwrap();
+            let decl_file_id = t.ast_context.file_id(decl);
+            // TODO use `let else` when it stabilizes.
+            let converted_decl = match converted_decls.remove(top_id) {
+                Some(converted) => converted,
+                None => continue,
+            };
+
+            use ConvertedDecl::*;
+            match converted_decl {
+                Item(item) => {
+                    t.insert_item(item, decl);
                 }
+                ForeignItem(item) => {
+                    t.insert_foreign_item(*item, decl);
+                }
+                Items(items) => {
+                    for item in items {
+                        t.insert_item(item, decl);
+                    }
+                }
+                NoItem => {}
+            };
+
+            if t.tcfg.reorganize_definitions && decl_file_id.is_some_and(|id| id != t.main_file) {
+                t.generate_submodule_imports(*top_id, decl_file_id);
             }
         }
 
@@ -1099,7 +1127,7 @@ pub fn translate(
 
         // pass all converted items to the Rust pretty printer
         let translation = pprust::to_string(|| {
-            let (attrs, mut all_items) = arrange_header(&t, t.tcfg.is_binary(main_file.as_path()));
+            let (attrs, mut all_items) = arrange_header(&t, t.tcfg.is_binary(main_file));
 
             all_items.extend(mod_items);
 
@@ -1419,8 +1447,8 @@ enum RecognizedCallForm {
 }
 
 enum LitStrOrByteStr<'a> {
-    LitStr(&'a LitStr),
-    ByteStr(&'a LitByteStr),
+    LitStr(&'a syn::LitStr),
+    ByteStr(&'a syn::LitByteStr),
 }
 
 mod refactor_format {
@@ -1431,11 +1459,11 @@ mod refactor_format {
 
     fn expr_as_lit_str<'a>(expr: &'a Expr) -> Option<LitStrOrByteStr<'a>> {
         match *expr {
-            Expr::Lit(ExprLit {
+            Expr::Lit(syn::ExprLit {
                 lit: Lit::Str(ref s),
                 ..
             }) => Some(LitStrOrByteStr::LitStr(s)),
-            Expr::Lit(ExprLit {
+            Expr::Lit(syn::ExprLit {
                 lit: Lit::ByteStr(ref b),
                 ..
             }) => Some(LitStrOrByteStr::ByteStr(b)),
@@ -2087,7 +2115,7 @@ impl<'c> Translation<'c> {
     pub fn new(
         mut ast_context: TypedAstContext,
         tcfg: &'c TranspilerConfig,
-        main_file: &path::Path,
+        main_file: &Path,
         parent_fn_map: HashMap<CDeclId, CDeclId>,
     ) -> Self {
         let comment_context = CommentContext::new(&mut ast_context);
@@ -4231,7 +4259,7 @@ impl<'c> Translation<'c> {
         let pointee = self
             .ast_context
             .get_pointee_qual_type(type_id)
-            .ok_or(TranslationError::generic("null_ptr requires a pointer"))?;
+            .ok_or_else(|| TranslationError::generic("null_ptr requires a pointer"))?;
         let ty = self.convert_type(type_id)?;
         let mut zero = mk().lit_expr(mk().int_unsuffixed_lit(0));
         if is_static && !pointee.qualifiers.is_const {
@@ -6607,7 +6635,7 @@ impl<'c> Translation<'c> {
 
             // The backup is to just compare against zero
             // For literals, or casts thereof, we can statically evaluate the comparison.
-            if let Expr::Lit(ExprLit {
+            if let Expr::Lit(syn::ExprLit {
                 lit: Lit::Int(ref int_lit),
                 ..
             }) = *tenjin::expr_strip_casts(&val)
@@ -6739,7 +6767,7 @@ impl<'c> Translation<'c> {
         // If the definition lives in the same header, there is no need to import it
         // in fact, this would be a hard rust error.
         // We should never import into the main module here, as that happens in make_submodule
-        if (import_file_id == Some(decl_file_id)) || decl_file_id == self.main_file {
+        if import_file_id == Some(decl_file_id) || decl_file_id == self.main_file {
             return;
         }
 
