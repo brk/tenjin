@@ -44,7 +44,7 @@ The manual is still a work-in-progress, so if you can't find something please le
 ### Prerequisites
 
 C2Rust requires LLVM 7 or later with its corresponding clang compiler and libraries.
-Python 3.6 or later, CMake 3.4.3 or later, and openssl (1.0) are also required. These prerequisites may be installed with the following commands, depending on your platform:
+Python 3.6 or later, CMake 3.5 or later, and openssl (1.0) are also required. These prerequisites may be installed with the following commands, depending on your platform:
 
 - **Ubuntu 18.04, Debian 10, and later:**
 
@@ -325,10 +325,12 @@ This material is available under the BSD-3 style license as found in the
 The C2Rust translator is inspired by Jamey Sharp's [Corrode](https://github.com/jameysharp/corrode) translator.
 We rely on [Emscripten](https://github.com/kripken/emscripten)'s
 Relooper algorithm to translate arbitrary C control flows.
+Many individuals have contributed bug fixes and improvements to C2Rust; thank you so much!
 
 This material is based upon work supported by the United States Air Force and
-DARPA under Contract No. FA8750-15-C-0124.  Any opinions, findings and
-conclusions or recommendations  expressed in this material are those of the
-author(s) and do not necessarily reflect the views of the United States Air
-Force and DARPA.  Distribution Statement A, "Approved for Public Release,
-Distribution Unlimited."
+DARPA under Contracts No. FA8750-15-C-0124, HR0011-22-C-0020, and HR00112590133.
+Any opinions, findings and conclusions or recommendations expressed in this
+material are those of the author(s) and do not necessarily reflect the views
+of the United States Air Force or DARPA.
+
+Distribution Statement A, "Approved for Public Release, Distribution Unlimited."

@@ -63,7 +63,13 @@ fn transpile(platform: Option<&str>, c_path: &Path) {
 
     let (_temp_dir, temp_path) =
         c2rust_transpile::create_temp_compile_commands(&[c_path.to_owned()]);
-    c2rust_transpile::transpile(config(), &temp_path, &[]);
+    c2rust_transpile::transpile(
+        config(),
+        &temp_path,
+        &[
+            "-w", // Disable warnings.
+        ],
+    );
     let cwd = current_dir().unwrap();
     let c_path = c_path.strip_prefix(&cwd).unwrap();
     // The crate name can't have `.`s in it, so use the file stem.
@@ -83,7 +89,12 @@ fn transpile(platform: Option<&str>, c_path: &Path) {
         }
     };
 
-    let status = Command::new("rustfmt").arg(&rs_path).status();
+    let edition = "2021";
+
+    let status = Command::new("rustfmt")
+        .args(["--edition", edition])
+        .arg(&rs_path)
+        .status();
     assert!(status.unwrap().success());
 
     let rs = fs::read_to_string(&rs_path).unwrap();
@@ -114,7 +125,7 @@ fn transpile(platform: Option<&str>, c_path: &Path) {
             "--crate-type",
             "lib",
             "--edition",
-            "2021",
+            edition,
             "--crate-name",
             crate_name,
             "-o",
