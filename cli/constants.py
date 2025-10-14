@@ -13,7 +13,7 @@ WANT = {
     # Keep in sync with the version in `xj-improve-multitool/rust-toolchain.toml`.
     "10j-xj-improve-multitool-toolchain": "nightly-2025-03-03",
     "10j-xj-default-rust-toolchain": "1.88.0",
-    "10j-reference-c2rust-tag": "583b602aab8683c8ff180a4bb1928c260280091a",
+    "10j-reference-c2rust-tag": "55e1c24d5f3cbe0f3ef29717eeed77ea4c51867a",
 }
 
 # Subdirectory of hermetic.xj_llvm_root()
