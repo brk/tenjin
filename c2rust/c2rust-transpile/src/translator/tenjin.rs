@@ -674,6 +674,10 @@ impl Translation<'_> {
             );
         }
 
+        if tenjin::expr_is_ident(&func, "sprintf") {
+            return RecognizedCallForm::PrintfS(args[1..].to_vec(), None, args[0].clone());
+        }
+
         if tenjin::expr_is_ident(&func, "fprintf") && !args.is_empty() {
             if tenjin::expr_is_stderr(&args[0]) {
                 return RecognizedCallForm::PrintfErr(args[1..].to_vec(), cargs[1]);
