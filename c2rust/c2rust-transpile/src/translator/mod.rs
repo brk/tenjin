@@ -4516,6 +4516,36 @@ impl<'c> Translation<'c> {
         current
     }
 
+    fn c_cast_kind_effect_free(&self, kind: CastKind) -> bool {
+        matches!(
+            kind,
+            CastKind::NoOp
+                | CastKind::BitCast
+                | CastKind::ConstCast
+                | CastKind::LValueToRValue
+                | CastKind::ArrayToPointerDecay
+        )
+    }
+
+    fn c_strip_noop_casts(&self, expr: CExprId) -> CExprId {
+        // TODO this is an underapproximation; we could also strip explicit casts
+        // where the source and target types are the same.
+        let mut current = expr;
+        loop {
+            match self.ast_context[current].kind {
+                CExprKind::ImplicitCast(_, target, kind, _, _)
+                | CExprKind::ExplicitCast(_, target, kind, _, _)
+                    if self.c_cast_kind_effect_free(kind) =>
+                {
+                    current = target
+                }
+
+                _ => break,
+            }
+        }
+        current
+    }
+
     fn c_expr_get_str_lit_bytes(&self, expr: CExprId) -> Option<Vec<u8>> {
         if let CExprKind::Literal(_, CLiteral::String(ref s, _)) =
             self.ast_context[self.c_strip_implicit_casts(expr)].kind
@@ -4527,7 +4557,7 @@ impl<'c> Translation<'c> {
 
     fn c_expr_get_var_decl_id(&self, expr: CExprId) -> Option<CDeclId> {
         if let CExprKind::DeclRef(_, decl_id, _) =
-            self.ast_context[self.c_strip_implicit_casts(expr)].kind
+            self.ast_context[self.c_strip_noop_casts(expr)].kind
         {
             if let Some(decl) = self.ast_context.get_decl(&decl_id) {
                 if let CDeclKind::Variable { .. } = decl.kind {
