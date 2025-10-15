@@ -161,6 +161,22 @@ pub fn expr_is_lit_char(expr: &Expr) -> bool {
     false
 }
 
+pub fn expr_is_lit_str_or_bytes(expr: &Expr) -> bool {
+    if let Expr::Lit(ref lit) = *expr {
+        return matches!(&lit.lit, syn::Lit::Str(_) | syn::Lit::ByteStr(_));
+    }
+    false
+}
+
+pub fn expr_is_lit_str_only(expr: &Expr) -> bool {
+    if let Expr::Lit(ref lit) = *expr {
+        if let syn::Lit::Str(_) = lit.lit {
+            return true;
+        }
+    }
+    false
+}
+
 pub fn expr_strip_casts(expr: &Expr) -> &Expr {
     let mut ep = expr;
     loop {
@@ -656,11 +672,17 @@ impl Translation<'_> {
         cargs: &[CExprId],
         ctx: ExprContext,
     ) -> RecognizedCallForm {
-        if tenjin::expr_is_ident(&func, "printf") {
+        if tenjin::expr_is_ident(func, "printf")
+            && !args.is_empty()
+            && tenjin::expr_is_lit_str_or_bytes(tenjin::expr_strip_casts(&args[0]))
+        {
             return RecognizedCallForm::PrintfOut { fmt_string_idx: 0 };
         }
 
-        if tenjin::expr_is_ident(&func, "snprintf") {
+        if tenjin::expr_is_ident(func, "snprintf")
+            && args.len() >= 3
+            && tenjin::expr_is_lit_str_or_bytes(tenjin::expr_strip_casts(&args[2]))
+        {
             return RecognizedCallForm::PrintfS {
                 fmt_string_idx: 2,
                 opt_size: Some(args[1].clone()),
@@ -668,7 +690,10 @@ impl Translation<'_> {
             };
         }
 
-        if tenjin::expr_is_ident(&func, "sprintf") {
+        if tenjin::expr_is_ident(func, "sprintf")
+            && args.len() >= 2
+            && tenjin::expr_is_lit_str_or_bytes(tenjin::expr_strip_casts(&args[1]))
+        {
             return RecognizedCallForm::PrintfS {
                 fmt_string_idx: 1,
                 opt_size: None,
@@ -676,7 +701,10 @@ impl Translation<'_> {
             };
         }
 
-        if tenjin::expr_is_ident(&func, "fprintf") && !args.is_empty() {
+        if tenjin::expr_is_ident(func, "fprintf")
+            && args.len() >= 2
+            && tenjin::expr_is_lit_str_or_bytes(tenjin::expr_strip_casts(&args[1]))
+        {
             if tenjin::expr_is_stderr(&args[0]) {
                 return RecognizedCallForm::PrintfErr { fmt_string_idx: 1 };
             }
