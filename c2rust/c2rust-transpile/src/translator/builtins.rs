@@ -148,12 +148,13 @@ impl<'c> Translation<'c> {
                 let val = self.convert_expr(ctx.used(), args[0], None)?;
                 Ok(val.map(|x| mk().method_call_expr(x, "abs", vec![])))
             }
-            "__builtin_isfinite" | "__builtin_isnan" => {
+            "__builtin_isfinite" | "__builtin_isnan" | "__builtin_isnormal" => {
                 let val = self.convert_expr(ctx.used(), args[0], None)?;
 
                 let seg = match builtin_name {
                     "__builtin_isfinite" => "is_finite",
                     "__builtin_isnan" => "is_nan",
+                    "__builtin_isnormal" => "is_normal",
                     _ => panic!(),
                 };
                 Ok(val.map(|x| {
