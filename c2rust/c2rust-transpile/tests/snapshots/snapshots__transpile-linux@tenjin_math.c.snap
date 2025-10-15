@@ -59,67 +59,67 @@ extern "C" {
 unsafe extern "C" fn test_basic(mut x: core::ffi::c_float) -> core::ffi::c_float {
     let mut y: core::ffi::c_float = 0.0f32;
     y += x.abs();
-    y += fmodf(x, 3.5f32);
+    y += x % 3.5f32;
     y += remainderf(x, 2.0f32);
     return y;
 }
 unsafe extern "C" fn test_exp_log(mut x: core::ffi::c_float) -> core::ffi::c_float {
     let mut y: core::ffi::c_float = 0.0f32;
-    y += expf(x);
-    y += exp2f(x);
-    y += expm1f(x);
-    y += logf(x.abs() + 1.0f32);
-    y += log10f(x.abs() + 1.0f32);
-    y += log1pf(x.abs());
-    y += log2f(x.abs() + 1.0f32);
+    y += x.exp();
+    y += x.exp2();
+    y += x.exp_m1();
+    y += (x.abs() + 1.0f32).ln();
+    y += (x.abs() + 1.0f32).log10();
+    y += x.abs().ln_1p();
+    y += (x.abs() + 1.0f32).log2();
     return y;
 }
 unsafe extern "C" fn test_pow_root(mut x: core::ffi::c_float) -> core::ffi::c_float {
     let mut y: core::ffi::c_float = 0.0f32;
-    y += powf(x, 2.0f32);
-    y += sqrtf(x.abs());
-    y += cbrtf(x);
-    y += hypotf(x, 2.0f32);
+    y += x.powf(2.0f32);
+    y += x.abs().sqrt();
+    y += x.cbrt();
+    y += x.hypot(2.0f32);
     return y;
 }
 unsafe extern "C" fn test_trig(mut x: core::ffi::c_float) -> core::ffi::c_float {
     let mut y: core::ffi::c_float = 0.0f32;
-    y += sinf(x);
-    y += cosf(x);
-    y += tanf(x);
-    y += asinf(fmaxf(fminf(x, 1.0f32), -1.0f32));
-    y += acosf(fmaxf(fminf(x, 1.0f32), -1.0f32));
-    y += atanf(x);
-    y += atan2f(x, 1.0f32);
+    y += x.sin();
+    y += x.cos();
+    y += x.tan();
+    y += x.min(1.0f32).max(-1.0f32).asin();
+    y += x.min(1.0f32).max(-1.0f32).acos();
+    y += x.atan();
+    y += x.atan2(1.0f32);
     return y;
 }
 unsafe extern "C" fn test_hyperbolic(mut x: core::ffi::c_float) -> core::ffi::c_float {
     let mut y: core::ffi::c_float = 0.0f32;
-    y += sinhf(x);
-    y += coshf(x);
-    y += tanhf(x);
-    y += asinhf(x);
-    y += acoshf(x.abs() + 1.0f32);
-    y += atanhf(fmaxf(fminf(x, 0.999f32), -0.999f32));
+    y += x.sinh();
+    y += x.cosh();
+    y += x.tanh();
+    y += x.asinh();
+    y += (x.abs() + 1.0f32).acosh();
+    y += x.min(0.999f32).max(-0.999f32).atanh();
     return y;
 }
 unsafe extern "C" fn test_nearby(mut x: core::ffi::c_float) -> core::ffi::c_float {
     let mut y: core::ffi::c_float = 0.0f32;
-    y += ceilf(x);
+    y += x.ceil();
     y += x.floor();
-    y += truncf(x);
-    y += roundf(x);
+    y += x.trunc();
+    y += x.round();
     y += nearbyintf(x);
     y += rintf(x);
     return y;
 }
 unsafe extern "C" fn test_remainder_classify(mut x: core::ffi::c_float) -> core::ffi::c_float {
     let mut y: core::ffi::c_float = 0.0f32;
-    y += copysignf(x, -1.0f32);
+    y += x.copysign(-1.0f32);
     y += nextafterf(x, 2.0f32);
     y += fdimf(x, 1.0f32);
-    y += fmaxf(x, 1.0f32);
-    y += fminf(x, 1.0f32);
+    y += x.max(1.0f32);
+    y += x.min(1.0f32);
     if x.is_nan() as i32 != 0 {
         y += 1.0f32;
     }

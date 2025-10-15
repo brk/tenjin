@@ -55,6 +55,14 @@ pub fn is_known_size_1_type(ty: &Type) -> bool {
     }
 }
 
+pub fn path_get_1_ident(path: &Path) -> Option<&Ident> {
+    if path.segments.len() == 1 {
+        Some(&path.segments[0].ident)
+    } else {
+        None
+    }
+}
+
 pub fn is_path_exactly_1(path: &Path, a: &str) -> bool {
     if path.segments.len() == 1 {
         path.segments[0].ident.to_string().as_str() == a
@@ -879,12 +887,55 @@ impl Translation<'_> {
                 _ if tenjin::is_path_exactly_1(path, "toascii") => {
                     self.recognize_preconversion_call_toascii_guided(ctx, func, cargs)
                 }
+                _ if (tenjin::is_path_exactly_1(path, "fmin")
+                    || tenjin::is_path_exactly_1(path, "fminf")
+                    || tenjin::is_path_exactly_1(path, "fminl")) =>
+                {
+                    self.recognize_preconversion_call_method_2_guided(ctx, "min", cargs)
+                }
+                _ if (tenjin::is_path_exactly_1(path, "fmax")
+                    || tenjin::is_path_exactly_1(path, "fmaxf")
+                    || tenjin::is_path_exactly_1(path, "fmaxl")) =>
+                {
+                    self.recognize_preconversion_call_method_2_guided(ctx, "max", cargs)
+                }
+                _ if self.parsed_guidance.borrow().no_math_errno
+                    && (tenjin::is_path_exactly_1(path, "atan2")
+                        || tenjin::is_path_exactly_1(path, "atan2f")
+                        || tenjin::is_path_exactly_1(path, "atan2l")) =>
+                {
+                    self.recognize_preconversion_call_method_2_guided(ctx, "atan2", cargs)
+                }
+                _ if self.parsed_guidance.borrow().no_math_errno
+                    && (
+                        /*tenjin::is_path_exactly_1(path, "log") // this one probably needs disambiguation
+                        ||*/
+                        tenjin::is_path_exactly_1(path, "logf")
+                            || tenjin::is_path_exactly_1(path, "logl")
+                    ) =>
+                {
+                    self.recognize_preconversion_call_method_1_guided(ctx, "ln", cargs)
+                }
+                _ if self.parsed_guidance.borrow().no_math_errno
+                    && (tenjin::is_path_exactly_1(path, "hypot")
+                        || tenjin::is_path_exactly_1(path, "hypotf")
+                        || tenjin::is_path_exactly_1(path, "hypotl")) =>
+                {
+                    self.recognize_preconversion_call_method_2_guided(ctx, "hypot", cargs)
+                }
+                _ if self.parsed_guidance.borrow().no_math_errno
+                    && (tenjin::is_path_exactly_1(path, "copysign")
+                        || tenjin::is_path_exactly_1(path, "copysignf")
+                        || tenjin::is_path_exactly_1(path, "copysignl")) =>
+                {
+                    self.recognize_preconversion_call_method_2_guided(ctx, "copysign", cargs)
+                }
                 _ if self.parsed_guidance.borrow().no_math_errno
                     && (tenjin::is_path_exactly_1(path, "pow")
                         || tenjin::is_path_exactly_1(path, "powf")
                         || tenjin::is_path_exactly_1(path, "powl")) =>
                 {
-                    self.recognize_preconversion_call_powf_guided(ctx, cargs)
+                    self.recognize_preconversion_call_method_2_guided(ctx, "powf", cargs)
                 }
                 _ if self.parsed_guidance.borrow().no_math_errno
                     && (tenjin::is_path_exactly_1(path, "fmod")
@@ -893,22 +944,80 @@ impl Translation<'_> {
                 {
                     self.recognize_preconversion_call_fmodf_guided(ctx, cargs)
                 }
-                _ if (tenjin::is_path_exactly_1(path, "fabs")
-                    || tenjin::is_path_exactly_1(path, "fabsf")
-                    || tenjin::is_path_exactly_1(path, "fabsl")) =>
+                /* This requires Rust 1.77, which snapshots do not yet use. */
+                /*
+                _ if (tenjin::is_path_exactly_1(path, "nearbyint")
+                    || tenjin::is_path_exactly_1(path, "nearbyintf")
+                    || tenjin::is_path_exactly_1(path, "nearbyintl")) =>
                 {
-                    self.recognize_preconversion_call_method_1_guided(ctx, "abs", cargs)
+                    self.recognize_preconversion_call_method_1_guided(ctx, "round_ties_even", cargs)
                 }
-                _ if (tenjin::is_path_exactly_1(path, "floor")
-                    || tenjin::is_path_exactly_1(path, "floorf")
-                    || tenjin::is_path_exactly_1(path, "floorl")) =>
+                */
+                // We don't yet handle rintf, which may raise the `inexact` floating-point exception.
+                _ if self
+                    .determine_libc_math_1_mapping(ctx, path, cargs)
+                    .is_some() =>
                 {
-                    self.recognize_preconversion_call_method_1_guided(ctx, "floor", cargs)
+                    let Some(method) = self.determine_libc_math_1_mapping(ctx, path, cargs) else {
+                        return Ok(None);
+                    };
+                    self.recognize_preconversion_call_method_1_guided(ctx, method, cargs)
                 }
                 _ => Ok(None),
             }
         } else {
             Ok(None)
+        }
+    }
+
+    #[allow(clippy::borrowed_box)]
+    fn determine_libc_math_1_mapping(
+        &self,
+        _ctx: ExprContext,
+        path: &Path,
+        cargs: &[CExprId],
+    ) -> Option<&'static str> {
+        if cargs.len() != 1 {
+            return None;
+        }
+
+        // TODO: ensure type of argument is floating point
+
+        if let Some(ident) = tenjin::path_get_1_ident(path) {
+            let name = ident.to_string();
+            match name.as_str() {
+                "fabs" | "fabsf" | "fabsl" => Some("abs"),
+                "floor" | "floorf" | "floorl" => Some("floor"),
+                "ceil" | "ceilf" | "ceill" => Some("ceil"),
+                "round" | "roundf" | "roundl" => Some("round"),
+                "trunc" | "truncf" | "truncl" => Some("trunc"),
+                _ if self.parsed_guidance.borrow().no_math_errno => match name.as_str() {
+                    "sin" | "sinf" | "sinl" => Some("sin"),
+                    "cos" | "cosf" | "cosl" => Some("cos"),
+                    "tan" | "tanf" | "tanl" => Some("tan"),
+                    "asin" | "asinf" | "asinl" => Some("asin"),
+                    "acos" | "acosf" | "acosl" => Some("acos"),
+                    "atan" | "atanf" | "atanl" => Some("atan"),
+                    "cosh" | "coshf" | "coshl" => Some("cosh"),
+                    "sinh" | "sinhf" | "sinhl" => Some("sinh"),
+                    "tanh" | "tanhf" | "tanhl" => Some("tanh"),
+                    "acosh" | "acoshf" | "acoshl" => Some("acosh"),
+                    "asinh" | "asinhf" | "asinhl" => Some("asinh"),
+                    "atanh" | "atanhf" | "atanhl" => Some("atanh"),
+                    "exp" | "expf" | "expl" => Some("exp"),
+                    "exp2" | "exp2f" | "exp2l" => Some("exp2"),
+                    "expm1" | "expm1f" | "expm1l" => Some("exp_m1"),
+                    "log2" | "log2f" | "log2l" => Some("log2"),
+                    "log10" | "log10f" | "log10l" => Some("log10"),
+                    "log1p" | "log1pf" | "log1pl" => Some("ln_1p"),
+                    "sqrt" | "sqrtf" | "sqrtl" => Some("sqrt"),
+                    "cbrt" | "cbrtf" | "cbrtl" => Some("cbrt"),
+                    _ => None,
+                },
+                _ => None,
+            }
+        } else {
+            None
         }
     }
 
@@ -966,25 +1075,20 @@ impl Translation<'_> {
     }
 
     #[allow(clippy::borrowed_box)]
-    fn recognize_preconversion_call_powf_guided(
+    fn recognize_preconversion_call_method_2_guided(
         &self,
         ctx: ExprContext,
+        method_name: &str,
         cargs: &[CExprId],
     ) -> TranslationResult<Option<WithStmts<Box<Expr>>>> {
         if cargs.len() == 2 {
-            // pow(x, y)
-            //    when we've been provided with no_math_errno guidance,
-            //    or have otherwise ascertained that the program cannot
-            //    observe any modifications to errno,
-            // should be translated to
-            // x.powf(y)
             let expr_x = self.convert_expr(ctx.used(), cargs[0], None)?;
             let expr_y = self.convert_expr(ctx.used(), cargs[1], None)?;
             return expr_x
                 .and_then(|expr_x| {
                     Ok(WithStmts::new_val(mk().method_call_expr(
                         expr_x,
-                        "powf",
+                        method_name,
                         vec![expr_y.to_expr()],
                     )))
                 })
