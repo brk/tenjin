@@ -6372,7 +6372,19 @@ impl<'c> Translation<'c> {
             }
         }
 
-        self.implicit_default_expr(ty_id, is_static)
+        let implicit_default = self.implicit_default_expr(ty_id, is_static)?;
+
+        if let Some(guided_type) = guided_type {
+            if guided_type.pretty_sans_refs().starts_with("Vec <") {
+                // If the type is a Vec, we'll convert it from the default expr,
+                // which might be a sized array.
+                return Ok(implicit_default.map(|implicit_default| {
+                    mk().method_call_expr(implicit_default, "to_vec", vec![])
+                }));
+            }
+        }
+
+        Ok(implicit_default)
     }
 
     pub fn implicit_default_expr(
