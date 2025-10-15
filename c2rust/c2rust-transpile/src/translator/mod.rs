@@ -1442,6 +1442,7 @@ struct ConvertedVariable {
 enum RecognizedCallForm {
     PrintfOut(Vec<Box<Expr>>, CExprId),
     PrintfErr(Vec<Box<Expr>>, CExprId),
+    PrintfS(Vec<Box<Expr>>, Option<Box<Expr>>, Box<Expr>),
     OtherCall(Box<Expr>, Vec<Box<Expr>>),
     ScanfAddrTaken(Vec<tenjin_scanf::Directive>, Vec<CExprId>),
 }
@@ -1688,14 +1689,18 @@ mod refactor_format {
                         }
                     }
 
-                    if let Some(cdecl) = x.c_expr_get_var_decl_id(cexpr) {
-                        if x.parsed_guidance
-                            .borrow_mut()
-                            .query_decl_type(x, cdecl)
-                            .is_some_and(|g| g.pretty == "String")
-                        {
+                    if let Some(g) = x.parsed_guidance.borrow_mut().query_expr_type(x, cexpr) {
+                        if g.pretty == "String" {
                             // For a variable that's already type String, we can leave it as is.
                             return e;
+                        }
+
+                        if g.pretty_sans_refs() == "Vec < u8 >" {
+                            // For a variable that's type Vec<u8>, we can convert it to String directly.
+                            return mk().call_expr(
+                                mk().path_expr(vec!["String", "from_utf8_lossy"]),
+                                vec![mk().addr_of_expr(e)],
+                            );
                         }
                     }
 
@@ -6160,7 +6165,11 @@ impl<'c> Translation<'c> {
                                     .parsed_guidance
                                     .borrow_mut()
                                     .query_decl_type(self, *decl_id)
-                                    .is_some_and(|g| g.pretty == "String")
+                                    .is_some_and(|g| {
+                                        log::error!("Guidance for array decay: {:?}", g);
+                                        g.pretty == "String"
+                                            || g.pretty_sans_refs().starts_with("Vec <")
+                                    })
                                 {
                                     return Ok(val);
                                 }

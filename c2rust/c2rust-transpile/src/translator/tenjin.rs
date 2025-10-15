@@ -666,6 +666,14 @@ impl Translation<'_> {
             return RecognizedCallForm::PrintfOut(args, cargs[0]);
         }
 
+        if tenjin::expr_is_ident(&func, "snprintf") {
+            return RecognizedCallForm::PrintfS(
+                args[2..].to_vec(),
+                Some(args[1].clone()),
+                args[0].clone(),
+            );
+        }
+
         if tenjin::expr_is_ident(&func, "fprintf") && !args.is_empty() {
             if tenjin::expr_is_stderr(&args[0]) {
                 return RecognizedCallForm::PrintfErr(args[1..].to_vec(), cargs[1]);
@@ -734,6 +742,44 @@ impl Translation<'_> {
                     None,
                     fmt_string_span,
                 )))
+            }
+            RecognizedCallForm::PrintfS(args, opt_size, dest) => {
+                // let fmt_string_span = self
+                //     .ast_context
+                //     .display_loc(&self.ast_context[fmt_carg].loc);
+                let fmt_string_span = None;
+                let formatted_string = mk().mac_expr(refactor_format::build_format_macro(
+                    self,
+                    "format",
+                    "format",
+                    &args,
+                    cargs,
+                    None,
+                    fmt_string_span,
+                ));
+                let size_expr = if let Some(size_expr) = opt_size {
+                    mk().call_expr(mk().path_expr(vec!["Some"]), vec![size_expr])
+                } else {
+                    mk().path_expr(vec!["None"])
+                };
+
+                self.with_cur_file_item_store(|item_store| {
+                    item_store.add_item_str_once("fn xj_sprintf_Vec_u8(dest: &mut Vec<u8>, lim: Option<usize>, val: String) -> usize {
+                        if lim == Some(0) { return 0; }
+                        let bytes = val.as_bytes();
+                        // We copy at most lim-1 bytes, to leave room for a NUL terminator.
+                        let to_copy = if let Some(lim) = lim { std::cmp::min(lim - 1, bytes.len()) } else { bytes.len() };
+                        dest.clear();
+                        dest.extend_from_slice(&bytes[..to_copy]);
+                        to_copy
+                    }",
+                    );
+                });
+
+                Ok(mk().call_expr(
+                    mk().path_expr(vec!["xj_sprintf_Vec_u8"]),
+                    vec![mk().mutbl().addr_of_expr(dest), size_expr, formatted_string],
+                ))
             }
             RecognizedCallForm::ScanfAddrTaken(all_directives, cargs) => {
                 // If there are more conversion specifications than arguments,
