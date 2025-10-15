@@ -5,7 +5,7 @@ use std::process::Command;
 
 use c2rust_transpile::{ReplaceMode, TranspilerConfig};
 
-fn config() -> TranspilerConfig {
+fn config(guidance: serde_json::Value) -> TranspilerConfig {
     TranspilerConfig {
         dump_untyped_context: false,
         dump_typed_context: false,
@@ -41,9 +41,19 @@ fn config() -> TranspilerConfig {
         disable_refactoring: false,
         preserve_unused_functions: false,
         log_level: log::LevelFilter::Warn,
-        guidance_json: serde_json::json!({}),
+        guidance_json: guidance,
         emit_build_files: false,
         binaries: Vec::new(),
+    }
+}
+
+fn guidance_for_file(c_path: &Path) -> serde_json::Value {
+    if c_path.ends_with("tenjin_math.c") {
+        serde_json::json!({
+            "no_math_errno": true,
+        })
+    } else {
+        serde_json::json!({})
     }
 }
 
@@ -64,7 +74,7 @@ fn transpile(platform: Option<&str>, c_path: &Path) {
     let (_temp_dir, temp_path) =
         c2rust_transpile::create_temp_compile_commands(&[c_path.to_owned()]);
     c2rust_transpile::transpile(
-        config(),
+        config(guidance_for_file(c_path)),
         &temp_path,
         &[
             "-w", // Disable warnings.
