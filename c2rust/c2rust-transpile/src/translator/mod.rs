@@ -1440,10 +1440,19 @@ struct ConvertedVariable {
 
 #[allow(clippy::vec_box)]
 enum RecognizedCallForm {
-    PrintfOut(Vec<Box<Expr>>, CExprId),
-    PrintfErr(Vec<Box<Expr>>, CExprId),
-    PrintfS(Vec<Box<Expr>>, Option<Box<Expr>>, Box<Expr>),
-    OtherCall(Box<Expr>, Vec<Box<Expr>>),
+    PrintfOut {
+        fmt_string_idx: usize,
+    },
+    PrintfErr {
+        fmt_string_idx: usize,
+    },
+    PrintfS {
+        fmt_string_idx: usize,
+        opt_size: Option<Box<Expr>>,
+        dest: Box<Expr>,
+    },
+    RetargetedCallee(Box<Expr>),
+    OtherCall,
     ScanfAddrTaken(Vec<tenjin_scanf::Directive>, Vec<CExprId>),
 }
 
