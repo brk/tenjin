@@ -376,7 +376,7 @@ fn libz_rs_sys_call_form_cases(t: &Translation, func: &Expr) -> Option<Recognize
 #[allow(clippy::borrowed_box)]
 fn recognize_scanf_and_fscanf_of_stdin(
     t: &Translation,
-    func: &Box<Expr>,
+    func: &Expr,
     args: &[Box<Expr>],
     cargs: &[CExprId],
     ctx: &ExprContext,
@@ -685,15 +685,14 @@ impl Translation<'_> {
             }
         }
 
-        if tenjin::expr_is_ident(&func, "abort") && args.is_empty() {
+        if tenjin::expr_is_ident(func, "abort") && args.is_empty() {
             // TENJIN-TODO: guidance to allow mapping `abort()` to `panic!()`?
             return RecognizedCallForm::RetargetedCallee(
                 mk().path_expr(vec!["std", "process", "abort"]),
             );
         }
 
-        if let Some(call_form) =
-            recognize_scanf_and_fscanf_of_stdin(self, &func, &args, cargs, &ctx)
+        if let Some(call_form) = recognize_scanf_and_fscanf_of_stdin(self, func, args, cargs, &ctx)
         {
             return call_form;
         }
