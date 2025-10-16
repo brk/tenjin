@@ -161,6 +161,22 @@ pub fn expr_is_lit_char(expr: &Expr) -> bool {
     false
 }
 
+pub fn expr_is_lit_str_or_bytes(expr: &Expr) -> bool {
+    if let Expr::Lit(ref lit) = *expr {
+        return matches!(&lit.lit, syn::Lit::Str(_) | syn::Lit::ByteStr(_));
+    }
+    false
+}
+
+pub fn expr_is_lit_str_only(expr: &Expr) -> bool {
+    if let Expr::Lit(ref lit) = *expr {
+        if let syn::Lit::Str(_) = lit.lit {
+            return true;
+        }
+    }
+    false
+}
+
 pub fn expr_strip_casts(expr: &Expr) -> &Expr {
     let mut ep = expr;
     loop {
@@ -280,11 +296,7 @@ pub fn guide_type_name_path(pg: &ParsedGuidance, name: &str) -> Path {
 }
 
 #[allow(clippy::borrowed_box)]
-fn libz_rs_sys_call_form_cases(
-    t: &Translation,
-    func: &Box<Expr>,
-    args: &[Box<Expr>],
-) -> Option<RecognizedCallForm> {
+fn libz_rs_sys_call_form_cases(t: &Translation, func: &Expr) -> Option<RecognizedCallForm> {
     fn libz_rs_sys_fn_pred(ident: &str) -> bool {
         // See https://docs.rs/libz-sys/latest/libz_sys/
         matches!(
@@ -356,9 +368,8 @@ fn libz_rs_sys_call_form_cases(
         if let Some(ident) = expr_get_ident(func) {
             if libz_rs_sys_fn_pred(&ident) {
                 t.use_crate(ExternCrate::LibzRsSys);
-                return Some(RecognizedCallForm::OtherCall(
+                return Some(RecognizedCallForm::RetargetedCallee(
                     mk().path_expr(vec!["libz_rs_sys", &ident]),
-                    args.to_owned(),
                 ));
             }
         }
@@ -370,9 +381,8 @@ fn libz_rs_sys_call_form_cases(
                     r#"unsafe fn crc32_zz(crc: libc::c_ulong, buf: *const Bytef, len: libc::c_ulong) -> libc::c_ulong { libz_rs_sys::crc32(crc, buf, libz_rs_sys::uInt::try_from(len).expect("crc32_z overflow")) }"#,
                 );
             });
-            return Some(RecognizedCallForm::OtherCall(
+            return Some(RecognizedCallForm::RetargetedCallee(
                 mk().path_expr("crc32_zz"),
-                args.to_owned(),
             ));
         }
     }
@@ -382,7 +392,7 @@ fn libz_rs_sys_call_form_cases(
 #[allow(clippy::borrowed_box)]
 fn recognize_scanf_and_fscanf_of_stdin(
     t: &Translation,
-    func: &Box<Expr>,
+    func: &Expr,
     args: &[Box<Expr>],
     cargs: &[CExprId],
     ctx: &ExprContext,
@@ -657,43 +667,69 @@ impl Translation<'_> {
     #[allow(clippy::vec_box)]
     fn call_form_cases(
         &self,
-        func: Box<Expr>,
-        args: Vec<Box<Expr>>,
+        func: &Expr,
+        args: &[Box<Expr>],
         cargs: &[CExprId],
         ctx: ExprContext,
     ) -> RecognizedCallForm {
-        if tenjin::expr_is_ident(&func, "printf") {
-            return RecognizedCallForm::PrintfOut(args, cargs[0]);
+        if tenjin::expr_is_ident(func, "printf")
+            && !args.is_empty()
+            && tenjin::expr_is_lit_str_or_bytes(tenjin::expr_strip_casts(&args[0]))
+        {
+            return RecognizedCallForm::PrintfOut { fmt_string_idx: 0 };
         }
 
-        if tenjin::expr_is_ident(&func, "fprintf") && !args.is_empty() {
+        if tenjin::expr_is_ident(func, "snprintf")
+            && args.len() >= 3
+            && tenjin::expr_is_lit_str_or_bytes(tenjin::expr_strip_casts(&args[2]))
+        {
+            return RecognizedCallForm::PrintfS {
+                fmt_string_idx: 2,
+                opt_size: Some(args[1].clone()),
+                dest: args[0].clone(),
+            };
+        }
+
+        if tenjin::expr_is_ident(func, "sprintf")
+            && args.len() >= 2
+            && tenjin::expr_is_lit_str_or_bytes(tenjin::expr_strip_casts(&args[1]))
+        {
+            return RecognizedCallForm::PrintfS {
+                fmt_string_idx: 1,
+                opt_size: None,
+                dest: args[0].clone(),
+            };
+        }
+
+        if tenjin::expr_is_ident(func, "fprintf")
+            && args.len() >= 2
+            && tenjin::expr_is_lit_str_or_bytes(tenjin::expr_strip_casts(&args[1]))
+        {
             if tenjin::expr_is_stderr(&args[0]) {
-                return RecognizedCallForm::PrintfErr(args[1..].to_vec(), cargs[1]);
+                return RecognizedCallForm::PrintfErr { fmt_string_idx: 1 };
             }
             if tenjin::expr_is_stdout(&args[0]) {
-                return RecognizedCallForm::PrintfOut(args[1..].to_vec(), cargs[1]);
+                return RecognizedCallForm::PrintfOut { fmt_string_idx: 1 };
             }
         }
 
-        if tenjin::expr_is_ident(&func, "abort") && args.is_empty() {
+        if tenjin::expr_is_ident(func, "abort") && args.is_empty() {
             // TENJIN-TODO: guidance to allow mapping `abort()` to `panic!()`?
-            return RecognizedCallForm::OtherCall(
+            return RecognizedCallForm::RetargetedCallee(
                 mk().path_expr(vec!["std", "process", "abort"]),
-                args,
             );
         }
 
-        if let Some(call_form) =
-            recognize_scanf_and_fscanf_of_stdin(self, &func, &args, cargs, &ctx)
+        if let Some(call_form) = recognize_scanf_and_fscanf_of_stdin(self, func, args, cargs, &ctx)
         {
             return call_form;
         }
 
-        if let Some(call_form) = libz_rs_sys_call_form_cases(self, &func, &args) {
+        if let Some(call_form) = libz_rs_sys_call_form_cases(self, func) {
             return call_form;
         }
 
-        RecognizedCallForm::OtherCall(func, args)
+        RecognizedCallForm::OtherCall
     }
 
     #[allow(clippy::vec_box)]
@@ -706,34 +742,88 @@ impl Translation<'_> {
         args: Vec<Box<Expr>>,
         cargs: &[CExprId],
     ) -> TranslationResult<Box<Expr>> {
-        match self.call_form_cases(func, args, cargs, ctx) {
-            RecognizedCallForm::PrintfOut(args, fmt_carg) => {
+        let mk_call_with = |func: Box<Expr>, args: Vec<Box<Expr>>| {
+            let mut call_expr = mk().call_expr(func, args);
+
+            if let Some(expected_ty) = override_ty {
+                if call_expr_ty != expected_ty {
+                    let ret_ty = self.convert_type(expected_ty.ctype)?;
+                    call_expr = mk().cast_expr(call_expr, ret_ty);
+                }
+            }
+
+            let res: TranslationResult<_> = Ok(call_expr);
+            res
+        };
+        match self.call_form_cases(&func, &args, cargs, ctx) {
+            RecognizedCallForm::PrintfOut { fmt_string_idx } => {
                 let fmt_string_span = self
                     .ast_context
-                    .display_loc(&self.ast_context[fmt_carg].loc);
+                    .display_loc(&self.ast_context[cargs[fmt_string_idx]].loc);
                 Ok(mk().mac_expr(refactor_format::build_format_macro(
                     self,
                     "print",
                     "println",
-                    &args,
-                    cargs,
+                    &args[fmt_string_idx..],
+                    &cargs[fmt_string_idx..],
                     None,
                     fmt_string_span,
                 )))
             }
-            RecognizedCallForm::PrintfErr(args, fmt_carg) => {
+            RecognizedCallForm::PrintfErr { fmt_string_idx } => {
                 let fmt_string_span = self
                     .ast_context
-                    .display_loc(&self.ast_context[fmt_carg].loc);
+                    .display_loc(&self.ast_context[cargs[fmt_string_idx]].loc);
                 Ok(mk().mac_expr(refactor_format::build_format_macro(
                     self,
                     "eprint",
                     "eprintln",
-                    &args,
-                    cargs,
+                    &args[fmt_string_idx..],
+                    &cargs[fmt_string_idx..],
                     None,
                     fmt_string_span,
                 )))
+            }
+            RecognizedCallForm::PrintfS {
+                fmt_string_idx,
+                opt_size,
+                dest,
+            } => {
+                let fmt_string_span = self
+                    .ast_context
+                    .display_loc(&self.ast_context[cargs[fmt_string_idx]].loc);
+                let formatted_string = mk().mac_expr(refactor_format::build_format_macro(
+                    self,
+                    "format",
+                    "format",
+                    &args[fmt_string_idx..],
+                    &cargs[fmt_string_idx..],
+                    None,
+                    fmt_string_span,
+                ));
+                let size_expr = if let Some(size_expr) = opt_size {
+                    mk().call_expr(mk().path_expr(vec!["Some"]), vec![size_expr])
+                } else {
+                    mk().path_expr(vec!["None"])
+                };
+
+                self.with_cur_file_item_store(|item_store| {
+                    item_store.add_item_str_once("fn xj_sprintf_Vec_u8(dest: &mut Vec<u8>, lim: Option<usize>, val: String) -> usize {
+                        if lim == Some(0) { return 0; }
+                        let bytes = val.as_bytes();
+                        // We copy at most lim-1 bytes, to leave room for a NUL terminator.
+                        let to_copy = if let Some(lim) = lim { std::cmp::min(lim - 1, bytes.len()) } else { bytes.len() };
+                        dest.clear();
+                        dest.extend_from_slice(&bytes[..to_copy]);
+                        to_copy
+                    }",
+                    );
+                });
+
+                Ok(mk().call_expr(
+                    mk().path_expr(vec!["xj_sprintf_Vec_u8"]),
+                    vec![mk().mutbl().addr_of_expr(dest), size_expr, formatted_string],
+                ))
             }
             RecognizedCallForm::ScanfAddrTaken(all_directives, cargs) => {
                 // If there are more conversion specifications than arguments,
@@ -795,19 +885,8 @@ impl Translation<'_> {
                 ));
                 Ok(mk().method_call_expr(scanf_call, "unwrap", vec![]))
             }
-            RecognizedCallForm::OtherCall(func, args) => {
-                let mut call_expr = mk().call_expr(func, args);
-
-                if let Some(expected_ty) = override_ty {
-                    if call_expr_ty != expected_ty {
-                        let ret_ty = self.convert_type(expected_ty.ctype)?;
-                        call_expr = mk().cast_expr(call_expr, ret_ty);
-                    }
-                }
-
-                let res: TranslationResult<_> = Ok(call_expr);
-                res
-            }
+            RecognizedCallForm::RetargetedCallee(func) => mk_call_with(func, args),
+            RecognizedCallForm::OtherCall => mk_call_with(func, args),
         }
     }
 

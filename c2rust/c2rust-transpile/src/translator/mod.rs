@@ -1440,9 +1440,19 @@ struct ConvertedVariable {
 
 #[allow(clippy::vec_box)]
 enum RecognizedCallForm {
-    PrintfOut(Vec<Box<Expr>>, CExprId),
-    PrintfErr(Vec<Box<Expr>>, CExprId),
-    OtherCall(Box<Expr>, Vec<Box<Expr>>),
+    PrintfOut {
+        fmt_string_idx: usize,
+    },
+    PrintfErr {
+        fmt_string_idx: usize,
+    },
+    PrintfS {
+        fmt_string_idx: usize,
+        opt_size: Option<Box<Expr>>,
+        dest: Box<Expr>,
+    },
+    RetargetedCallee(Box<Expr>),
+    OtherCall,
     ScanfAddrTaken(Vec<tenjin_scanf::Directive>, Vec<CExprId>),
 }
 
@@ -1688,14 +1698,18 @@ mod refactor_format {
                         }
                     }
 
-                    if let Some(cdecl) = x.c_expr_get_var_decl_id(cexpr) {
-                        if x.parsed_guidance
-                            .borrow_mut()
-                            .query_decl_type(x, cdecl)
-                            .is_some_and(|g| g.pretty == "String")
-                        {
+                    if let Some(g) = x.parsed_guidance.borrow_mut().query_expr_type(x, cexpr) {
+                        if g.pretty == "String" {
                             // For a variable that's already type String, we can leave it as is.
                             return e;
+                        }
+
+                        if g.pretty_sans_refs() == "Vec < u8 >" {
+                            // For a variable that's type Vec<u8>, we can convert it to String directly.
+                            return mk().call_expr(
+                                mk().path_expr(vec!["String", "from_utf8_lossy"]),
+                                vec![mk().addr_of_expr(e)],
+                            );
                         }
                     }
 
@@ -4516,6 +4530,36 @@ impl<'c> Translation<'c> {
         current
     }
 
+    fn c_cast_kind_effect_free(&self, kind: CastKind) -> bool {
+        matches!(
+            kind,
+            CastKind::NoOp
+                | CastKind::BitCast
+                | CastKind::ConstCast
+                | CastKind::LValueToRValue
+                | CastKind::ArrayToPointerDecay
+        )
+    }
+
+    fn c_strip_noop_casts(&self, expr: CExprId) -> CExprId {
+        // TODO this is an underapproximation; we could also strip explicit casts
+        // where the source and target types are the same.
+        let mut current = expr;
+        loop {
+            match self.ast_context[current].kind {
+                CExprKind::ImplicitCast(_, target, kind, _, _)
+                | CExprKind::ExplicitCast(_, target, kind, _, _)
+                    if self.c_cast_kind_effect_free(kind) =>
+                {
+                    current = target
+                }
+
+                _ => break,
+            }
+        }
+        current
+    }
+
     fn c_expr_get_str_lit_bytes(&self, expr: CExprId) -> Option<Vec<u8>> {
         if let CExprKind::Literal(_, CLiteral::String(ref s, _)) =
             self.ast_context[self.c_strip_implicit_casts(expr)].kind
@@ -4527,7 +4571,7 @@ impl<'c> Translation<'c> {
 
     fn c_expr_get_var_decl_id(&self, expr: CExprId) -> Option<CDeclId> {
         if let CExprKind::DeclRef(_, decl_id, _) =
-            self.ast_context[self.c_strip_implicit_casts(expr)].kind
+            self.ast_context[self.c_strip_noop_casts(expr)].kind
         {
             if let Some(decl) = self.ast_context.get_decl(&decl_id) {
                 if let CDeclKind::Variable { .. } = decl.kind {
@@ -6130,7 +6174,11 @@ impl<'c> Translation<'c> {
                                     .parsed_guidance
                                     .borrow_mut()
                                     .query_decl_type(self, *decl_id)
-                                    .is_some_and(|g| g.pretty == "String")
+                                    .is_some_and(|g| {
+                                        log::error!("Guidance for array decay: {:?}", g);
+                                        g.pretty == "String"
+                                            || g.pretty_sans_refs().starts_with("Vec <")
+                                    })
                                 {
                                     return Ok(val);
                                 }
@@ -6342,7 +6390,19 @@ impl<'c> Translation<'c> {
             }
         }
 
-        self.implicit_default_expr(ty_id, is_static)
+        let implicit_default = self.implicit_default_expr(ty_id, is_static)?;
+
+        if let Some(guided_type) = guided_type {
+            if guided_type.pretty_sans_refs().starts_with("Vec <") {
+                // If the type is a Vec, we'll convert it from the default expr,
+                // which might be a sized array.
+                return Ok(implicit_default.map(|implicit_default| {
+                    mk().method_call_expr(implicit_default, "to_vec", vec![])
+                }));
+            }
+        }
+
+        Ok(implicit_default)
     }
 
     pub fn implicit_default_expr(
