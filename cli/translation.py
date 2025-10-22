@@ -302,11 +302,11 @@ def do_translate(
             llvm_bitcode_linking.compile_and_link_bitcode(compdb, bitcode_module_path)
             if bitcode_module_path.exists():
                 bitcode_size = bitcode_module_path.stat().st_size
-                print(f"Fully linked LLVM bitcode module size: {bitcode_size} bytes")
+                click.echo(f"Fully linked LLVM bitcode module size: {bitcode_size} bytes")
             else:
-                print("Warning: Bitcode module was not created")
+                click.echo("Warning: Bitcode module was not created")
         except Exception as e:
-            print(f"Warning: Failed to create LLVM bitcode module: {e}")
+            click.echo(f"Warning: Failed to create LLVM bitcode module: {e}")
 
         # The crate name that c2rust uses is based on the directory stem,
         # so we create a subdirectory with the desired crate name.

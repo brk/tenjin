@@ -10,6 +10,8 @@ import tempfile
 from pathlib import Path
 from subprocess import CalledProcessError
 
+import click
+
 import hermetic
 from compilation_database import CompileCommands
 from repo_root import localdir
@@ -93,9 +95,9 @@ def compile_and_link_bitcode(
                 bitcode_files.append(bc_file)
             except CalledProcessError as e:
                 # If compilation fails, print diagnostic info and re-raise
-                print(f"Failed to compile {source_file} to bitcode")
-                print(f"Command: {' '.join(clang_args)}")
-                print(f"Stderr: {e.stderr.decode('utf-8', errors='replace')}")
+                click.echo(f"Failed to compile {source_file} to bitcode")
+                click.echo(f"Command: {' '.join(clang_args)}")
+                click.echo(f"Stderr: {e.stderr.decode('utf-8', errors='replace')}")
                 raise
 
         # Link all bitcode files into a single module
@@ -116,9 +118,9 @@ def compile_and_link_bitcode(
                 capture_output=True,
             )
         except CalledProcessError as e:
-            print("Failed to link bitcode files")
-            print(f"Command: {' '.join(llvm_link_args)}")
-            print(f"Stderr: {e.stderr.decode('utf-8', errors='replace')}")
+            click.echo("Failed to link bitcode files")
+            click.echo(f"Command: {' '.join(llvm_link_args)}")
+            click.echo(f"Stderr: {e.stderr.decode('utf-8', errors='replace')}")
             raise
 
         # Intermediate bitcode files are automatically cleaned up when
