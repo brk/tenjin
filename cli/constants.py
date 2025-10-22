@@ -10,7 +10,7 @@ WANT = {
     "10j-build-deps": "rev-b578a0937",
     # Note that 10j-more-deps is tied to 10j-llvm; when updating the latter,
     # be sure to also update the former.
-    "10j-more-deps": "rev-a67042e56",
+    "10j-more-deps": "rev-8c18c80f9",
     "10j-codehawk": "d7904d71d7743369fab9020fcaf3e8b15482152b",
     "10j-codehawk-c": "55c7beb8606fe8d67eeb06a97d4038ff810191f9",
     # Keep in sync with the version in `xj-improve-multitool/rust-toolchain.toml`.
