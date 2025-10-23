@@ -84,5 +84,25 @@ def e2e_smoke_test_2():
     if hermetic.running_in_ci():
         print("::group::")
 
+    with tempfile.TemporaryDirectory() as tempdir:
+        tempdir_path = Path(tempdir)
+
+        (tempdir_path / "main.c").write_text(
+            """
+            #include <stdio.h>
+
+            int main(int argc, char** argv) {
+                for (int i = 0; i < argc; i++) {
+                    printf("Arg %d: %s\\n", i, argv[i]);
+                }
+                return 0;
+            }
+            """
+        )
+
+        hermetic.run_chkc(["c-file", "parse", str(tempdir_path / "main.c")], check=True)
+        hermetic.run_chkc(["c-file", "analyze", str(tempdir_path / "main.c")], check=True)
+        hermetic.run_chkc(["c-file", "report", str(tempdir_path / "main.c")], check=True)
+
     if hermetic.running_in_ci():
         print("::endgroup::")

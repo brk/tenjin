@@ -289,9 +289,9 @@ def upload_results(directory: Path, host_port: str):
 @cli.command()
 @click.argument("testnames", nargs=-1)
 def check_e2e_smoke_tests(testnames):
-    allnames = {"1": e2e_smoke_tests.e2e_smoke_test_1}
+    allnames = {"1": e2e_smoke_tests.e2e_smoke_test_1, "2": e2e_smoke_tests.e2e_smoke_test_2}
     if not testnames or testnames == ("all",):
-        testnames = list(allnames.keys())
+        testnames = sorted(list(allnames.keys()))
     for name in testnames:
         if name not in allnames:
             click.echo(f"Unknown test name: {name}", err=True)
