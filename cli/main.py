@@ -14,16 +14,6 @@ import translation
 import cli_subcommands
 
 
-def parse_git_name_status_line(bs: bytes) -> tuple[str, bytes]:
-    """
-    >>> parse_git_name_status_line(b'A       .gitignore')
-    ("A", b'.gitignore')
-    """
-    status = bs[0:1].decode("utf-8")
-    path = bs.split(b"\t", 1)[-1]
-    return (status, path)
-
-
 def do_check_repo_file_sizes() -> bool:
     """Returns True if the check passed, False otherwise"""
 
