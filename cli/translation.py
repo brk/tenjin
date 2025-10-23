@@ -296,28 +296,30 @@ def do_translate(
             ),
         )
 
-        # Compile and link LLVM bitcode module
-        bitcode_module_path = builddir / "linked_module.bc"
-        try:
-            llvm_bitcode_linking.compile_and_link_bitcode(compdb, bitcode_module_path)
-            if bitcode_module_path.exists():
-                json_out_path = resultsdir / "xj-cclyzer.json"
-                hermetic.run(
-                    [
-                        "cc2json",
-                        str(bitcode_module_path),
-                        "--datalog-analysis=unification",
-                        "--debug-datalog=false",
-                        "--context-sensitivity=insensitive",
-                        f"--json-out={json_out_path}",
-                    ],
-                    check=True,
-                )
-                click.echo(json_out_path.read_text())
-            else:
-                click.echo("Warning: Bitcode module was not created")
-        except Exception as e:
-            click.echo(f"Warning: Failed to create LLVM bitcode module: {e}")
+        need_cclyzer_facts = True
+
+        if need_cclyzer_facts:
+            # Compile and link LLVM bitcode module
+            bitcode_module_path = builddir / "linked_module.bc"
+            try:
+                llvm_bitcode_linking.compile_and_link_bitcode(compdb, bitcode_module_path)
+            except Exception as e:
+                click.echo(f"Warning: Failed to create LLVM bitcode module: {e}")
+
+            assert bitcode_module_path.exists()
+            json_out_path = resultsdir / "xj-cclyzer.json"
+            hermetic.run(
+                [
+                    "cc2json",
+                    str(bitcode_module_path),
+                    "--datalog-analysis=unification",
+                    "--debug-datalog=false",
+                    "--context-sensitivity=insensitive",
+                    f"--json-out={json_out_path}",
+                ],
+                check=True,
+            )
+            click.echo(json_out_path.read_text())
 
         # The crate name that c2rust uses is based on the directory stem,
         # so we create a subdirectory with the desired crate name.
