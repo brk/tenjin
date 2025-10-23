@@ -307,6 +307,8 @@ def do_translate(
                 click.echo(f"Warning: Failed to create LLVM bitcode module: {e}")
 
             assert bitcode_module_path.exists()
+
+            resultsdir.mkdir(parents=True, exist_ok=True)
             json_out_path = resultsdir / "xj-cclyzer.json"
             hermetic.run(
                 [
