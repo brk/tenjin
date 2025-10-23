@@ -390,3 +390,18 @@ def run_output_git(args: list[str], check=False) -> bytes:
 
 def check_output_git(args: list[str]):
     return run_output_git(args, check=True)
+
+
+def run_chkc(
+    cmd: RunSpec,
+    check=False,
+) -> subprocess.CompletedProcess:
+    localdir = repo_root.localdir()
+    env_ext = {"PYTHONPATH": xj_codehawk_c(localdir).as_posix()}
+    cmdline = xj_codehawk_c(localdir) / "chc" / "cmdline"
+    env_ext["PATH"] = os.pathsep.join([cmdline.as_posix(), os.environ["PATH"]])
+    if isinstance(cmd, str):
+        cmd = f"chkc {cmd}"
+    else:
+        cmd = ["chkc", *cmd]
+    return run_shell_cmd(cmd, check=check, env_ext=env_ext)
