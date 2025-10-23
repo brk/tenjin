@@ -79,10 +79,15 @@ def compile_and_link_bitcode(
                 if arg.startswith("-o") and len(arg) > 2:
                     continue
 
+                # Skip optimization flags; we'll specify -O0 ourselves.
+                if arg.startswith("-O"):
+                    continue
+
                 clang_args.append(arg)
 
-            # Add flags to emit LLVM bitcode
-            clang_args.extend(["-emit-llvm", "-c", "-o", str(bc_file)])
+            # Add flags to emit LLVM bitcode that is easy to analyze; we're not
+            # going to run this code, or even use it for subsequent translation.
+            clang_args.extend(["-emit-llvm", "-g", "-O0", "-c", "-o", str(bc_file)])
 
             # Run clang to produce bitcode
             try:
@@ -104,24 +109,28 @@ def compile_and_link_bitcode(
         if not bitcode_files:
             raise ValueError("No bitcode files were produced from compilation database")
 
-        llvm_link_args = [
-            str(llvm_link_path),
-            *[str(bc) for bc in bitcode_files],
-            "-o",
-            str(target_path),
-        ]
+        if len(bitcode_files) == 1:
+            # If there's only one bitcode file, just move it to the target path
+            bitcode_files[0].replace(target_path)
+        else:
+            llvm_link_args = [
+                str(llvm_link_path),
+                *[str(bc) for bc in bitcode_files],
+                "-o",
+                str(target_path),
+            ]
 
-        try:
-            hermetic.run(
-                llvm_link_args,
-                check=True,
-                capture_output=True,
-            )
-        except CalledProcessError as e:
-            click.echo("Failed to link bitcode files")
-            click.echo(f"Command: {' '.join(llvm_link_args)}")
-            click.echo(f"Stderr: {e.stderr.decode('utf-8', errors='replace')}")
-            raise
+            try:
+                hermetic.run(
+                    llvm_link_args,
+                    check=True,
+                    capture_output=True,
+                )
+            except CalledProcessError as e:
+                click.echo("Failed to link bitcode files")
+                click.echo(f"Command: {' '.join(llvm_link_args)}")
+                click.echo(f"Stderr: {e.stderr.decode('utf-8', errors='replace')}")
+                raise
 
         # Intermediate bitcode files are automatically cleaned up when
         # the temporary directory context exits

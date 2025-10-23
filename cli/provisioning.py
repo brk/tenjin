@@ -192,6 +192,7 @@ def provision_desires(wanted: str):
     want_10j_deps()
     want_10j_llvm()
     want_cmake()
+    want_10j_more_deps()
 
     if wanted in ("all", "rust"):
         want_10j_rust_toolchains()
@@ -597,6 +598,26 @@ def want_10j_deps():
         "10j-build-deps",
         "Tenjin build deps",
         provision_10j_deps_with,
+    )
+
+
+def want_10j_more_deps():
+    def provision_10j_more_deps_with(version: str, keyname: str):
+        loweros = {"Linux": "linux", "Darwin": "macos"}[platform.system()]
+        filename = f"xj-more-deps_{loweros}-{machine_normalized()}.tar.xz"
+        url = f"https://github.com/Aarno-Labs/tenjin-build-deps/releases/download/{version}/{filename}"
+        target = hermetic.xj_more_deps(HAVE.localdir)
+        if target.is_dir():
+            shutil.rmtree(target)
+        download_and_extract_tarball(url, target, ctx="(builddeps) ")
+
+        HAVE.note_we_have(keyname, specifier=version)
+
+    want(
+        "10j-more-deps",
+        "10j-more-deps",
+        "Tenjin more deps",
+        provision_10j_more_deps_with,
     )
 
 

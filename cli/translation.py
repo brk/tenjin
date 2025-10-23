@@ -301,8 +301,19 @@ def do_translate(
         try:
             llvm_bitcode_linking.compile_and_link_bitcode(compdb, bitcode_module_path)
             if bitcode_module_path.exists():
-                bitcode_size = bitcode_module_path.stat().st_size
-                click.echo(f"Fully linked LLVM bitcode module size: {bitcode_size} bytes")
+                json_out_path = resultsdir / "xj-cclyzer.json"
+                hermetic.run(
+                    [
+                        "cc2json",
+                        str(bitcode_module_path),
+                        "--datalog-analysis=unification",
+                        "--debug-datalog=false",
+                        "--context-sensitivity=insensitive",
+                        f"--json-out={json_out_path}",
+                    ],
+                    check=True,
+                )
+                click.echo(json_out_path.read_text())
             else:
                 click.echo("Warning: Bitcode module was not created")
         except Exception as e:
