@@ -271,12 +271,13 @@ def run_cargo_on_translated_code(
     capture_output=False,
     **kwargs,
 ):
+    if "env_ext" not in kwargs or kwargs["env_ext"] is None:
+        kwargs["env_ext"] = {}
+    kwargs["env_ext"]["RUSTFLAGS"] = os.environ.get("RUSTFLAGS_FOR_TRANSLATED_CODE", "")
+
     return run_cargo_in(
         args,
         cwd,
-        env_ext={
-            "RUSTFLAGS": os.environ.get("RUSTFLAGS_FOR_TRANSLATED_CODE", "")
-        },  # avoid -Dwarnings from CI
         check=check,
         capture_output=capture_output,
         **kwargs,
