@@ -236,7 +236,7 @@ def implicit_cargo_toolchain_arg(cwd: Path, args: Sequence[str]) -> list[str]:
     return [get_toolchain_for_directory(cwd)]
 
 
-def cargo_encoded_rustflags_env_ext() -> dict:
+def cargo_encoded_rustflags_env_ext(env_ext_rustflags: str | None) -> dict:
     # We need this to get Cargo to build executables and tests (which, on
     # macOS, end up linking to libclang-cpp.dylib) with an embedded rpath
     # entry that allows the running binary to find our LLVM library.
@@ -255,6 +255,8 @@ def cargo_encoded_rustflags_env_ext() -> dict:
     llvm_lib_dir = xj_llvm_root(repo_root.localdir()) / "lib"
 
     rustflags = os.environ.get("RUSTFLAGS", "")
+    if env_ext_rustflags:
+        rustflags = env_ext_rustflags  # awkward but more easily type-checkable
     rustflags_parts = rustflags.split()
     rustflags_parts.extend(["-C", f"link-args=-Wl,-rpath,{llvm_lib_dir}"])
     return {
@@ -279,7 +281,7 @@ def run_cargo_in(
         cwd=cwd,
         check=check,
         with_tenjin_deps=True,
-        env_ext={**env_ext, **cargo_encoded_rustflags_env_ext()},
+        env_ext={**env_ext, **cargo_encoded_rustflags_env_ext(env_ext.get("RUSTFLAGS"))},
         **kwargs,
     )
 
