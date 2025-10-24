@@ -498,16 +498,14 @@ def want_codehawk_c():
         copy_and_make_executable(ch_bin_dir / "canalyzer", destdir / "canalyzer")
         copy_and_make_executable(ch_bin_dir / "parseFile", destdir / "parseFile")
 
-    def provision_codehawk_c_with(
+    def provision_codehawk_c_source_with(
         version: str,
-        keyname: str,
+        xj_codehawk: Path,
     ):
         def say(msg: str):
             sez(msg, ctx="(codehawk) ")
 
         localdir = HAVE.localdir
-
-        xj_codehawk = hermetic.xj_codehawk_c(localdir)
         if xj_codehawk.is_dir():
             say(f"Fetching and resetting CodeHawk-C to version {version} ...")
             subprocess.check_call(["git", "fetch", "--all"], cwd=str(xj_codehawk))
@@ -529,7 +527,14 @@ def want_codehawk_c():
             )
             subprocess.check_call(["git", "switch", "--detach", version], cwd=str(xj_codehawk))
 
+    def provision_codehawk_c_with(
+        version: str,
+        keyname: str,
+    ):
+        xj_codehawk = hermetic.xj_codehawk_c(HAVE.localdir)
+        provision_codehawk_c_source_with(version, xj_codehawk)
         rebuild_codehawk_c(xj_codehawk)
+
         HAVE.note_we_have(keyname, specifier=version)
 
     want(
