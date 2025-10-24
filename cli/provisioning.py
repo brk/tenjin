@@ -353,8 +353,11 @@ def want_10j_reference_c2rust_tag():
     ):
         xj_upstream_c2rust = hermetic.xj_upstream_c2rust(HAVE.localdir)
 
-        provision_10j_reference_c2rust_source_with(version, xj_upstream_c2rust)
-        rebuild_10j_upstream_c2rust(xj_upstream_c2rust)
+        if hermetic.running_in_ci() and xj_upstream_c2rust.is_dir():
+            sez("Upstream c2rust restored from CI cache...", ctx="(c2rust) ")
+        else:
+            provision_10j_reference_c2rust_source_with(version, xj_upstream_c2rust)
+            rebuild_10j_upstream_c2rust(xj_upstream_c2rust)
 
         HAVE.note_we_have(keyname, specifier=version)
 
