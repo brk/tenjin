@@ -453,24 +453,11 @@ def want_codehawk():
         keyname: str,
     ):
         xj_codehawk = hermetic.xj_codehawk(HAVE.localdir)
-
-        ci_cached_codehawk = Path.home() / ".xj-cached-codehawk"
-        if hermetic.running_in_ci() and ci_cached_codehawk.is_dir():
-            sez("Restoring CodeHawk from CI cache...", ctx="(codehawk) ")
-            if xj_codehawk.is_dir():
-                shutil.rmtree(xj_codehawk)
-            shutil.copytree(ci_cached_codehawk, xj_codehawk)
+        if hermetic.running_in_ci() and xj_codehawk.is_dir():
+            sez("CodeHawk restored from CI cache...", ctx="(codehawk) ")
         else:
             provision_codehawk_source_with(version, xj_codehawk)
             rebuild_codehawk(xj_codehawk)
-
-            if hermetic.running_in_ci():
-                # Copy CodeHawk (source and build artifacts) outside the _local directory
-                # so that it can be cached, or rather, it can be restored from cache
-                # without the _local directory existing yet.
-                if ci_cached_codehawk.is_dir():
-                    shutil.rmtree(ci_cached_codehawk)
-                shutil.copytree(xj_codehawk, ci_cached_codehawk)
 
         HAVE.note_we_have(keyname, specifier=version)
 
