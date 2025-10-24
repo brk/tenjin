@@ -28,20 +28,18 @@ if __name__ == "__main__":
     import sys
     import platform
 
+    def piece(k):
+        return f"{k}-{WANT['10j-' + k]}"
+
     match sys.argv:
         case [_, "ocaml-cache-key"]:
-
-            def piece(k):
-                return f"{k}-{WANT['10j-' + k]}"
-
             ocamlparts = ";".join(piece(k) for k in "ocaml opam dune".split())
             print(";".join([platform.system(), platform.machine(), ocamlparts]))
         case [_, "codehawk-cache-key"]:
-
-            def piece(k):
-                return f"{k}-{WANT['10j-' + k]}"
-
             codehawkparts = piece("codehawk")
             print(";".join([platform.system(), platform.machine(), codehawkparts]))
+        case [_, "upstream-c2rust-cache-key"]:
+            upstream_c2rust_tag = piece("reference-c2rust-tag")
+            print(";".join([platform.system(), platform.machine(), upstream_c2rust_tag]))
         case _:
             pass
