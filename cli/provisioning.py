@@ -314,16 +314,14 @@ def want_10j_rust_toolchains():
 
 
 def want_10j_reference_c2rust_tag():
-    def provision_10j_reference_c2rust_tag_with(
+    def provision_10j_reference_c2rust_source_with(
         version: str,
-        keyname: str,
+        xj_upstream_c2rust: Path,
     ):
         def say(msg: str):
             sez(msg, ctx="(c2rust) ")
 
         localdir = HAVE.localdir
-
-        xj_upstream_c2rust = hermetic.xj_upstream_c2rust(localdir)
         if xj_upstream_c2rust.is_dir():
             say(f"Fetching and resetting C2Rust to version {version} ...")
             subprocess.check_call(["git", "fetch", "--all"], cwd=str(xj_upstream_c2rust))
@@ -349,7 +347,18 @@ def want_10j_reference_c2rust_tag():
                 ["git", "switch", "--detach", version], cwd=str(xj_upstream_c2rust)
             )
 
-        rebuild_10j_upstream_c2rust(xj_upstream_c2rust)
+    def provision_10j_reference_c2rust_tag_with(
+        version: str,
+        keyname: str,
+    ):
+        xj_upstream_c2rust = hermetic.xj_upstream_c2rust(HAVE.localdir)
+
+        if hermetic.running_in_ci() and xj_upstream_c2rust.is_dir():
+            sez("Upstream c2rust restored from CI cache...", ctx="(c2rust) ")
+        else:
+            provision_10j_reference_c2rust_source_with(version, xj_upstream_c2rust)
+            rebuild_10j_upstream_c2rust(xj_upstream_c2rust)
+
         HAVE.note_we_have(keyname, specifier=version)
 
     want(
@@ -379,7 +388,7 @@ def rebuild_10j_upstream_c2rust(xj_upstream_c2rust: Path):
         stdout_file=stdout_path,
         stderr_file=stderr_path,
         cwd=xj_upstream_c2rust,
-        env_ext=hermetic.cargo_encoded_rustflags_env_ext(),
+        env_ext=hermetic.cargo_encoded_rustflags_env_ext(None),
     )
     # Ensure a clean checkout for future updates
     stdout_path.unlink(missing_ok=True)
@@ -453,24 +462,11 @@ def want_codehawk():
         keyname: str,
     ):
         xj_codehawk = hermetic.xj_codehawk(HAVE.localdir)
-
-        ci_cached_codehawk = Path.home() / ".xj-cached-codehawk"
-        if hermetic.running_in_ci() and ci_cached_codehawk.is_dir():
-            sez("Restoring CodeHawk from CI cache...", ctx="(codehawk) ")
-            if xj_codehawk.is_dir():
-                shutil.rmtree(xj_codehawk)
-            shutil.copytree(ci_cached_codehawk, xj_codehawk)
+        if hermetic.running_in_ci() and xj_codehawk.is_dir():
+            sez("CodeHawk restored from CI cache...", ctx="(codehawk) ")
         else:
             provision_codehawk_source_with(version, xj_codehawk)
             rebuild_codehawk(xj_codehawk)
-
-            if hermetic.running_in_ci():
-                # Copy CodeHawk (source and build artifacts) outside the _local directory
-                # so that it can be cached, or rather, it can be restored from cache
-                # without the _local directory existing yet.
-                if ci_cached_codehawk.is_dir():
-                    shutil.rmtree(ci_cached_codehawk)
-                shutil.copytree(xj_codehawk, ci_cached_codehawk)
 
         HAVE.note_we_have(keyname, specifier=version)
 
@@ -498,16 +494,14 @@ def want_codehawk_c():
         copy_and_make_executable(ch_bin_dir / "canalyzer", destdir / "canalyzer")
         copy_and_make_executable(ch_bin_dir / "parseFile", destdir / "parseFile")
 
-    def provision_codehawk_c_with(
+    def provision_codehawk_c_source_with(
         version: str,
-        keyname: str,
+        xj_codehawk: Path,
     ):
         def say(msg: str):
             sez(msg, ctx="(codehawk) ")
 
         localdir = HAVE.localdir
-
-        xj_codehawk = hermetic.xj_codehawk_c(localdir)
         if xj_codehawk.is_dir():
             say(f"Fetching and resetting CodeHawk-C to version {version} ...")
             subprocess.check_call(["git", "fetch", "--all"], cwd=str(xj_codehawk))
@@ -529,7 +523,14 @@ def want_codehawk_c():
             )
             subprocess.check_call(["git", "switch", "--detach", version], cwd=str(xj_codehawk))
 
+    def provision_codehawk_c_with(
+        version: str,
+        keyname: str,
+    ):
+        xj_codehawk = hermetic.xj_codehawk_c(HAVE.localdir)
+        provision_codehawk_c_source_with(version, xj_codehawk)
         rebuild_codehawk_c(xj_codehawk)
+
         HAVE.note_we_have(keyname, specifier=version)
 
     want(
@@ -610,6 +611,14 @@ def want_10j_more_deps():
         if target.is_dir():
             shutil.rmtree(target)
         download_and_extract_tarball(url, target, ctx="(builddeps) ")
+
+        if platform.system() == "Darwin":
+            subprocess.check_call([
+                "install_name_tool",
+                "-add_rpath",
+                "@executable_path/../../xj-llvm/lib",
+                str(target / "bin" / "cc2json"),
+            ])
 
         HAVE.note_we_have(keyname, specifier=version)
 

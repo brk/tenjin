@@ -236,7 +236,7 @@ def implicit_cargo_toolchain_arg(cwd: Path, args: Sequence[str]) -> list[str]:
     return [get_toolchain_for_directory(cwd)]
 
 
-def cargo_encoded_rustflags_env_ext() -> dict:
+def cargo_encoded_rustflags_env_ext(env_ext_rustflags_override: str | None) -> dict:
     # We need this to get Cargo to build executables and tests (which, on
     # macOS, end up linking to libclang-cpp.dylib) with an embedded rpath
     # entry that allows the running binary to find our LLVM library.
@@ -255,11 +255,33 @@ def cargo_encoded_rustflags_env_ext() -> dict:
     llvm_lib_dir = xj_llvm_root(repo_root.localdir()) / "lib"
 
     rustflags = os.environ.get("RUSTFLAGS", "")
+    if env_ext_rustflags_override is not None:
+        rustflags = env_ext_rustflags_override  # awkward but more easily type-checkable
     rustflags_parts = rustflags.split()
     rustflags_parts.extend(["-C", f"link-args=-Wl,-rpath,{llvm_lib_dir}"])
     return {
         "CARGO_ENCODED_RUSTFLAGS": b"\x1f".join(x.encode("utf-8") for x in rustflags_parts),
     }
+
+
+def run_cargo_on_translated_code(
+    args: Sequence[str],
+    cwd: Path,
+    check=True,
+    capture_output=False,
+    **kwargs,
+):
+    if "env_ext" not in kwargs or kwargs["env_ext"] is None:
+        kwargs["env_ext"] = {}
+    kwargs["env_ext"]["RUSTFLAGS"] = os.environ.get("RUSTFLAGS_FOR_TRANSLATED_CODE", "")
+
+    return run_cargo_in(
+        args,
+        cwd,
+        check=check,
+        capture_output=capture_output,
+        **kwargs,
+    )
 
 
 def run_cargo_in(
@@ -279,7 +301,7 @@ def run_cargo_in(
         cwd=cwd,
         check=check,
         with_tenjin_deps=True,
-        env_ext={**env_ext, **cargo_encoded_rustflags_env_ext()},
+        env_ext={**env_ext, **cargo_encoded_rustflags_env_ext(env_ext.get("RUSTFLAGS"))},
         **kwargs,
     )
 
@@ -390,3 +412,18 @@ def run_output_git(args: list[str], check=False) -> bytes:
 
 def check_output_git(args: list[str]):
     return run_output_git(args, check=True)
+
+
+def run_chkc(
+    cmd: RunSpec,
+    check=False,
+) -> subprocess.CompletedProcess:
+    localdir = repo_root.localdir()
+    env_ext = {"PYTHONPATH": xj_codehawk_c(localdir).as_posix()}
+    cmdline = xj_codehawk_c(localdir) / "chc" / "cmdline"
+    env_ext["PATH"] = os.pathsep.join([cmdline.as_posix(), os.environ["PATH"]])
+    if isinstance(cmd, str):
+        cmd = f"chkc {cmd}"
+    else:
+        cmd = ["chkc", *cmd]
+    return run_shell_cmd(cmd, check=check, env_ext=env_ext)

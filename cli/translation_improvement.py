@@ -25,7 +25,9 @@ import static_measurements_rust
 
 
 def quiet_cargo(args: list[str], cwd: Path, env_ext=None) -> CompletedProcess:
-    cp = hermetic.run_cargo_in(args, cwd=cwd, check=False, capture_output=True, env_ext=env_ext)
+    cp = hermetic.run_cargo_on_translated_code(
+        args, cwd=cwd, check=False, capture_output=True, env_ext=env_ext
+    )
     if cp.returncode != 0:
         click.echo(
             f"TENJIN: cargo invocation failed in {cwd.as_posix()}:\n\t" + " ".join(args), err=True
@@ -45,12 +47,13 @@ def run_improve_multitool(root: Path, tool: str, args: list[str], dir: Path) -> 
     # it's not ideal to install them globally.
     # We could unconditionally `cargo install` into the _local/bin directory,
     # but it's a bit faster to just build & run from `target`.
+    target_subdir = os.environ.get("XJ_BUILD_RS_PROFILE", "debug")
     return quiet_cargo(
         ["xj-improve-multitool", "--tool", tool, *args],
         cwd=dir,
         env_ext={
             "PATH": os.pathsep.join([
-                str(root / "xj-improve-multitool" / "target" / "debug"),
+                str(root / "xj-improve-multitool" / "target" / target_subdir),
                 os.environ["PATH"],
             ]),
         },
@@ -132,7 +135,7 @@ def run_un_unsafe_improvement(root: Path, dir: Path):
             lambda span: Path(dir / cacg.files[span.fileid]),
         )
         rewriter.erase_spans()
-        cp = hermetic.run_cargo_in(
+        cp = hermetic.run_cargo_on_translated_code(
             ["check", "--message-format=json"],
             cwd=dir,
             check=False,
@@ -293,7 +296,7 @@ def hacky_whiteout_first_occurrence_within_first_n_bytes(contents: str, needle: 
 
 
 def run_trim_allows(root: Path, dir: Path):
-    base_cp = hermetic.run_cargo_in(
+    base_cp = hermetic.run_cargo_on_translated_code(
         ["check", "--message-format=json"], cwd=dir, check=True, capture_output=True
     )
 
@@ -342,7 +345,7 @@ def run_trim_allows(root: Path, dir: Path):
             rewriter.update_content_via(whiteout_first_thing)
             changes_made = rewriter.write()
             if changes_made:
-                cp = hermetic.run_cargo_in(
+                cp = hermetic.run_cargo_on_translated_code(
                     ["check", "--message-format=json"], cwd=dir, check=False, capture_output=True
                 )
                 if cp.returncode != 0 or len(cp.stdout) > len(base_cp.stdout):
@@ -419,7 +422,7 @@ def run_trivial_numeric_casts_improvement(root: Path, dir: Path) -> None:
     def run_check(cwd: Path) -> bool:
         nonlocal cargo_check_runs, cargo_check_failures
         cargo_check_runs += 1
-        cp = hermetic.run_cargo_in(
+        cp = hermetic.run_cargo_on_translated_code(
             ["check"],
             cwd=cwd,
             check=False,
@@ -444,7 +447,7 @@ def run_trivial_numeric_casts_improvement(root: Path, dir: Path) -> None:
         for lint in allowed_lints:
             clippy_args.extend(["-A", lint])
 
-        cp = hermetic.run_cargo_in(
+        cp = hermetic.run_cargo_on_translated_code(
             clippy_args,
             cwd=cwd,
             check=False,
@@ -595,7 +598,7 @@ def run_improvement_passes(
     root: Path, output: Path, resultsdir: Path, cratename: str, tracker: ingest_tracking.TimingRepo
 ):
     def run_cargo_fmt(_root: Path, dir: Path) -> CompletedProcess:
-        return hermetic.run_cargo_in(
+        return hermetic.run_cargo_on_translated_code(
             ["fmt"],
             cwd=dir,
             check=True,
@@ -603,7 +606,7 @@ def run_improvement_passes(
         )
 
     def run_cargo_fix(_root: Path, dir: Path) -> CompletedProcess:
-        return hermetic.run_cargo_in(
+        return hermetic.run_cargo_on_translated_code(
             ["fix", "--allow-no-vcs", "--allow-dirty"],
             cwd=dir,
             check=True,
@@ -611,7 +614,7 @@ def run_improvement_passes(
         )
 
     def run_cargo_clippy_fix(_root: Path, dir: Path) -> CompletedProcess:
-        return hermetic.run_cargo_in(
+        return hermetic.run_cargo_on_translated_code(
             ["clippy", "--fix", "--allow-no-vcs", "--allow-dirty"],
             cwd=dir,
             check=True,

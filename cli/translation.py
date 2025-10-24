@@ -10,6 +10,7 @@ import time
 import uuid
 from platform import platform
 import hashlib
+from os import environ
 
 import click
 
@@ -296,28 +297,32 @@ def do_translate(
             ),
         )
 
-        # Compile and link LLVM bitcode module
-        bitcode_module_path = builddir / "linked_module.bc"
-        try:
-            llvm_bitcode_linking.compile_and_link_bitcode(compdb, bitcode_module_path)
-            if bitcode_module_path.exists():
-                json_out_path = resultsdir / "xj-cclyzer.json"
-                hermetic.run(
-                    [
-                        "cc2json",
-                        str(bitcode_module_path),
-                        "--datalog-analysis=unification",
-                        "--debug-datalog=false",
-                        "--context-sensitivity=insensitive",
-                        f"--json-out={json_out_path}",
-                    ],
-                    check=True,
-                )
-                click.echo(json_out_path.read_text())
-            else:
-                click.echo("Warning: Bitcode module was not created")
-        except Exception as e:
-            click.echo(f"Warning: Failed to create LLVM bitcode module: {e}")
+        need_cclyzer_facts = True
+
+        if need_cclyzer_facts:
+            # Compile and link LLVM bitcode module
+            bitcode_module_path = builddir / "linked_module.bc"
+            try:
+                llvm_bitcode_linking.compile_and_link_bitcode(compdb, bitcode_module_path)
+            except Exception as e:
+                click.echo(f"Warning: Failed to create LLVM bitcode module: {e}")
+
+            assert bitcode_module_path.exists()
+
+            resultsdir.mkdir(parents=True, exist_ok=True)
+            json_out_path = resultsdir / "xj-cclyzer.json"
+            hermetic.run(
+                [
+                    "cc2json",
+                    str(bitcode_module_path),
+                    "--datalog-analysis=unification",
+                    "--debug-datalog=false",
+                    "--context-sensitivity=insensitive",
+                    f"--json-out={json_out_path}",
+                ],
+                check=True,
+            )
+            click.echo(json_out_path.read_text())
 
         # The crate name that c2rust uses is based on the directory stem,
         # so we create a subdirectory with the desired crate name.
@@ -339,7 +344,8 @@ def do_translate(
         # Then run our version, using guidance and preanalysis.
         output = resultsdir / cratename
         output.mkdir(parents=True, exist_ok=False)
-        c2rust_bin = root / "c2rust" / "target" / "debug" / "c2rust"
+        target_subdir = environ.get("XJ_BUILD_RS_PROFILE", "debug")
+        c2rust_bin = root / "c2rust" / "target" / target_subdir / "c2rust"
         try:
             _xj_cp = run_c2rust(
                 tracker, "xj-c2rust", c2rust_bin, compdb, output, xj_c2rust_transpile_flags
@@ -372,9 +378,11 @@ def do_translate(
     if not skip_remainder_of_translation:
         # Verify that the initial translation is valid Rust code.
         # If it has errors, we won't be able to run the improvement passes.
-        initial_cp = hermetic.run_cargo_in(["check"], cwd=output, check=False)
+        initial_cp = hermetic.run_cargo_on_translated_code(["check"], cwd=output, check=False)
         # Ensure that subsequent passes start with a clean slate.
-        clean_p_cp = hermetic.run_cargo_in(["clean", "-p", cratename], cwd=output, check=False)
+        clean_p_cp = hermetic.run_cargo_on_translated_code(
+            ["clean", "-p", cratename], cwd=output, check=False
+        )
 
         if initial_cp.returncode == 0 and clean_p_cp.returncode == 0:
             run_improvement_passes(root, output, resultsdir, cratename, tracker)
