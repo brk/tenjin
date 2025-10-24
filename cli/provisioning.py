@@ -612,6 +612,14 @@ def want_10j_more_deps():
             shutil.rmtree(target)
         download_and_extract_tarball(url, target, ctx="(builddeps) ")
 
+        if platform.system() == "Darwin":
+            subprocess.check_call([
+                "install_name_tool",
+                "-add_rpath",
+                "@executable_path/../../xj-llvm/lib",
+                str(target / "bin" / "cc2json"),
+            ])
+
         HAVE.note_we_have(keyname, specifier=version)
 
     want(
