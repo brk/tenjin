@@ -128,6 +128,7 @@ def get_clippy_messages_json(
         cwd=cargo_project_dir,
         text=True,
         capture_output=True,
+        env_ext={"RUSTFLAGS": ""},  # avoid -Dwarnings from CI
         check=False,
     )
 

@@ -59,10 +59,9 @@ def e2e_smoke_test_1():
         assert (results_dir / "final" / "Cargo.toml").exists()
 
         def run_cargo_on_final(args: list[str], capture_output: bool = False):
-            return hermetic.run_cargo_in(
+            return hermetic.run_cargo_on_translated_code(
                 args,
                 cwd=results_dir / "final",
-                env_ext={"RUSTFLAGS": ""},  # avoid -Dwarnings from CI
                 check=True,
                 capture_output=capture_output,
             )

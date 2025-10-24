@@ -378,9 +378,11 @@ def do_translate(
     if not skip_remainder_of_translation:
         # Verify that the initial translation is valid Rust code.
         # If it has errors, we won't be able to run the improvement passes.
-        initial_cp = hermetic.run_cargo_in(["check"], cwd=output, check=False)
+        initial_cp = hermetic.run_cargo_on_translated_code(["check"], cwd=output, check=False)
         # Ensure that subsequent passes start with a clean slate.
-        clean_p_cp = hermetic.run_cargo_in(["clean", "-p", cratename], cwd=output, check=False)
+        clean_p_cp = hermetic.run_cargo_on_translated_code(
+            ["clean", "-p", cratename], cwd=output, check=False
+        )
 
         if initial_cp.returncode == 0 and clean_p_cp.returncode == 0:
             run_improvement_passes(root, output, resultsdir, cratename, tracker)
