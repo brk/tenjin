@@ -10,6 +10,7 @@ import time
 import uuid
 from platform import platform
 import hashlib
+from os import environ
 
 import click
 
@@ -343,7 +344,8 @@ def do_translate(
         # Then run our version, using guidance and preanalysis.
         output = resultsdir / cratename
         output.mkdir(parents=True, exist_ok=False)
-        c2rust_bin = root / "c2rust" / "target" / "debug" / "c2rust"
+        target_subdir = environ.get("XJ_BUILD_RS_PROFILE", "debug")
+        c2rust_bin = root / "c2rust" / "target" / target_subdir / "c2rust"
         try:
             _xj_cp = run_c2rust(
                 tracker, "xj-c2rust", c2rust_bin, compdb, output, xj_c2rust_transpile_flags

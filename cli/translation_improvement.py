@@ -45,12 +45,13 @@ def run_improve_multitool(root: Path, tool: str, args: list[str], dir: Path) -> 
     # it's not ideal to install them globally.
     # We could unconditionally `cargo install` into the _local/bin directory,
     # but it's a bit faster to just build & run from `target`.
+    target_subdir = os.environ.get("XJ_BUILD_RS_PROFILE", "debug")
     return quiet_cargo(
         ["xj-improve-multitool", "--tool", tool, *args],
         cwd=dir,
         env_ext={
             "PATH": os.pathsep.join([
-                str(root / "xj-improve-multitool" / "target" / "debug"),
+                str(root / "xj-improve-multitool" / "target" / target_subdir),
                 os.environ["PATH"],
             ]),
         },
