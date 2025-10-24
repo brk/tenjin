@@ -314,16 +314,14 @@ def want_10j_rust_toolchains():
 
 
 def want_10j_reference_c2rust_tag():
-    def provision_10j_reference_c2rust_tag_with(
+    def provision_10j_reference_c2rust_source_with(
         version: str,
-        keyname: str,
+        xj_upstream_c2rust: Path,
     ):
         def say(msg: str):
             sez(msg, ctx="(c2rust) ")
 
         localdir = HAVE.localdir
-
-        xj_upstream_c2rust = hermetic.xj_upstream_c2rust(localdir)
         if xj_upstream_c2rust.is_dir():
             say(f"Fetching and resetting C2Rust to version {version} ...")
             subprocess.check_call(["git", "fetch", "--all"], cwd=str(xj_upstream_c2rust))
@@ -349,7 +347,15 @@ def want_10j_reference_c2rust_tag():
                 ["git", "switch", "--detach", version], cwd=str(xj_upstream_c2rust)
             )
 
+    def provision_10j_reference_c2rust_tag_with(
+        version: str,
+        keyname: str,
+    ):
+        xj_upstream_c2rust = hermetic.xj_upstream_c2rust(HAVE.localdir)
+
+        provision_10j_reference_c2rust_source_with(version, xj_upstream_c2rust)
         rebuild_10j_upstream_c2rust(xj_upstream_c2rust)
+
         HAVE.note_we_have(keyname, specifier=version)
 
     want(
