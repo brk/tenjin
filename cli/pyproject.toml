@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "Add your description here"
 requires-python = ">=3.12.3"
 dependencies = [
+    "clang==18.1.8",
     "click==8.1.8",
     "dataclasses-json>=0.6.7",
     "mypy==1.15.0",
