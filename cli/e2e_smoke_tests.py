@@ -87,7 +87,11 @@ def e2e_smoke_test_2():
 
         (tempdir_path / "main.c").write_text(
             """
-            #include <stdio.h>
+            /* #include <stdio.h> */
+            /* CodeHawk-C uses CIL which cannot parse Mac system headers.
+               For now we avoid the issue by using a forward declaration
+               instead of a real #include */
+            extern void printf(const char* format, ...);
 
             int main(int argc, char** argv) {
                 for (int i = 0; i < argc; i++) {
