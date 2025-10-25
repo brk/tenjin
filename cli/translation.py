@@ -232,7 +232,7 @@ def do_translate(
 
     tracker = ingest_tracking.TimingRepo(stub_ingestion_record(codebase, guidance))
 
-    def perform_pre_translation(builddir: Path):
+    def materialize_compilation_database_in(builddir: Path):
         """Leaves a copy of a provided-or-generated compile_commands.json file
         in the given build directory."""
         provided_compdb = codebase / "compile_commands.json"
@@ -299,7 +299,7 @@ def do_translate(
     with tempfile.TemporaryDirectory() as builddirname:
         builddir = Path(builddirname)
         with tracker.tracking("pretranslation", builddir) as _step:
-            perform_pre_translation(builddir)
+            materialize_compilation_database_in(builddir)
             compdb = builddir / "compile_commands.json"
 
         tracker.set_preprocessor_definitions(
