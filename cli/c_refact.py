@@ -10,6 +10,7 @@ from clang.cindex import (
 from dataclasses import dataclass
 import platform
 from pathlib import Path
+import subprocess
 
 import hermetic
 import repo_root
@@ -81,7 +82,7 @@ def parse_translation_unit_with_args(
         path=path,
         args=[
             f"--sysroot={sysroot_dir.as_posix()}",
-            "-I",
+            "-isystem",
             (xj_llvm / "lib" / "clang" / "18" / "include").as_posix(),
             *args_sans_path,
         ],
@@ -115,6 +116,122 @@ def parse_project(
             abs_path = (cmds[0].directory_path / srcfile).resolve()
         tus[abs_path] = tu
     return tus
+
+
+def preprocess_and_create_new_compdb(
+    compdb: compilation_database.CompileCommands,
+    target_dir: str,
+    with_and_without_line_directives: bool = False,
+) -> compilation_database.CompileCommands:
+    """
+    For each TU in compdb, run clang -E to preprocess it into target_dir,
+    then create a new compile_commands.json in target_dir that refers to
+    the preprocessed .i files.
+    """
+    new_commands = []
+    target_dir_path = Path(target_dir)
+    target_dir_path.mkdir(parents=True, exist_ok=True)
+
+    repo_root_path = repo_root.find_repo_root_dir_Path()
+    clang_path = hermetic.xj_llvm_root(repo_root.localdir()) / "bin" / "clang"
+
+    for cmd in compdb.commands:
+        # 1. Determine paths
+        abs_src_path = cmd.absolute_file_path
+        try:
+            rel_src_path = abs_src_path.relative_to(repo_root_path)
+        except ValueError:
+            rel_src_path = Path(abs_src_path.name)
+
+        preprocessed_file_path = (target_dir_path / rel_src_path).with_suffix(".i")
+        preprocessed_file_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # 2. Run preprocessor
+        original_args = cmd.get_command_parts()
+        compiler_args = original_args[1:]
+
+        # Remove output file from args
+        try:
+            o_index = compiler_args.index("-o")
+            del compiler_args[o_index : o_index + 2]
+        except ValueError:
+            pass
+
+        if "-c" in compiler_args:
+            compiler_args.remove("-c")
+
+        # Remove source file from args
+        temp_args = []
+        for arg in compiler_args:
+            arg_path = Path(arg)
+            if not arg_path.is_absolute():
+                arg_path = cmd.directory_path / arg_path
+
+            if arg_path.resolve() != abs_src_path.resolve():
+                temp_args.append(arg)
+        compiler_args = temp_args
+
+        base_pp_command = [
+            str(clang_path),
+            "-E",
+            str(abs_src_path),
+            *compiler_args,
+        ]
+
+        subprocess.run(
+            [*base_pp_command, "-o", str(preprocessed_file_path)],
+            check=True,
+            cwd=cmd.directory,
+        )
+
+        if with_and_without_line_directives:
+            no_lines_path = preprocessed_file_path.with_suffix(".nolines.i")
+            refold_map_path = no_lines_path.with_suffix(".refoldmap.json")
+            subprocess.run(
+                [
+                    *base_pp_command,
+                    f"--refold-map={refold_map_path.as_posix()}",
+                    "--no-line-commands",
+                    "-o",
+                    str(no_lines_path),
+                ],
+                check=True,
+                cwd=cmd.directory,
+            )
+
+        # 3. Create new command for new compdb
+        new_args = original_args.copy()
+
+        found = False
+        for i, arg in enumerate(new_args):
+            arg_path = Path(arg)
+            if not arg_path.is_absolute():
+                arg_path = cmd.directory_path / arg_path
+
+            if arg_path.resolve() == abs_src_path.resolve():
+                new_args[i] = str(preprocessed_file_path)
+                found = True
+                break
+
+        if not found:
+            raise ValueError(
+                f"Source file {abs_src_path} not found in command arguments: {original_args}"
+            )
+
+        new_commands.append(
+            compilation_database.CompileCommand(
+                directory=cmd.directory,
+                file=str(preprocessed_file_path),
+                arguments=new_args if cmd.arguments else None,
+                command=" ".join(new_args) if cmd.command else None,
+                output=cmd.output,
+            )
+        )
+
+    # 4. Write new compile_commands.json
+    new_compdb = compilation_database.CompileCommands(commands=new_commands)
+    new_compdb.to_json_file(target_dir_path / "compile_commands.json")
+    return new_compdb
 
 
 def compute_globals_and_statics_for_project(
