@@ -168,6 +168,25 @@ def extract_preprocessor_definitions_from_compile_commands(
     return definitions
 
 
+def rebase_compile_commands_from_to(compile_commands_path: Path, from_dir: Path, to_dir: Path):
+    """Rebase all paths in the given compile_commands.json file from `from_dir` to `to_dir`."""
+    # TODO maybe we need to handle relative paths more explicitly?
+    from_dir_abs = from_dir.resolve().as_posix()
+    to_dir_abs = to_dir.resolve().as_posix()
+
+    def update(p: str) -> str:
+        return p.replace(from_dir_abs, to_dir_abs)
+
+    ccs = CompileCommands.from_json_file(compile_commands_path)
+    for cc in ccs.commands:
+        cc.directory = update(Path(cc.directory).resolve().as_posix())
+        cc.file = update(Path(cc.file).resolve().as_posix())
+        # For arguments, we only need to update absolute paths.
+        cc.set_command_parts([update(arg) for arg in cc.get_command_parts()])
+
+    ccs.to_json_file(compile_commands_path)
+
+
 def munge_compile_commands_for_hermetic_translation(compile_commands_path: Path):
     """Modify compile_commands.json to explicitly provide Tenjin's sysroot.
     The clang driver automatically gets this via .cfg files, but c2rust doesn't."""
