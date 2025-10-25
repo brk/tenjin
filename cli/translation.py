@@ -173,6 +173,20 @@ def create_translation_snapshot(
     return results_snapshot
 
 
+def choose_c_main_filename(codebase: Path, c_main_in: str | None) -> str | None:
+    if not c_main_in and codebase.is_file() and codebase.suffix == ".c":
+        if b"main(" in codebase.read_bytes():
+            c_main_in = codebase.name
+
+    if not c_main_in and (codebase / "main.c").is_file():
+        c_main_in = "main.c"
+
+    if not c_main_in and (codebase / "src" / "main.c").is_file():
+        c_main_in = "main.c"
+
+    return c_main_in
+
+
 def do_translate(
     root: Path,
     codebase: Path,
@@ -259,18 +273,10 @@ def do_translate(
         "--disable-refactoring",
     ]
 
-    if not c_main_in and codebase.is_file() and codebase.suffix == ".c":
-        if b"main(" in codebase.read_bytes():
-            c_main_in = codebase.name
+    c_main_filename = choose_c_main_filename(codebase, c_main_in)
 
-    if not c_main_in and (codebase / "main.c").is_file():
-        c_main_in = "main.c"
-
-    if not c_main_in and (codebase / "src" / "main.c").is_file():
-        c_main_in = "main.c"
-
-    if c_main_in:
-        c2rust_transpile_flags.extend(["--binary", c_main_in.removesuffix(".c")])
+    if c_main_filename:
+        c2rust_transpile_flags.extend(["--binary", c_main_filename.removesuffix(".c")])
     else:
         c2rust_transpile_flags.extend(["--emit-build-files"])
 
