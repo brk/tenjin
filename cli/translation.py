@@ -187,6 +187,24 @@ def choose_c_main_filename(codebase: Path, c_main_in: str | None) -> str | None:
     return c_main_in
 
 
+def choose_c2rust_transpile_flags(codebase: Path, c_main_in: str | None) -> list[str]:
+    c2rust_transpile_flags = [
+        "--translate-const-macros",
+        "conservative",
+        "--reduce-type-annotations",
+        "--disable-refactoring",
+    ]
+
+    c_main_filename = choose_c_main_filename(codebase, c_main_in)
+
+    if c_main_filename:
+        c2rust_transpile_flags.extend(["--binary", c_main_filename.removesuffix(".c")])
+    else:
+        c2rust_transpile_flags.extend(["--emit-build-files"])
+
+    return c2rust_transpile_flags
+
+
 def do_translate(
     root: Path,
     codebase: Path,
@@ -266,19 +284,7 @@ def do_translate(
             # We must make a copy to freely munge without affecting the original.
             return shutil.copyfile(provided_compdb, builddir / "compile_commands.json")
 
-    c2rust_transpile_flags = [
-        "--translate-const-macros",
-        "conservative",
-        "--reduce-type-annotations",
-        "--disable-refactoring",
-    ]
-
-    c_main_filename = choose_c_main_filename(codebase, c_main_in)
-
-    if c_main_filename:
-        c2rust_transpile_flags.extend(["--binary", c_main_filename.removesuffix(".c")])
-    else:
-        c2rust_transpile_flags.extend(["--emit-build-files"])
+    c2rust_transpile_flags = choose_c2rust_transpile_flags(codebase, c_main_in)
 
     xj_c2rust_transpile_flags = [
         *c2rust_transpile_flags,
