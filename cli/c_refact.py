@@ -1,7 +1,9 @@
 from clang.cindex import (
-    Index,
     CursorKind,
+    TokenKind,
     Config,
+    Index,
+    SourceRange,
     StorageClass,
     TranslationUnit,
     CompilationDatabase,
@@ -414,3 +416,70 @@ Cursor kinds as of LLVM 18.1.8:
         CursorKind.OVERLOAD_CANDIDATE,
     ]
     """
+
+
+def identify_apple_extension_spans(
+    compdb: compilation_database.CompileCommands,
+) -> list[SourceRange]:
+    """
+    Identifies the location of any `_Nonnull` keywords or attributes whose
+    contents are of the form IDENT = FLOAT_CONSTANT or IDENT = REGULAR_ATTR.
+    """
+
+    def find_apple_extension_spans_in_tu(translation_unit: TranslationUnit) -> list[SourceRange]:
+        """Finds spans for a single translation unit."""
+        spans = []
+
+        # Find _Nonnull keywords
+        for token in translation_unit.cursor.get_tokens():
+            if token.kind == TokenKind.KEYWORD and token.spelling == "_Nonnull":
+                spans.append(token.extent)
+
+        # Find attributes
+        def visit(node):
+            if node.kind == CursorKind.UNEXPOSED_ATTR:
+                tokens = list(node.get_tokens())
+                # Looking for `IDENT = FLOAT_CONSTANT` or `IDENT = REGULAR_ATTR`
+                # This is a heuristic based on token patterns.
+                if len(tokens) >= 3 and tokens[1].spelling == "=":
+                    if tokens[0].kind == TokenKind.IDENTIFIER:
+                        # Check for float literal
+                        if tokens[2].kind == TokenKind.LITERAL:
+                            literal_text = tokens[2].spelling
+                            # Simple check for float: contains '.', or 'e'/'E' for scientific notation.
+                            if "." in literal_text or "e" in literal_text.lower():
+                                spans.append(node.extent)
+                        # Check for identifier on RHS (for REGULAR_ATTR)
+                        elif tokens[2].kind == TokenKind.IDENTIFIER:
+                            spans.append(node.extent)
+
+            for child in node.get_children():
+                visit(child)
+
+        visit(translation_unit.cursor)
+        return spans
+
+    index = create_xj_clang_index()
+    tus = parse_project(index, compdb)
+    all_spans = []
+    for _srcfile, tu in tus.items():
+        spans = find_apple_extension_spans_in_tu(tu)
+        all_spans.extend(spans)
+
+    # Deduplicate spans
+    seen_spans = set()
+    unique_spans = []
+    for span in all_spans:
+        span_tuple = (
+            span.start.file.name,
+            span.start.line,
+            span.start.column,
+            span.end.file.name,
+            span.end.line,
+            span.end.column,
+        )
+        if span_tuple not in seen_spans:
+            unique_spans.append(span)
+            seen_spans.add(span_tuple)
+
+    return unique_spans
