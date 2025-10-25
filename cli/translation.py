@@ -234,7 +234,13 @@ def do_translate(
 
     def materialize_compilation_database_in(builddir: Path):
         """Leaves a copy of a provided-or-generated compile_commands.json file
-        in the given build directory."""
+        in the given build directory.
+
+        The compile_commands.json file will refer to paths in the original codebase,
+        not the build directory.
+
+        The build directory may or may not end up with a copy of the input codebase,
+        depending on whether a build was required to produce the compilation database."""
         provided_compdb = codebase / "compile_commands.json"
         provided_cmakelists = codebase / "CMakeLists.txt"
 
