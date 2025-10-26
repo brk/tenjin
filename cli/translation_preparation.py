@@ -112,6 +112,7 @@ def run_preparation_passes(
 
     def prep_00_copy_pristine_codebase(pristine: Path, newdir: Path):
         if pristine.is_file():
+            newdir.mkdir()
             shutil.copy2(pristine, newdir / pristine.name)
         else:
             shutil.copytree(pristine, newdir)
@@ -179,8 +180,6 @@ def run_preparation_passes(
                     compilation_database.rebase_compile_commands_from_to(
                         compdb_path_in(newdir), prev, newdir
                     )
-            else:
-                newdir.mkdir()
             cp_or_None: CompletedProcess | None = func(prev, newdir)
             if cp_or_None is not None:
                 step.update_sub(cp_or_None)
