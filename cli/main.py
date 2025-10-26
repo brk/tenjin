@@ -296,15 +296,17 @@ def upload_results(directory: Path, host_port: str):
 @cli.command()
 @click.argument("testnames", nargs=-1)
 def check_e2e_smoke_tests(testnames):
-    allnames = {"1": e2e_smoke_tests.e2e_smoke_test_1, "2": e2e_smoke_tests.e2e_smoke_test_2}
-    if not testnames or testnames == ("all",):
-        testnames = sorted(list(allnames.keys()))
-    for name in testnames:
-        if name not in allnames:
-            click.echo(f"Unknown test name: {name}", err=True)
+    selected = e2e_smoke_tests.query_selected_tests(testnames)
+    for name, fn in selected.items():
+        if not fn:
+            click.echo(f"Test case {name} unknown", err=True)
             sys.exit(1)
-        else:
-            allnames[name]()
+
+    # Execute each selected test; if a mapping entry is None, treat as unimplemented
+    for name in sorted(selected.keys()):
+        fn = selected.get(name)
+        assert fn is not None
+        fn()
 
 
 if __name__ == "__main__":

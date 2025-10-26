@@ -11,6 +11,22 @@ import translation
 import cli_subcommands
 
 
+def query_selected_tests(testnames: list[str]):
+    """Return a mapping of available smoke test names to callables.
+
+    Values may be a callable (to run the test) or None if not implemented.
+    """
+    available_tests = {
+        "1": e2e_smoke_test_1,
+        "2": e2e_smoke_test_2,
+    }
+
+    if not testnames or testnames == ["all"]:
+        testnames = sorted(list(available_tests.keys()))
+
+    return {name: available_tests.get(name) for name in testnames}
+
+
 def e2e_smoke_test_1():
     """A simple end-to-end smoke test for Tenjin translation."""
     if hermetic.running_in_ci():
