@@ -104,6 +104,13 @@ def cli():
 def translate(codebase, resultsdir, cratename, c_main_in, guidance, buildcmd, reset_resultsdir):
     root = repo_root.find_repo_root_dir_Path()
     cli_subcommands.do_build_rs(root)
+
+    if Path(codebase).is_dir() and list(Path(codebase).glob("*.*")) == []:
+        click.echo(
+            f"Error: Codebase directory {codebase} contains no files to translate.", err=True
+        )
+        sys.exit(1)
+
     if guidance is None:
         click.echo("Using empty guidance; pass `--guidance` to refine translation.", err=True)
         guidance = "{}"
