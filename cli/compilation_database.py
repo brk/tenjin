@@ -142,10 +142,14 @@ def extract_preprocessor_definitions_from_compile_commands(
         args = cc.get_command_parts()
         # command_info["directory"] is build directory, which can be
         # located anywhere; it has no relation to the source file path.
-        if cc.file_path.resolve() == codebase.resolve():
-            relative_path = cc.file_path
+        resolved_file_path = cc.file_path.resolve()
+        resolved_codebase_path = codebase.resolve()
+        if resolved_file_path == resolved_codebase_path:
+            chosen_path = cc.file_path
+        elif resolved_file_path.is_relative_to(resolved_codebase_path):
+            chosen_path = resolved_file_path.relative_to(resolved_codebase_path)
         else:
-            relative_path = Path(cc.file).relative_to(codebase)
+            chosen_path = resolved_file_path
         defs: list[ingest.PreprocessorDefinition] = []
         i = 0
         while i < len(args):
@@ -164,8 +168,27 @@ def extract_preprocessor_definitions_from_compile_commands(
                 # Handle -Dkey style definitions.
                 defs.append((arg[2:], None))  # Add the definition without the -D prefix
         if defs:
-            definitions[relative_path.as_posix()] = defs
+            definitions[chosen_path.as_posix()] = defs
     return definitions
+
+
+def rebase_compile_commands_from_to(compile_commands_path: Path, from_dir: Path, to_dir: Path):
+    """Rebase all paths in the given compile_commands.json file from `from_dir` to `to_dir`."""
+    # TODO maybe we need to handle relative paths more explicitly?
+    from_dir_abs = from_dir.resolve().as_posix()
+    to_dir_abs = to_dir.resolve().as_posix()
+
+    def update(p: str) -> str:
+        return p.replace(from_dir_abs, to_dir_abs)
+
+    ccs = CompileCommands.from_json_file(compile_commands_path)
+    for cc in ccs.commands:
+        cc.directory = update(Path(cc.directory).resolve().as_posix())
+        cc.file = update(Path(cc.file).resolve().as_posix())
+        # For arguments, we only need to update absolute paths.
+        cc.set_command_parts([update(arg) for arg in cc.get_command_parts()])
+
+    ccs.to_json_file(compile_commands_path)
 
 
 def munge_compile_commands_for_hermetic_translation(compile_commands_path: Path):

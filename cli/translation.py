@@ -1,6 +1,5 @@
 import shutil
 import sys
-import tempfile
 from pathlib import Path
 from subprocess import CompletedProcess, CalledProcessError
 import re
@@ -22,8 +21,8 @@ import ingest_tracking
 import hermetic
 import vcs_helpers
 import static_measurements_rust
+from translation_preparation import run_preparation_passes
 from translation_improvement import run_improvement_passes
-import llvm_bitcode_linking
 
 
 def stub_ingestion_record(codebase: Path, guidance: dict) -> ingest.TranslationRecord | None:
@@ -173,6 +172,38 @@ def create_translation_snapshot(
     return results_snapshot
 
 
+def choose_c_main_filename(codebase: Path, c_main_in: str | None) -> str | None:
+    if not c_main_in and codebase.is_file() and codebase.suffix == ".c":
+        if b"main(" in codebase.read_bytes():
+            c_main_in = codebase.name
+
+    if not c_main_in and (codebase / "main.c").is_file():
+        c_main_in = "main.c"
+
+    if not c_main_in and (codebase / "src" / "main.c").is_file():
+        c_main_in = "main.c"
+
+    return c_main_in
+
+
+def choose_c2rust_transpile_flags(codebase: Path, c_main_in: str | None) -> list[str]:
+    c2rust_transpile_flags = [
+        "--translate-const-macros",
+        "conservative",
+        "--reduce-type-annotations",
+        "--disable-refactoring",
+    ]
+
+    c_main_filename = choose_c_main_filename(codebase, c_main_in)
+
+    if c_main_filename:
+        c2rust_transpile_flags.extend(["--binary", c_main_filename.removesuffix(".c")])
+    else:
+        c2rust_transpile_flags.extend(["--emit-build-files"])
+
+    return c2rust_transpile_flags
+
+
 def do_translate(
     root: Path,
     codebase: Path,
@@ -200,79 +231,7 @@ def do_translate(
 
     tracker = ingest_tracking.TimingRepo(stub_ingestion_record(codebase, guidance))
 
-    def perform_pre_translation(builddir: Path):
-        """Leaves a copy of a provided-or-generated compile_commands.json file
-        in the given build directory."""
-        provided_compdb = codebase / "compile_commands.json"
-        provided_cmakelists = codebase / "CMakeLists.txt"
-
-        if provided_cmakelists.exists() and not provided_compdb.exists():
-            # If we have a CMakeLists.txt, we can generate the compile_commands.json
-            cp = hermetic.run(
-                [
-                    "cmake",
-                    "-S",
-                    str(codebase),
-                    "-B",
-                    str(builddir),
-                    "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON",
-                ],
-                check=True,
-                capture_output=True,
-            )
-            tracker.update_sub(cp)
-        elif codebase.is_file() and codebase.suffix == ".c":
-            # If we have a single C file, we can trivially generate a compile_commands.json
-            # with a single entry for it.
-            compilation_database.write_synthetic_compile_commands_to(
-                builddir / "compile_commands.json", codebase, builddir
-            )
-        elif buildcmd:
-            # If we have a build command, use it to generate a compile_commands.json file
-            # by invoking the build command from a temporary directory with a copy of the
-            # input codebase.
-            shutil.copytree(codebase, builddir, dirs_exist_ok=True)
-            hermetic.run(f"intercept-build {buildcmd}", cwd=builddir, shell=True, check=True)
-            # intercept-build will have generated this file, if all went well
-            extracted_compdb = builddir / "compile_commands.json"
-            extracted_compdb_bytes = extracted_compdb.read_bytes()
-            if extracted_compdb_bytes == b"[]":
-                # Perhaps the build command failed, or it cut off early,
-                # for example if the target binary already existed.
-                raise ValueError("Extracted compile_commands.json is empty")
-            else:
-                # Rewrite the compilation database to use the original codebase paths.
-                builddir_bytes = builddir.as_posix().encode("utf-8")
-                codebase_bytes = codebase.as_posix().encode("utf-8")
-                extracted_compdb.write_bytes(
-                    extracted_compdb_bytes.replace(builddir_bytes, codebase_bytes)
-                )
-        else:
-            # Otherwise, we assume the compile_commands.json is already present.
-            # We must make a copy to freely munge without affecting the original.
-            return shutil.copyfile(provided_compdb, builddir / "compile_commands.json")
-
-    c2rust_transpile_flags = [
-        "--translate-const-macros",
-        "conservative",
-        "--reduce-type-annotations",
-        "--disable-refactoring",
-    ]
-
-    if not c_main_in and codebase.is_file() and codebase.suffix == ".c":
-        if b"main(" in codebase.read_bytes():
-            c_main_in = codebase.name
-
-    if not c_main_in and (codebase / "main.c").is_file():
-        c_main_in = "main.c"
-
-    if not c_main_in and (codebase / "src" / "main.c").is_file():
-        c_main_in = "main.c"
-
-    if c_main_in:
-        c2rust_transpile_flags.extend(["--binary", c_main_in.removesuffix(".c")])
-    else:
-        c2rust_transpile_flags.extend(["--emit-build-files"])
+    c2rust_transpile_flags = choose_c2rust_transpile_flags(codebase, c_main_in)
 
     xj_c2rust_transpile_flags = [
         *c2rust_transpile_flags,
@@ -283,97 +242,62 @@ def do_translate(
     ]
 
     skip_remainder_of_translation = False
+    resultsdir.mkdir(parents=True, exist_ok=False)
 
-    with tempfile.TemporaryDirectory() as builddirname:
-        builddir = Path(builddirname)
-        with tracker.tracking("pretranslation", builddir) as _step:
-            perform_pre_translation(builddir)
-            compdb = builddir / "compile_commands.json"
+    # We might want to pass guidance to preparation passes.
+    final_prepared_codebase = run_preparation_passes(codebase, resultsdir, tracker, buildcmd)
+    compdb = final_prepared_codebase / "compile_commands.json"
 
-        tracker.set_preprocessor_definitions(
-            compilation_database.extract_preprocessor_definitions_from_compile_commands(
-                compdb,
-                codebase,
-            ),
+    # The crate name that c2rust uses is based on the directory stem,
+    # so we (temporarily) create a subdirectory with the desired crate name.
+    output = resultsdir / cratename
+    output.mkdir(parents=True, exist_ok=False)
+
+    # We must explicitly pass c2rust our sysroot
+    compilation_database.munge_compile_commands_for_hermetic_translation(compdb)
+
+    # First run the upstream c2rust tool to get a baseline translation.
+    run_upstream_c2rust(tracker, c2rust_transpile_flags, compdb, output)
+
+    output = output.rename(output.with_name("vanilla_c2rust"))
+
+    # After upstream c2rust finishes, we can munge the compilation database
+    # to make Tenjin-specific tweaks to the compilation process.
+    compilation_database.munge_compile_commands_for_tenjin_translation(compdb)
+
+    # Then run our version, using guidance and preanalysis.
+    output = resultsdir / cratename
+    output.mkdir(parents=True, exist_ok=False)
+    target_subdir = environ.get("XJ_BUILD_RS_PROFILE", "debug")
+    c2rust_bin = root / "c2rust" / "target" / target_subdir / "c2rust"
+    try:
+        _xj_cp = run_c2rust(
+            tracker, "xj-c2rust", c2rust_bin, compdb, output, xj_c2rust_transpile_flags
         )
 
-        need_cclyzer_facts = True
+        # Normalize the unmodified translation results to end up
+        # in a directory with a project-independent name.
+        output = output.rename(output.with_name("00_out"))
+    except CalledProcessError as e:
 
-        if need_cclyzer_facts:
-            # Compile and link LLVM bitcode module
-            bitcode_module_path = builddir / "linked_module.bc"
-            try:
-                llvm_bitcode_linking.compile_and_link_bitcode(compdb, bitcode_module_path)
-            except Exception as e:
-                click.echo(f"Warning: Failed to create LLVM bitcode module: {e}")
+        def oops(msg: str):
+            click.secho("TENJIN: " + msg, err=True, fg="red", bg="white")
 
-            assert bitcode_module_path.exists()
+        oops(
+            f"Tenjin's initial production of Rust via c2rust failed with error code {e.returncode}."
+        )
+        oops("The command we ran was:")
+        click.echo(" ".join(e.cmd))
+        oops("    but note that it was invoked in a modified environment.")
+        oops("The compilation database was:")
+        click.echo(compdb.read_text(encoding="utf-8"))
+        oops("Here was stdout:")
+        click.echo(e.stdout)
+        oops("and stderr:")
+        click.echo(e.stderr)
 
-            resultsdir.mkdir(parents=True, exist_ok=True)
-            json_out_path = resultsdir / "xj-cclyzer.json"
-            hermetic.run(
-                [
-                    "cc2json",
-                    str(bitcode_module_path),
-                    "--datalog-analysis=unification",
-                    "--debug-datalog=false",
-                    "--context-sensitivity=insensitive",
-                    f"--json-out={json_out_path}",
-                ],
-                check=True,
-            )
-            click.echo(json_out_path.read_text())
-
-        # The crate name that c2rust uses is based on the directory stem,
-        # so we create a subdirectory with the desired crate name.
-        output = resultsdir / cratename
-        output.mkdir(parents=True, exist_ok=False)
-
-        # We must explicitly pass c2rust our sysroot
-        compilation_database.munge_compile_commands_for_hermetic_translation(compdb)
-
-        # First run the upstream c2rust tool to get a baseline translation.
-        run_upstream_c2rust(tracker, c2rust_transpile_flags, compdb, output)
-
-        output = output.rename(output.with_name("vanilla_c2rust"))
-
-        # After upstream c2rust finishes, we can munge the compilation database
-        # to make Tenjin-specific tweaks to the compilation process.
-        compilation_database.munge_compile_commands_for_tenjin_translation(compdb)
-
-        # Then run our version, using guidance and preanalysis.
-        output = resultsdir / cratename
-        output.mkdir(parents=True, exist_ok=False)
-        target_subdir = environ.get("XJ_BUILD_RS_PROFILE", "debug")
-        c2rust_bin = root / "c2rust" / "target" / target_subdir / "c2rust"
-        try:
-            _xj_cp = run_c2rust(
-                tracker, "xj-c2rust", c2rust_bin, compdb, output, xj_c2rust_transpile_flags
-            )
-
-            # Normalize the unmodified translation results to end up
-            # in a directory with a project-independent name.
-            output = output.rename(output.with_name("00_out"))
-        except CalledProcessError as e:
-
-            def oops(msg: str):
-                click.secho("TENJIN: " + msg, err=True, fg="red", bg="white")
-
-            oops(
-                f"Tenjin's initial production of Rust via c2rust failed with error code {e.returncode}."
-            )
-            oops("The command we ran was:")
-            click.echo(" ".join(e.cmd))
-            oops("    but note that it was invoked in a modified environment.")
-            oops("The compilation database was:")
-            click.echo(compdb.read_text(encoding="utf-8"))
-            oops("Here was stdout:")
-            click.echo(e.stdout)
-            oops("and stderr:")
-            click.echo(e.stderr)
-
-            tracker.mark_translation_finished()
-            skip_remainder_of_translation = True
+        tracker.mark_translation_finished()
+        skip_remainder_of_translation = True
 
     if not skip_remainder_of_translation:
         # Verify that the initial translation is valid Rust code.
