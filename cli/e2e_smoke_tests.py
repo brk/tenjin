@@ -232,7 +232,7 @@ int b_help() { return helper(); }
         # Run translation
         translation.do_translate(
             root,
-            codebase_dir / "compile_commands.json",
+            codebase_dir,
             results_dir,
             cratename="smoke_test_3",
             guidance_path_or_literal="{}",
