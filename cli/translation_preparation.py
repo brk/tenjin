@@ -122,7 +122,9 @@ def run_preparation_passes(
             materialize_compilation_database_in(builddir, current_codebase, buildcmd, tracker)
             # The generated compile_commands.json is in builddir and refers to current_codebase.
 
-            assert builddirname not in compdb_path_in(builddir).read_text()
+            compdb_contents = compdb_path_in(builddir).read_text()
+            assert builddirname not in compdb_contents
+            assert compdb_contents != "[]", "Generated compile_commands.json is empty"
 
             shutil.copyfile(compdb_path_in(builddir), compdb_path_in(current_codebase))
 
