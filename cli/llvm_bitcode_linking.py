@@ -107,6 +107,7 @@ def compile_and_link_bitcode(
 
         # Link all bitcode files into a single module
         if not bitcode_files:
+            click.echo(compile_commands_path.read_text(), err=True)
             raise ValueError("No bitcode files were produced from compilation database")
 
         if len(bitcode_files) == 1:
