@@ -112,6 +112,7 @@ def run_preparation_passes(
 
     def prep_00_copy_pristine_codebase(pristine: Path, newdir: Path):
         if pristine.is_file():
+            newdir.mkdir()
             shutil.copy2(pristine, newdir / pristine.name)
         else:
             shutil.copytree(pristine, newdir)
@@ -122,7 +123,9 @@ def run_preparation_passes(
             materialize_compilation_database_in(builddir, current_codebase, buildcmd, tracker)
             # The generated compile_commands.json is in builddir and refers to current_codebase.
 
-            assert builddirname not in compdb_path_in(builddir).read_text()
+            compdb_contents = compdb_path_in(builddir).read_text()
+            assert builddirname not in compdb_contents
+            assert compdb_contents != "[]", "Generated compile_commands.json is empty"
 
             shutil.copyfile(compdb_path_in(builddir), compdb_path_in(current_codebase))
 
@@ -177,8 +180,6 @@ def run_preparation_passes(
                     compilation_database.rebase_compile_commands_from_to(
                         compdb_path_in(newdir), prev, newdir
                     )
-            else:
-                newdir.mkdir()
             cp_or_None: CompletedProcess | None = func(prev, newdir)
             if cp_or_None is not None:
                 step.update_sub(cp_or_None)
