@@ -8,6 +8,7 @@ from subprocess import CompletedProcess
 import click
 
 import compilation_database
+import c_refact
 import hermetic
 import ingest_tracking
 import llvm_bitcode_linking
@@ -91,12 +92,24 @@ def materialize_compilation_database_in(
             )
 
 
-def run_copy_existing_compdb(_codebase: Path, _builddir: Path) -> CompletedProcess | None:
-    """Copy an existing compile_commands.json from the codebase."""
-    provided_compdb = _codebase / "compile_commands.json"
-    if provided_compdb.exists():
-        shutil.copyfile(provided_compdb, _builddir / "compile_commands.json")
-    return None
+def compdb_path_in(dir: Path) -> Path:
+    return dir / "compile_commands.json"
+
+
+def copy_codebase(
+    src: Path,
+    dst: Path,
+):
+    """Copy the original codebase (file or directory) to a new directory."""
+    assert src.is_dir()
+    shutil.copytree(src, dst)
+    if compdb_path_in(dst).exists():
+        compilation_database.rebase_compile_commands_from_to(compdb_path_in(dst), src, dst)
+
+        # print("Rebased compile_commands.json")
+        # print("from ", src)
+        # print("to   ", dst)
+        # print(compdb_path_in(dst).read_text())
 
 
 def run_preparation_passes(
@@ -107,15 +120,12 @@ def run_preparation_passes(
 ) -> Path:
     """Returns the path to the final prepared codebase directory."""
 
-    def compdb_path_in(dir: Path) -> Path:
-        return dir / "compile_commands.json"
-
     def prep_00_copy_pristine_codebase(pristine: Path, newdir: Path):
         if pristine.is_file():
             newdir.mkdir()
             shutil.copy2(pristine, newdir / pristine.name)
         else:
-            shutil.copytree(pristine, newdir)
+            copy_codebase(pristine, newdir)
 
     def prep_01_materialize_compdb(prev: Path, current_codebase: Path):
         with tempfile.TemporaryDirectory() as builddirname:
@@ -160,9 +170,63 @@ def run_preparation_passes(
         )
         click.echo(json_out_path.read_text())
 
+    def prep_uniquify_statics(prev: Path, current_codebase: Path):
+        compdb = compilation_database.CompileCommands.from_json_file(
+            compdb_path_in(current_codebase)
+        )
+        pgs = c_refact.compute_globals_and_statics_for_project(compdb)
+        all_global_names = set(g_s.spelling for g_s in pgs.values())
+        uniquifiers: dict[str, int] = {}
+
+        def mk_unique_name(base: str) -> str:
+            while True:
+                n = uniquifiers.get(base, 0)
+                uniquifiers[base] = n + 1
+                candidate = f"{base}_xjtr_{n}"
+                if candidate not in all_global_names:
+                    return candidate
+
+        rewrites_per_file: dict[str, dict[int, tuple[int, str, str]]] = {}
+        for _fqsymname, g_s in pgs.items():
+            rewrites_per_file.setdefault(g_s.file_path, {})[g_s.decl_start_byte_offset] = (
+                g_s.decl_end_byte_offset,
+                mk_unique_name(g_s.spelling),
+                g_s.spelling,
+            )
+
+        for srcfile, editdict in rewrites_per_file.items():
+            contents = Path(srcfile).read_bytes()
+            edits = []
+            for decl_start_byte_offset, (
+                decl_end_byte_offset,
+                new_name,
+                old_name,
+            ) in editdict.items():
+                name_bytes = old_name.encode("utf-8")
+                name_byte_offset = contents.find(
+                    name_bytes, decl_start_byte_offset, decl_end_byte_offset
+                )
+                assert name_byte_offset != -1, (
+                    f"Could not find bytes for '{old_name}' in source file range"
+                )
+                edits.extend(["--offset", str(name_byte_offset), "--new-name", new_name])
+            hermetic.run(
+                [
+                    "clang-rename",
+                    "-i",  # inplace
+                    *edits,
+                    srcfile,
+                ],
+                cwd=current_codebase,
+                check=True,
+            )
+
+        hermetic.run("cat *.c", cwd=current_codebase, shell=True, check=True)
+
     preparation_passes: list[tuple[str, Callable[[Path, Path], CompletedProcess | None]]] = [
         ("copy_pristine_codebase", prep_00_copy_pristine_codebase),
         ("materialize_compdb", prep_01_materialize_compdb),
+        ("uniquify_statics", prep_uniquify_statics),
         ("run_cclzyerpp_analysis", prep_run_cclzyerpp_analysis),
     ]
 
@@ -176,11 +240,7 @@ def run_preparation_passes(
         with tracker.tracking(f"preparation_pass_{counter:02d}_{tag}", newdir) as step:
             start_ns = time.perf_counter_ns()
             if counter > 0:
-                shutil.copytree(prev, newdir)
-                if counter > 1:
-                    compilation_database.rebase_compile_commands_from_to(
-                        compdb_path_in(newdir), prev, newdir
-                    )
+                copy_codebase(prev, newdir)
             cp_or_None: CompletedProcess | None = func(prev, newdir)
             if cp_or_None is not None:
                 step.update_sub(cp_or_None)
