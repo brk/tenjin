@@ -4,6 +4,7 @@
 import tempfile
 import time
 from pathlib import Path
+import os
 
 import hermetic
 import repo_root
@@ -62,14 +63,17 @@ def e2e_smoke_test_1():
 
         start_time = time.time()
         # Run translation
+        cwd = Path.cwd()
+        os.chdir(tempdir)
         translation.do_translate(
             root,
-            codebase_dir / "main.c",
-            results_dir,
+            (codebase_dir / "main.c").relative_to(tempdir_path),
+            results_dir.relative_to(tempdir_path),
             cratename="smoke_test_1",
             guidance_path_or_literal="{}",
             c_main_in="main.c",
         )
+        os.chdir(cwd)
 
         elapsed_s = int((time.time() - start_time))
 
