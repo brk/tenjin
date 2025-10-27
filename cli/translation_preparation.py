@@ -166,12 +166,13 @@ def run_preparation_passes(
         ("run_cclzyerpp_analysis", prep_run_cclzyerpp_analysis),
     ]
 
-    prev = original_codebase
+    prev = original_codebase.absolute()
+    resultsdir_abs = resultsdir.absolute()
 
     # Note: the original codebase may be a file or directory,
     # but after the first round, `prev` always refers to a directory.
     for counter, (tag, func) in enumerate(preparation_passes, start=0):
-        newdir = resultsdir / f"c_{counter:02d}_{tag}"
+        newdir = resultsdir_abs / f"c_{counter:02d}_{tag}"
         with tracker.tracking(f"preparation_pass_{counter:02d}_{tag}", newdir) as step:
             start_ns = time.perf_counter_ns()
             if counter > 0:
