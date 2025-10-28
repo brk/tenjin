@@ -314,6 +314,96 @@ def compute_globals_and_statics_for_translation_unit(
     return results
 
 
+def localize_mutable_globals(compdb: compilation_database.CompileCommands):
+    # Here is an example of the data output by `cc2json`:
+    # {
+    # "mutated_or_escaped_global": [
+    #     "a_1.foo_xjtr_1",
+    #     "a_2.foo_xjtr_2",
+    #     "b_1.foo_xjtr_0"
+    # ],
+    # "call_graph_components": [
+    #     {
+    #         "call_sites": [
+    #             {
+    #                 "line": 10,
+    #                 "col": 25,
+    #                 "p": "main",
+    #                 "uf": "main.c"
+    #             },
+    #             {
+    #                 "line": 11,
+    #                 "col": 25,
+    #                 "p": "main",
+    #                 "uf": "main.c"
+    #             },
+    #             {
+    #                 "line": 12,
+    #                 "col": 25,
+    #                 "p": "main",
+    #                 "uf": "main.c"
+    #             }
+    #         ],
+    #         "call_targets": [
+    #             "<llvm-link>:a_1"
+    #         ],
+    #         "all_mutable": true
+    #     },
+    #     {
+    #         "call_sites": [ ... ] }
+    # ],
+    # "unique_filenames": {
+    # "a.c": {"directory": "/home/brk/tenjin/ju_xjres2/c_03_run_cclzyerpp_analysis", "filename": "a.c"},
+    # "b.c": {"directory": "/home/brk/tenjin/ju_xjres2/c_03_run_cclzyerpp_analysis", "filename": "b.c"},
+    # "main.c": {"directory": "/home/brk/tenjin/ju_xjres2/c_03_run_cclzyerpp_analysis", "filename": "main.c"}
+    # },
+    # "mutable_global_tissue": {
+    #     "directly_accesses": [
+    #     "a_1",
+    #     "a_2",
+    #     "b_1"
+    #     ],
+    #     "tissue": [
+    #     "main",
+    #     "a_1",
+    #     "a_2",
+    #     "b_1"
+    #     ]
+    # }
+    # }
+
+    # Assume this value holds an instance of the above JSON type
+    j: dict
+
+    def un_uf(uf: str) -> str:
+        nonlocal j
+        v = j["unique_filenames"][uf]
+        return v["directory"] + "/" + v["filename"]
+
+    # To localize mutable globals, we perform the following steps:
+    # 1. Inspect j["call_graph_components"], discarding those which are not all_mutable.
+    # 2a. Find the definitions of of each ["mutated_or_escaped_global"].
+    # 2b. Construct the transitive closure of all directly used struct/union
+    #     definitions needed to define those globals. Note that fields which use
+    #     a struct behind a pointer do not require inclusion of that struct definition,
+    #     as the type can be forward-declared. (Such type names should be collected in a separate set.)
+    # 3. Construct a `struct XjGlobals` declaration containing all mutable globals
+    #    adn the struct/union definitions from step 2b.
+    #    Place the declaration in a new header file `xj_globals.h`.
+    # 4. Based on the definitions from step 2, initialize a singleton XjGlobals instance
+    #    in `main()`, called `xjgv`.
+    # 5. For each function in the "tissue" part of "mutable_global_tissue", except for `main`,
+    #    pass a pointer to the XjGlobals instance, called `xjg`, as an additional first parameter.
+    # 6. For each call to a tissue function NOT occurring in `main()`, pass along
+    #    the `xjg` parameter.
+    # 7. For each call to a tissue function occurring in `main()`, pass `&xjgv`.
+    # 8. Each syntatic use of a mutable global named WHATEVER is replaced with `xjg->WHATEVER`.
+    # 9. In each file that uses mutable globals, add `#include "xj_globals.h"`
+    #
+    # Use the `BatchingRewriter` to perform all of these rewrites in a single pass.
+    pass
+
+
 """
 These don't appear to be exposed to IDE completion...
 
