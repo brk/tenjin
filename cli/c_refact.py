@@ -518,6 +518,185 @@ def localize_mutable_globals(json_path: Path, compdb: compilation_database.Compi
     for name in forward_declarable_types:
         print(f"  - {name}")
     print("=" * 80)
+    
+    # Steps 5 and 6: Modify function signatures and call sites
+    print("\n" + "=" * 80)
+    print("STEPS 5 & 6: Modifying function signatures and call sites")
+    print("=" * 80)
+    
+    tissue_functions = set(j.get("mutable_global_tissue", {}).get("tissue", []))
+    tissue_functions.discard("main")  # Don't modify main
+    
+    print(f"\nTissue functions to modify: {tissue_functions}")
+    
+    # Collect all function definitions and call sites from JSON
+    function_defs = {}  # function_name -> {cursor, file, abs_path}
+    call_sites_from_json = []  # From the JSON analysis
+    
+    # Get call sites from JSON (more reliable than libclang semantic_parent)
+    for component in j.get("call_graph_components", []):
+        if not component.get("all_mutable", False):
+            continue
+        call_targets = component.get("call_targets", [])
+        for target in call_targets:
+            # Target format: "<llvm-link>:function_name"
+            if ":" in target:
+                callee_func = target.split(":")[-1]
+                if callee_func in tissue_functions:
+                    # Record all call sites for this target
+                    for site in component.get("call_sites", []):
+                        caller_func = site.get("p")
+                        uf = site.get("uf")
+                        line = site.get("line")
+                        col = site.get("col")
+                        call_sites_from_json.append({
+                            'caller_func': caller_func,
+                            'callee_func': callee_func,
+                            'uf': uf,
+                            'line': line,
+                            'col': col
+                        })
+                        print(f"  From JSON: {caller_func} calls {callee_func} at {uf}:{line}:{col}")
+    
+    for abs_path, tu in tus.items():
+        for cursor in tu.cursor.walk_preorder():
+            # Find function definitions
+            if cursor.kind == CursorKind.FUNCTION_DECL and cursor.is_definition():
+                func_name = cursor.spelling
+                if func_name in tissue_functions:
+                    function_defs[func_name] = {
+                        'cursor': cursor,
+                        'file': abs_path,
+                        'extent': cursor.extent
+                    }
+                    print(f"\nFound function definition: {func_name} at {abs_path}:{cursor.location.line}")
+    
+    # Apply rewrites using BatchingRewriter
+    with batching_rewriter.BatchingRewriter() as rewriter:
+        # Step 5: Add xjg parameter to tissue function signatures
+        for func_name, func_info in function_defs.items():
+            cursor = func_info['cursor']
+            file_path = func_info['file'].as_posix()
+            
+            # Find the position after the opening parenthesis
+            # We need to read the source to find the parameter list start
+            with open(file_path, 'rb') as f:
+                content = f.read()
+            
+            # Get the function start location
+            func_start_offset = cursor.extent.start.offset
+            
+            # Find the opening parenthesis
+            paren_pos = content.find(b'(', func_start_offset)
+            if paren_pos == -1:
+                continue
+            
+            # Check if there are existing parameters
+            # Look for the closing parenthesis
+            closing_paren_pos = content.find(b')', paren_pos)
+            if closing_paren_pos == -1:
+                continue
+            
+            # Check if there are parameters already
+            param_section = content[paren_pos+1:closing_paren_pos].strip()
+            
+            if param_section == b'' or param_section == b'void':
+                # No parameters, just add our parameter
+                insert_offset = paren_pos + 1
+                insert_text = "struct XjGlobals *xjg"
+                print(f"  Adding xjg parameter to {func_name} (no existing params)")
+            else:
+                # Has parameters, add as first parameter with comma
+                insert_offset = paren_pos + 1
+                insert_text = "struct XjGlobals *xjg, "
+                print(f"  Adding xjg parameter to {func_name} (with existing params)")
+            
+            rewriter.add_rewrite(file_path, insert_offset, 0, insert_text)
+        
+        # Step 6: Modify call sites to pass xjg (using JSON call site info)
+        print("\n  Looking for call sites to modify:")
+        for abs_path in tus.keys():
+            print(f"    Available TU: {abs_path.as_posix()}")
+        
+        for call_info in call_sites_from_json:
+            caller_func = call_info['caller_func']
+            callee_func = call_info['callee_func']
+            uf = call_info['uf']
+            line = call_info['line']
+            col = call_info['col']
+            
+            # Get the actual file path - need to adjust for current directory
+            # The JSON has paths from c_03 but we're working in c_04
+            file_path_old = un_uf(uf)
+            # Replace the old directory with the current one
+            for abs_path in tus.keys():
+                if abs_path.name == Path(file_path_old).name:
+                    file_path = abs_path.as_posix()
+                    break
+            else:
+                print(f"    ERROR: Could not map {uf} to a TU file")
+                continue
+                
+            print(f"  Mapped {uf} -> {file_path}")
+            
+            # Determine what to pass based on caller
+            if caller_func == "main":
+                param_to_pass = "&xjgv"
+            elif caller_func in tissue_functions:
+                param_to_pass = "xjg"
+            else:
+                # Caller is not in tissue, skip for now
+                print(f"    Skipping: caller {caller_func} not in tissue")
+                continue
+            
+            # Find the call expression at the given location
+            # We need to use libclang to find the exact offset
+            found_call = False
+            for abs_path, tu in tus.items():
+                if abs_path.as_posix() == file_path or str(abs_path) == file_path:
+                    for cursor in tu.cursor.walk_preorder():
+                        if (cursor.kind == CursorKind.CALL_EXPR and 
+                            cursor.location.line == line and 
+                            cursor.location.column == col):
+                            # Found the call
+                            call_start_offset = cursor.extent.start.offset
+                            
+                            # Read file to find parenthesis
+                            with open(file_path, 'rb') as f:
+                                content = f.read()
+                            
+                            paren_pos = content.find(b'(', call_start_offset)
+                            if paren_pos == -1:
+                                break
+                            
+                            # Check if there are existing arguments
+                            closing_paren_pos = content.find(b')', paren_pos)
+                            if closing_paren_pos == -1:
+                                break
+                            
+                            args_section = content[paren_pos+1:closing_paren_pos].strip()
+                            
+                            if args_section == b'':
+                                # No arguments
+                                insert_offset = paren_pos + 1
+                                insert_text = param_to_pass
+                                print(f"  Passing {param_to_pass} to {callee_func} from {caller_func} at {uf}:{line} (no args)")
+                            else:
+                                # Has arguments, add as first argument with comma
+                                insert_offset = paren_pos + 1
+                                insert_text = param_to_pass + ", "
+                                print(f"  Passing {param_to_pass} to {callee_func} from {caller_func} at {uf}:{line} (with args)")
+                            
+                            rewriter.add_rewrite(file_path, insert_offset, 0, insert_text)
+                            found_call = True
+                            break
+                if found_call:
+                    break
+            
+            if not found_call:
+                print(f"  WARNING: Could not find call to {callee_func} from {caller_func} at {uf}:{line}:{col}")
+    
+    print("=" * 80)
 
 
 """
