@@ -571,7 +571,8 @@ def localize_mutable_globals(json_path: Path, compdb: compilation_database.Compi
                     }
                     print(f"\nFound function definition: {func_name} at {abs_path}:{cursor.location.line}")
     
-    # Apply rewrites using BatchingRewriter
+    # Apply all rewrites using a single BatchingRewriter
+    # This ensures offsets are calculated correctly
     with batching_rewriter.BatchingRewriter() as rewriter:
         # Step 5: Add xjg parameter to tissue function signatures
         for func_name, func_info in function_defs.items():
@@ -614,10 +615,6 @@ def localize_mutable_globals(json_path: Path, compdb: compilation_database.Compi
             rewriter.add_rewrite(file_path, insert_offset, 0, insert_text)
         
         # Step 6: Modify call sites to pass xjg (using JSON call site info)
-        print("\n  Looking for call sites to modify:")
-        for abs_path in tus.keys():
-            print(f"    Available TU: {abs_path.as_posix()}")
-        
         for call_info in call_sites_from_json:
             caller_func = call_info['caller_func']
             callee_func = call_info['callee_func']
@@ -636,8 +633,6 @@ def localize_mutable_globals(json_path: Path, compdb: compilation_database.Compi
             else:
                 print(f"    ERROR: Could not map {uf} to a TU file")
                 continue
-                
-            print(f"  Mapped {uf} -> {file_path}")
             
             # Determine what to pass based on caller
             if caller_func == "main":
@@ -695,6 +690,56 @@ def localize_mutable_globals(json_path: Path, compdb: compilation_database.Compi
             
             if not found_call:
                 print(f"  WARNING: Could not find call to {callee_func} from {caller_func} at {uf}:{line}:{col}")
+        
+        # Step 8: Replace uses of mutable globals with xjg->WHATEVER
+        print("\n  --- Step 8: Replacing global variable accesses ---")
+
+        # For each mutable global, find all uses and replace them
+        for global_name, info in global_definitions.items():
+            var_name = info["var_name"]
+            function_name = info["function"]
+            var_decl_cursor = info["cursor"]
+
+            print(f"\n  Replacing uses of {var_name} in {function_name}")
+
+            # Find all references to this variable in the TUs
+            for abs_path, tu in tus.items():
+                for cursor in tu.cursor.walk_preorder():
+                    # Find the function definition
+                    if cursor.kind == CursorKind.FUNCTION_DECL and cursor.spelling == function_name:
+                        # Find all references to the static variable within this function
+                        for child in cursor.walk_preorder():
+                            if (
+                                child.kind == CursorKind.DECL_REF_EXPR
+                                and child.spelling == var_name
+                            ):
+                                # This is a reference/use of our variable
+                                file_path = abs_path.as_posix()
+
+                                # Get the extent of the variable reference
+                                start_offset = child.extent.start.offset
+                                end_offset = child.extent.end.offset
+                                length = end_offset - start_offset
+
+                                replacement = f"xjg->{var_name}"
+                                print(
+                                    f"    Found DECL_REF_EXPR for {var_name} at {abs_path}:{child.location.line}:{child.location.column}"
+                                )
+
+                                # Check the parent - if it's a VAR_DECL, skip it
+                                parent = child.semantic_parent
+                                if (
+                                    parent
+                                    and parent.kind == CursorKind.VAR_DECL
+                                    and parent.spelling == var_name
+                                ):
+                                    print(f"      Skipping: this is part of the declaration")
+                                    continue
+
+                                print(f"    Replacing {var_name} with {replacement}")
+
+                                rewriter.add_rewrite(file_path, start_offset, length, replacement)
+                        break
     
     print("=" * 80)
 
