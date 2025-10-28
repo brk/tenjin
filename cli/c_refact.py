@@ -574,45 +574,67 @@ def localize_mutable_globals(json_path: Path, compdb: compilation_database.Compi
     # Apply all rewrites using a single BatchingRewriter
     # This ensures offsets are calculated correctly
     with batching_rewriter.BatchingRewriter() as rewriter:
-        # Step 5: Add xjg parameter to tissue function signatures
-        for func_name, func_info in function_defs.items():
-            cursor = func_info['cursor']
-            file_path = func_info['file'].as_posix()
-            
-            # Find the position after the opening parenthesis
-            # We need to read the source to find the parameter list start
-            with open(file_path, 'rb') as f:
-                content = f.read()
-            
-            # Get the function start location
-            func_start_offset = cursor.extent.start.offset
-            
-            # Find the opening parenthesis
-            paren_pos = content.find(b'(', func_start_offset)
-            if paren_pos == -1:
-                continue
-            
-            # Check if there are existing parameters
-            # Look for the closing parenthesis
-            closing_paren_pos = content.find(b')', paren_pos)
-            if closing_paren_pos == -1:
-                continue
-            
-            # Check if there are parameters already
-            param_section = content[paren_pos+1:closing_paren_pos].strip()
-            
-            if param_section == b'' or param_section == b'void':
-                # No parameters, just add our parameter
-                insert_offset = paren_pos + 1
-                insert_text = "struct XjGlobals *xjg"
-                print(f"  Adding xjg parameter to {func_name} (no existing params)")
-            else:
-                # Has parameters, add as first parameter with comma
-                insert_offset = paren_pos + 1
-                insert_text = "struct XjGlobals *xjg, "
-                print(f"  Adding xjg parameter to {func_name} (with existing params)")
-            
-            rewriter.add_rewrite(file_path, insert_offset, 0, insert_text)
+        # Step 5: Add xjg parameter to tissue function signatures (definitions and declarations)
+
+        # Collect all declarations (both definitions and forward declarations)
+        all_function_cursors = {}  # func_name -> list of (cursor, file, is_definition)
+
+        for abs_path, tu in tus.items():
+            for cursor in tu.cursor.walk_preorder():
+                if cursor.kind == CursorKind.FUNCTION_DECL:
+                    func_name = cursor.spelling
+                    if func_name in tissue_functions:
+                        if func_name not in all_function_cursors:
+                            all_function_cursors[func_name] = []
+                        all_function_cursors[func_name].append({
+                            "cursor": cursor,
+                            "file": abs_path,
+                            "is_definition": cursor.is_definition(),
+                        })
+
+        # Update all function signatures (both declarations and definitions)
+        for func_name, cursors_list in all_function_cursors.items():
+            for func_info in cursors_list:
+                cursor = func_info["cursor"]
+                file_path = func_info["file"].as_posix()
+                is_def = func_info["is_definition"]
+
+                # Find the position after the opening parenthesis
+                with open(file_path, "rb") as f:
+                    content = f.read()
+
+                # Get the function start location
+                func_start_offset = cursor.extent.start.offset
+
+                # Find the opening parenthesis
+                paren_pos = content.find(b"(", func_start_offset)
+                if paren_pos == -1:
+                    continue
+
+                # Check if there are existing parameters
+                closing_paren_pos = content.find(b")", paren_pos)
+                if closing_paren_pos == -1:
+                    continue
+
+                # Check if there are parameters already
+                param_section = content[paren_pos + 1 : closing_paren_pos].strip()
+
+                decl_type = "definition" if is_def else "declaration"
+
+                if param_section == b"" or param_section == b"void":
+                    # No parameters, just add our parameter
+                    insert_offset = paren_pos + 1
+                    insert_text = "struct XjGlobals *xjg"
+                    print(f"  Adding xjg parameter to {func_name} {decl_type} (no existing params)")
+                else:
+                    # Has parameters, add as first parameter with comma
+                    insert_offset = paren_pos + 1
+                    insert_text = "struct XjGlobals *xjg, "
+                    print(
+                        f"  Adding xjg parameter to {func_name} {decl_type} (with existing params)"
+                    )
+
+                rewriter.add_rewrite(file_path, insert_offset, 0, insert_text)
         
         # Step 6: Modify call sites to pass xjg (using JSON call site info)
         for call_info in call_sites_from_json:
@@ -740,6 +762,169 @@ def localize_mutable_globals(json_path: Path, compdb: compilation_database.Compi
 
                                 rewriter.add_rewrite(file_path, start_offset, length, replacement)
                         break
+
+        # Step 3: Create xj_globals.h header file with struct XjGlobals
+        print("\n  --- Step 3: Creating xj_globals.h ---")
+
+        # Get the directory where we should place the header
+        # Use the directory from the compilation database
+        if compdb.get_source_files():
+            header_dir = compdb.get_source_files()[0].parent
+        else:
+            header_dir = Path(".")
+
+        header_path = header_dir / "xj_globals.h"
+        print(f"  Creating header at {header_path}")
+
+        # Build the header content
+        header_lines = []
+        header_lines.append("#ifndef XJ_GLOBALS_H")
+        header_lines.append("#define XJ_GLOBALS_H")
+        header_lines.append("")
+
+        # Add forward declarations if needed
+        if forward_declarable_types:
+            for type_name in sorted(forward_declarable_types):
+                # Determine if it's a struct or union
+                # We'll default to struct (can improve this later)
+                header_lines.append(f"struct {type_name};")
+            header_lines.append("")
+
+        # Add full struct/union definitions from step 2b
+        if needed_struct_defs:
+            for type_name, decl_cursor in needed_struct_defs.items():
+                # Get the full definition text
+                # We need to extract the source text for this struct/union
+                start_offset = decl_cursor.extent.start.offset
+                end_offset = decl_cursor.extent.end.offset
+
+                # Find the file containing this definition
+                for abs_path, tu in tus.items():
+                    if str(abs_path) == decl_cursor.location.file.name:
+                        with open(abs_path, "rb") as f:
+                            content = f.read()
+                        struct_text = content[start_offset:end_offset].decode("utf-8")
+                        header_lines.append(struct_text)
+                        header_lines.append("")
+                        break
+
+        # Add the XjGlobals struct definition
+        header_lines.append("struct XjGlobals {")
+        for global_name, info in sorted(global_definitions.items()):
+            var_name = info["var_name"]
+            type_spelling = info["type"].spelling
+
+            # Get the initializer if present
+            var_cursor = info["cursor"]
+            initializer = None
+            for child in var_cursor.get_children():
+                # The initializer is a child of the VAR_DECL
+                if child.kind != CursorKind.TYPE_REF:
+                    # This is likely the initializer
+                    # Extract its text
+                    init_start = child.extent.start.offset
+                    init_end = child.extent.end.offset
+                    file_path = info["file"]
+                    with open(file_path, "rb") as f:
+                        content = f.read()
+                    initializer = content[init_start:init_end].decode("utf-8").strip()
+                    break
+
+            # Add the field (we'll handle initialization separately)
+            header_lines.append(f"  {type_spelling} {var_name};")
+
+        header_lines.append("};")
+        header_lines.append("")
+        header_lines.append("#endif /* XJ_GLOBALS_H */")
+        header_lines.append("")
+
+        # Write the header file
+        with open(header_path, "w") as f:
+            f.write("\n".join(header_lines))
+
+        print(f"  Created header with {len(global_definitions)} globals")
+
+        # Step 4: Initialize xjgv in main()
+        print("\n  --- Step 4: Initializing xjgv in main() ---")
+
+        # Find main() function and insert initialization at the beginning
+        for abs_path, tu in tus.items():
+            for cursor in tu.cursor.walk_preorder():
+                if (
+                    cursor.kind == CursorKind.FUNCTION_DECL
+                    and cursor.spelling == "main"
+                    and cursor.is_definition()
+                ):
+                    file_path = abs_path.as_posix()
+                    print(f"  Found main() at {file_path}:{cursor.location.line}")
+
+                    # Find the opening brace of main's body
+                    # The compound statement is a child of the function
+                    for child in cursor.get_children():
+                        if child.kind == CursorKind.COMPOUND_STMT:
+                            # Insert after the opening brace
+                            insert_offset = child.extent.start.offset + 1
+
+                            # Build initialization code
+                            init_lines = []
+                            init_lines.append("\n  struct XjGlobals xjgv = {")
+
+                            # Initialize each field based on original initializers
+                            field_inits = []
+                            for global_name, info in sorted(global_definitions.items()):
+                                var_name = info["var_name"]
+
+                                # Get the initializer value
+                                var_cursor = info["cursor"]
+                                initializer = "0"  # Default
+                                for child_node in var_cursor.get_children():
+                                    if child_node.kind != CursorKind.TYPE_REF:
+                                        init_start = child_node.extent.start.offset
+                                        init_end = child_node.extent.end.offset
+                                        with open(info["file"], "rb") as f:
+                                            content = f.read()
+                                        initializer = (
+                                            content[init_start:init_end].decode("utf-8").strip()
+                                        )
+                                        break
+
+                                field_inits.append(f"    .{var_name} = {initializer}")
+
+                            init_lines.append(",\n".join(field_inits))
+                            init_lines.append("\n  };")
+
+                            init_text = "".join(init_lines)
+                            rewriter.add_rewrite(file_path, insert_offset, 0, init_text)
+                            print(f"  Added xjgv initialization in main()")
+                            break
+                    break
+
+        # Step 9: Add #include "xj_globals.h" to files that use mutable globals
+        print('\n  --- Step 9: Adding #include "xj_globals.h" ---')
+
+        # Collect files that need the include
+        files_needing_include = set()
+
+        # Files with global definitions
+        for info in global_definitions.values():
+            files_needing_include.add(info["file"])
+
+        # Files with main()
+        for abs_path, tu in tus.items():
+            for cursor in tu.cursor.walk_preorder():
+                if cursor.kind == CursorKind.FUNCTION_DECL and cursor.spelling == "main":
+                    files_needing_include.add(abs_path)
+                    break
+
+        # Add the include at the top of each file
+        for file_path in files_needing_include:
+            file_path_str = file_path.as_posix()
+            print(f"  Adding include to {file_path}")
+
+            # Insert after any existing includes, or at the start
+            # For simplicity, we'll add it at the very beginning
+            include_text = '#include "xj_globals.h"\n'
+            rewriter.add_rewrite(file_path_str, 0, 0, include_text)
     
     print("=" * 80)
 
