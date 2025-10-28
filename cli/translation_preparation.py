@@ -206,9 +206,23 @@ def run_preparation_passes(
                 old_name,
             ) in editdict.items():
                 name_bytes = old_name.encode("utf-8")
-                name_byte_offset = contents.find(
-                    name_bytes, decl_start_byte_offset, decl_end_byte_offset
-                )
+
+                def find_variant(name_bytes, prefix_bytes: bytes) -> int:
+                    idx = contents.find(
+                        prefix_bytes + name_bytes, decl_start_byte_offset, decl_end_byte_offset
+                    )
+                    if idx != -1:
+                        return idx + len(prefix_bytes)
+                    return -1
+
+                # The variable name might occur in the type name, so we search for it
+                # prefixed by something that would count as a token separator.
+                separators = [b" ", b"*", b"&", b"\n", b"\t", b"(", b")", b","]
+                name_byte_offset = -1
+                for sep in separators:
+                    name_byte_offset = find_variant(name_bytes, sep)
+                    if name_byte_offset != -1:
+                        break
                 assert name_byte_offset != -1, (
                     f"Could not find bytes for '{old_name}' in source file range"
                 )
