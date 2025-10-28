@@ -403,21 +403,121 @@ def localize_mutable_globals(json_path: Path, compdb: compilation_database.Compi
     # 9. In each file that uses mutable globals, add `#include "xj_globals.h"`
     #
     # Use the `BatchingRewriter` to perform all of these rewrites in a single pass.
-    pass
 
-    with batching_rewriter.BatchingRewriter() as rewriter:
-        for filepath in compdb.get_source_files():
-            rewriter.add_rewrite(
-                filepath.as_posix(), 0, 0, "// TODO: implement localization of mutable globals\n"
-            )
+    # Step 2a: Find definitions of each mutated_or_escaped_global
+    index = create_xj_clang_index()
+    tus = parse_project(index, compdb)
 
-    print(json.dumps(j, indent=4))
+    mutated_globals = j.get("mutated_or_escaped_global", [])
+    global_definitions = {}
 
-    for filepath in compdb.get_source_files():
-        print(f"File: {filepath.as_posix()}")
-        print("============================")
-        print(filepath.read_text())
-        print("============================")
+    print("=" * 80)
+    print("STEP 2a: Finding global definitions")
+    print("=" * 80)
+
+    for global_name in mutated_globals:
+        # Parse the format: "function_name.var_name_xjtr_N"
+        parts = global_name.split(".")
+        if len(parts) == 2:
+            function_name = parts[0]
+            var_name_mangled = parts[1]  # This is the actual mangled name in the C file
+
+            print(f"\nLooking for global: {global_name}")
+            print(f"  Function: {function_name}, Variable: {var_name_mangled}")
+
+            # Search through all translation units
+            for abs_path, tu in tus.items():
+                found = False
+                for cursor in tu.cursor.walk_preorder():
+                    # Look for function definitions
+                    if cursor.kind == CursorKind.FUNCTION_DECL and cursor.spelling == function_name:
+                        # Look for static variables inside this function
+                        for child in cursor.walk_preorder():
+                            if (
+                                child.kind == CursorKind.VAR_DECL
+                                and child.spelling == var_name_mangled
+                            ):
+                                if child.storage_class == StorageClass.STATIC:
+                                    global_definitions[global_name] = {
+                                        "cursor": child,
+                                        "function": function_name,
+                                        "var_name": var_name_mangled,
+                                        "type": child.type,
+                                        "file": abs_path,
+                                    }
+                                    print(
+                                        f"  Found at {abs_path}:{child.location.line}:{child.location.column}"
+                                    )
+                                    print(f"  Type: {child.type.spelling}")
+                                    found = True
+                                    break
+                    if found:
+                        break
+
+    # Step 2b: Construct transitive closure of struct/union definitions
+    print("\n" + "=" * 80)
+    print("STEP 2b: Finding struct/union dependencies")
+    print("=" * 80)
+
+    needed_struct_defs = {}
+    forward_declarable_types = set()
+
+    def collect_type_dependencies(type_obj, depth=0):
+        """Recursively collect struct/union types needed to define this type."""
+        indent = "  " * depth
+
+        # Get the canonical type
+        type_obj = type_obj.get_canonical()
+        type_spelling = type_obj.spelling
+
+        print(f"{indent}Analyzing type: {type_spelling} (kind: {type_obj.kind})")
+
+        # If it's a pointer, the pointee can be forward-declared
+        if type_obj.kind == 10:  # TypeKind.POINTER
+            pointee = type_obj.get_pointee()
+            pointee_canonical = pointee.get_canonical()
+            print(f"{indent}  Pointer to: {pointee.spelling}")
+
+            # Check if pointee is a struct/union
+            decl = pointee_canonical.get_declaration()
+            if decl.kind in [CursorKind.STRUCT_DECL, CursorKind.UNION_DECL]:
+                forward_declarable_types.add(decl.spelling)
+                print(f"{indent}  -> Can forward-declare: {decl.spelling}")
+            return
+
+        # If it's a struct or union, we need its full definition
+        decl = type_obj.get_declaration()
+        if decl.kind in [CursorKind.STRUCT_DECL, CursorKind.UNION_DECL]:
+            type_name = decl.spelling
+            if type_name and type_name not in needed_struct_defs:
+                print(f"{indent}  -> Need full definition: {type_name}")
+                needed_struct_defs[type_name] = decl
+
+                # Recursively process fields
+                for field in decl.get_children():
+                    if field.kind == CursorKind.FIELD_DECL:
+                        print(f"{indent}    Field: {field.spelling} : {field.type.spelling}")
+                        collect_type_dependencies(field.type, depth + 2)
+
+    for global_name, info in global_definitions.items():
+        print(f"\nAnalyzing dependencies for {global_name}:")
+        collect_type_dependencies(info["type"], depth=1)
+
+    print("\n" + "=" * 80)
+    print("SUMMARY")
+    print("=" * 80)
+    print(f"\nFound {len(global_definitions)} global definitions:")
+    for name, info in global_definitions.items():
+        print(f"  - {name}: {info['type'].spelling} in {info['function']} at {info['file']}")
+
+    print(f"\nNeed {len(needed_struct_defs)} struct/union definitions:")
+    for name in needed_struct_defs:
+        print(f"  - {name}")
+
+    print(f"\nCan forward-declare {len(forward_declarable_types)} types:")
+    for name in forward_declarable_types:
+        print(f"  - {name}")
+    print("=" * 80)
 
 
 """
