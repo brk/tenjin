@@ -146,6 +146,12 @@ def run_preparation_passes(
             ),
         )
 
+    def prep_localize_mutable_globals(prev: Path, current_codebase: Path):
+        compdb = compilation_database.CompileCommands.from_json_file(
+            compdb_path_in(current_codebase)
+        )
+        c_refact.localize_mutable_globals(current_codebase / "xj-cclyzer.json", compdb)
+
     def prep_run_cclzyerpp_analysis(prev: Path, current_codebase: Path):
         # Compile and link LLVM bitcode module
         bitcode_module_path = current_codebase / "linked_module.bc"
@@ -271,6 +277,7 @@ def run_preparation_passes(
         # ("refold_preprocessor", prep_refold_preprocessor),
         ("run_cclzyerpp_analysis", prep_run_cclzyerpp_analysis),
         ("expand_preprocessor", prep_expand_preprocessor),
+        ("localize_mutable_globals", prep_localize_mutable_globals),
     ]
 
     prev = original_codebase.absolute()

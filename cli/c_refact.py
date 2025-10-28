@@ -1,3 +1,4 @@
+import json
 from clang.cindex import (
     Index,
     CursorKind,
@@ -15,6 +16,7 @@ import subprocess
 import hermetic
 import repo_root
 import compilation_database
+import batching_rewriter
 
 
 def create_xj_clang_index() -> Index:
@@ -314,7 +316,7 @@ def compute_globals_and_statics_for_translation_unit(
     return results
 
 
-def localize_mutable_globals(compdb: compilation_database.CompileCommands):
+def localize_mutable_globals(json_path: Path, compdb: compilation_database.CompileCommands):
     # Here is an example of the data output by `cc2json`:
     # {
     # "mutated_or_escaped_global": [
@@ -373,7 +375,7 @@ def localize_mutable_globals(compdb: compilation_database.CompileCommands):
     # }
 
     # Assume this value holds an instance of the above JSON type
-    j: dict
+    j: dict = json.load(json_path.open("r"))
 
     def un_uf(uf: str) -> str:
         nonlocal j
@@ -402,6 +404,20 @@ def localize_mutable_globals(compdb: compilation_database.CompileCommands):
     #
     # Use the `BatchingRewriter` to perform all of these rewrites in a single pass.
     pass
+
+    with batching_rewriter.BatchingRewriter() as rewriter:
+        for filepath in compdb.get_source_files():
+            rewriter.add_rewrite(
+                filepath.as_posix(), 0, 0, "// TODO: implement localization of mutable globals\n"
+            )
+
+    print(json.dumps(j, indent=4))
+
+    for filepath in compdb.get_source_files():
+        print(f"File: {filepath.as_posix()}")
+        print("============================")
+        print(filepath.read_text())
+        print("============================")
 
 
 """
