@@ -5965,6 +5965,9 @@ impl<'c> Translation<'c> {
                                 if let CTypeKind::Struct(s) =
                                     self.ast_context.resolve_type(pcq.ctype).kind
                                 {
+                                    // Casting from a pointer-to-struct
+
+                                    // Can we use bytemuck to do the cast safely?
                                     let name =
                                         self.type_converter.borrow().resolve_decl_name(s).unwrap();
                                     if self.parsed_guidance.borrow().pod_types.contains(&name) {
@@ -5998,7 +6001,10 @@ impl<'c> Translation<'c> {
                                             }
                                         }
                                     }
+                                } else {
+                                    // Casting from a pointer type, not a pointer-to-struct
                                 }
+                                // Casting from a pointer type.
                             }
                         }
                         let target_ty = self.convert_type(target_cty.ctype)?;
