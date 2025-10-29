@@ -11,6 +11,7 @@ use indexmap::indexmap;
 use indexmap::{IndexMap, IndexSet};
 use log::{error, info, trace, warn};
 use proc_macro2::{Punct, Spacing::*, Span, TokenStream, TokenTree};
+use quote::TokenStreamExt;
 use syn::spanned::Spanned as _;
 use syn::{
     AttrStyle, BareVariadic, Block, Expr, ExprBinary, ExprBlock, ExprBreak, ExprCast, ExprField,
@@ -5515,7 +5516,35 @@ impl<'c> Translation<'c> {
             CompoundLiteral(_, val) => self.convert_expr(ctx, val, override_ty),
 
             InitList(ty, ref ids, opt_union_field_id, _) => {
-                self.convert_init_list(ctx, ty, ids, opt_union_field_id)
+                let arr = self.convert_init_list(ctx, ty, ids, opt_union_field_id);
+                if guided_type
+                    .as_ref()
+                    .is_some_and(|gt| gt.pretty_sans_refs().starts_with("Vec <"))
+                {
+                    arr.map(|arr| {
+                        arr.map(|arr| match *arr {
+                            Expr::Array(syn::ExprArray { elems, .. }) => {
+                                let mut ts: TokenStream = TokenStream::new();
+                                for e in elems.into_iter() {
+                                    use syn::__private::ToTokens;
+                                    e.to_tokens(&mut ts);
+                                    ts.append(TokenTree::Punct(Punct::new(
+                                        ',',
+                                        proc_macro2::Spacing::Alone,
+                                    )));
+                                }
+                                mk().mac_expr(mk().mac(
+                                    mk().path("vec"),
+                                    ts,
+                                    MacroDelimiter::Bracket(Default::default()),
+                                ))
+                            }
+                            _ => arr,
+                        })
+                    })
+                } else {
+                    arr
+                }
             }
 
             ImplicitValueInit(ty) => {
