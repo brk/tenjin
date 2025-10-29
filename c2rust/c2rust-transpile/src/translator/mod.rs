@@ -5960,6 +5960,21 @@ impl<'c> Translation<'c> {
                         if !is_explicit && guided_type.is_some() {
                             return Ok(WithStmts::new_val(x));
                         }
+                        let guided_type: Option<tenjin::GuidedType> = match (guided_type, expr) {
+                            (Some(gt), _) => Some(gt.clone()),
+                            (None, Some(expr)) => self
+                                .parsed_guidance
+                                .borrow_mut()
+                                .query_expr_type(self, expr),
+                            _ => {
+                                log::warn!(
+                                    "No guided type and no C exprid for cast from {:?} to {:?}",
+                                    source_ty_kind,
+                                    target_ty_kind
+                                );
+                                None
+                            }
+                        };
                         if let Some(guided_type) = guided_type {
                             if let CTypeKind::Pointer(pcq) = source_ty_kind {
                                 if let CTypeKind::Struct(s) =
