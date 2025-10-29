@@ -46,6 +46,27 @@ impl GuidedType {
             _ => self.pretty.as_ref(),
         }
     }
+
+    pub fn is_borrow(&self) -> bool {
+        self.pretty.starts_with('&')
+    }
+
+    pub fn is_exclusive_borrow(&self) -> bool {
+        let parts: Vec<&str> = self.pretty.splitn(4, " ").collect();
+        match *parts.as_slice() {
+            ["&", _] => false,
+            ["&", life, _] if life.starts_with("'") => false,
+            ["&", life, "mut", _] if life.starts_with("'") => true,
+            ["&", "mut", _] => true,
+            ["&", "mut", _, _] => true,
+            ["&", _, _, _] => false,
+            _ => false,
+        }
+    }
+
+    pub fn is_shared_borrow(&self) -> bool {
+        self.is_borrow() && !self.is_exclusive_borrow()
+    }
 }
 
 pub fn is_known_size_1_type(ty: &Type) -> bool {

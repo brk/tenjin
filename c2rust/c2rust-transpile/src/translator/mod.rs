@@ -4656,12 +4656,14 @@ impl<'c> Translation<'c> {
             .iter()
             .enumerate()
             .map(|(n, arg)| {
-                self.convert_expr_guided(
+                let guided_type = arg_guidances.get(n).unwrap_or(&None);
+                let expr = self.convert_expr_guided(
                     ctx,
                     *arg,
                     arg_tys.and_then(|tys| tys.get(n).copied()),
-                    arg_guidances.get(n).unwrap_or(&None),
-                )
+                    guided_type,
+                );
+                expr.map(|expr| expr.map(|expr| self.coerce_borrow_guided(expr, *arg, guided_type)))
             })
             .collect()
     }
@@ -5600,6 +5602,30 @@ impl<'c> Translation<'c> {
                 })
             }
         }
+    }
+
+    fn coerce_borrow_guided(
+        &self,
+        expr: Box<Expr>,
+        cexpr: CExprId,
+        guided_type: &Option<tenjin::GuidedType>,
+    ) -> Box<Expr> {
+        if let Some(target_guided_type) = guided_type {
+            if let Some(ref expr_guided_type) = self
+                .parsed_guidance
+                .borrow_mut()
+                .query_expr_type(self, cexpr)
+            {
+                if target_guided_type.is_shared_borrow() && !expr_guided_type.is_borrow() {
+                    return mk().addr_of_expr(expr);
+                }
+
+                if target_guided_type.is_exclusive_borrow() && !expr_guided_type.is_borrow() {
+                    return mk().mutbl().addr_of_expr(expr);
+                }
+            }
+        }
+        expr
     }
 
     pub fn convert_constant(&self, constant: ConstIntExpr) -> TranslationResult<Box<Expr>> {
