@@ -11,6 +11,7 @@ use indexmap::indexmap;
 use indexmap::{IndexMap, IndexSet};
 use log::{error, info, trace, warn};
 use proc_macro2::{Punct, Spacing::*, Span, TokenStream, TokenTree};
+use quote::TokenStreamExt;
 use syn::spanned::Spanned as _;
 use syn::{
     AttrStyle, BareVariadic, Block, Expr, ExprBinary, ExprBlock, ExprBreak, ExprCast, ExprField,
@@ -4656,12 +4657,14 @@ impl<'c> Translation<'c> {
             .iter()
             .enumerate()
             .map(|(n, arg)| {
-                self.convert_expr_guided(
+                let guided_type = arg_guidances.get(n).unwrap_or(&None);
+                let expr = self.convert_expr_guided(
                     ctx,
                     *arg,
                     arg_tys.and_then(|tys| tys.get(n).copied()),
-                    arg_guidances.get(n).unwrap_or(&None),
-                )
+                    guided_type,
+                );
+                expr.map(|expr| expr.map(|expr| self.coerce_borrow_guided(expr, *arg, guided_type)))
             })
             .collect()
     }
@@ -5513,7 +5516,37 @@ impl<'c> Translation<'c> {
             CompoundLiteral(_, val) => self.convert_expr(ctx, val, override_ty),
 
             InitList(ty, ref ids, opt_union_field_id, _) => {
-                self.convert_init_list(ctx, ty, ids, opt_union_field_id)
+                let arr = self.convert_init_list(ctx, ty, ids, opt_union_field_id);
+                if guided_type
+                    .as_ref()
+                    .is_some_and(|gt| gt.pretty_sans_refs().starts_with("Vec <"))
+                {
+                    arr.map(|arr| {
+                        arr.map(|arr| match *arr {
+                            Expr::Array(syn::ExprArray { elems, .. }) => {
+                                // This is almost an exact copy of tenjin::mac_call_exprs_tt(),
+                                // but that takes a Vec<Box<Expr>> rather than raw Punctuated.
+                                let mut ts: TokenStream = TokenStream::new();
+                                for e in elems.into_iter() {
+                                    use syn::__private::ToTokens;
+                                    e.to_tokens(&mut ts);
+                                    ts.append(TokenTree::Punct(Punct::new(
+                                        ',',
+                                        proc_macro2::Spacing::Alone,
+                                    )));
+                                }
+                                mk().mac_expr(mk().mac(
+                                    mk().path("vec"),
+                                    ts,
+                                    MacroDelimiter::Bracket(Default::default()),
+                                ))
+                            }
+                            _ => arr,
+                        })
+                    })
+                } else {
+                    arr
+                }
             }
 
             ImplicitValueInit(ty) => {
@@ -5600,6 +5633,30 @@ impl<'c> Translation<'c> {
                 })
             }
         }
+    }
+
+    fn coerce_borrow_guided(
+        &self,
+        expr: Box<Expr>,
+        cexpr: CExprId,
+        guided_type: &Option<tenjin::GuidedType>,
+    ) -> Box<Expr> {
+        if let Some(target_guided_type) = guided_type {
+            if let Some(ref expr_guided_type) = self
+                .parsed_guidance
+                .borrow_mut()
+                .query_expr_type(self, cexpr)
+            {
+                if target_guided_type.is_shared_borrow() && !expr_guided_type.is_borrow() {
+                    return mk().addr_of_expr(expr);
+                }
+
+                if target_guided_type.is_exclusive_borrow() && !expr_guided_type.is_borrow() {
+                    return mk().mutbl().addr_of_expr(expr);
+                }
+            }
+        }
+        expr
     }
 
     pub fn convert_constant(&self, constant: ConstIntExpr) -> TranslationResult<Box<Expr>> {
@@ -5960,11 +6017,29 @@ impl<'c> Translation<'c> {
                         if !is_explicit && guided_type.is_some() {
                             return Ok(WithStmts::new_val(x));
                         }
+                        let guided_type: Option<tenjin::GuidedType> = match (guided_type, expr) {
+                            (Some(gt), _) => Some(gt.clone()),
+                            (None, Some(expr)) => self
+                                .parsed_guidance
+                                .borrow_mut()
+                                .query_expr_type(self, expr),
+                            _ => {
+                                log::warn!(
+                                    "No guided type and no C exprid for cast from {:?} to {:?}",
+                                    source_ty_kind,
+                                    target_ty_kind
+                                );
+                                None
+                            }
+                        };
                         if let Some(guided_type) = guided_type {
                             if let CTypeKind::Pointer(pcq) = source_ty_kind {
                                 if let CTypeKind::Struct(s) =
                                     self.ast_context.resolve_type(pcq.ctype).kind
                                 {
+                                    // Casting from a pointer-to-struct
+
+                                    // Can we use bytemuck to do the cast safely?
                                     let name =
                                         self.type_converter.borrow().resolve_decl_name(s).unwrap();
                                     if self.parsed_guidance.borrow().pod_types.contains(&name) {
@@ -5998,6 +6073,22 @@ impl<'c> Translation<'c> {
                                             }
                                         }
                                     }
+                                } else {
+                                    // Casting from a pointer type, not a pointer-to-struct
+                                }
+                                // Casting from a pointer type.
+                                // If our guidance is that we actually have a Vec, we need
+                                // to insert an as_mut_ptr() call here.
+                                if tenjin::type_is_vec(&guided_type.parsed) {
+                                    let x_as_ptr = mk().method_call_expr(
+                                        x,
+                                        "as_mut_ptr",
+                                        Vec::<Box<Expr>>::new(),
+                                    );
+                                    let target_ty = self.convert_type(target_cty.ctype)?;
+                                    return Ok(WithStmts::new_val(
+                                        mk().cast_expr(x_as_ptr, target_ty),
+                                    ));
                                 }
                             }
                         }
