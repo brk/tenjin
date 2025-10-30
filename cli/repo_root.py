@@ -9,7 +9,7 @@ def localdir() -> Path:
 
 def find_repo_root_dir_Path(start_dir=None) -> Path:
     def validate_candidate_dir(p: Path):
-        return (p / "cli" / "sh" / "provision.sh").is_file()
+        return (p / "cli" / "sh" / "fetch-uv.sh").is_file()
 
     if not start_dir:
         # Try to short-circuit the filesystem walk by using the path

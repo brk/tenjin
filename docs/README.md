@@ -31,7 +31,7 @@ Tenjin does require specific Rust toolchains, both stable and nightly. These too
 selected and updated on demand.
 
 We also assume `git` is available (having been used to fetch this repo).
-Pretty much everything else is bootstrapped from a POSIX shell script, `cli/sh/provision.sh`.
+A POSIX shell plus `curl` or `wget` is all that's needed to bootstrap.
 
 The `10j` code itself is a Python project, managed by `uv`, which is downloaded as needed.
 `10j check-py` will run Ruff lints and formatting checks. It will eventually run the `ty`

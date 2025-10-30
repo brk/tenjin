@@ -7,8 +7,8 @@ set -eu
 XJ_WANT_UV_VERSION="$1"
 
 if [ "$XJ_WANT_UV_VERSION" = "" ]; then
-  echo "Usage: provision.sh <uv-version>" >&2
-  echo "  e.g. provision.sh v0.8.0" >&2
+  echo "Usage: fetch-uv.sh <uv-version>" >&2
+  echo "  e.g. fetch-uv.sh v0.8.0" >&2
   exit 1
 fi
 ##############################################################
@@ -40,7 +40,7 @@ download () {
 
 REPOROOT=$(realpath .)
 
-[ -f $REPOROOT/cli/sh/provision.sh ] || die "please run this script from Tenjin's root directory";
+[ -f $REPOROOT/cli/sh/fetch-uv.sh ] || die "please run this script from Tenjin's root directory";
 
 LOCALDIR=$REPOROOT/_local
 

@@ -1,5 +1,6 @@
 #!/bin/sh
 
+# XREF:WANT_UV_VERSION in cli/hermetic.py
 WANT_UV_VERSION="0.8.0"
 
 case "$0" in
@@ -18,7 +19,7 @@ localuv="${rootdir}/_local/uv-${WANT_UV_VERSION}"
 localcg="${rootdir}/_local/uv-${WANT_UV_VERSION}.toml"
 
 if [ ! -e "$localuv" ] || [ ! -e "$localcg" ]; then
-    sh "$tenjdir/sh/provision.sh" "$WANT_UV_VERSION"
+    sh "$tenjdir/sh/fetch-uv.sh" "$WANT_UV_VERSION"
 
     if [ "$1" = "" ]; then
         echo 'Please run `10j provision` to continue setup.'
