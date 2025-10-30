@@ -6005,6 +6005,19 @@ impl<'c> Translation<'c> {
                                     // Casting from a pointer type, not a pointer-to-struct
                                 }
                                 // Casting from a pointer type.
+                                // If our guidance is that we actually have a Vec, we need
+                                // to insert an as_mut_ptr() call here.
+                                if tenjin::type_is_vec(&guided_type.parsed) {
+                                    let x_as_ptr = mk().method_call_expr(
+                                        x,
+                                        "as_mut_ptr",
+                                        Vec::<Box<Expr>>::new(),
+                                    );
+                                    let target_ty = self.convert_type(target_cty.ctype)?;
+                                    return Ok(WithStmts::new_val(
+                                        mk().cast_expr(x_as_ptr, target_ty),
+                                    ));
+                                }
                             }
                         }
                         let target_ty = self.convert_type(target_cty.ctype)?;
