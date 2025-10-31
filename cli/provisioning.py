@@ -640,7 +640,7 @@ def want_10j_more_deps():
 def provision_10j_rust_toolchain_with(version: str, keyname: str):
     """This must not lead back to hermetic.common_helper_for_run()."""
 
-    # Examples of expected toolchain specs: "1.88.0" or "nightly-2025-03-03".
+    # Examples of expected toolchain specs: "1.88.0" or "nightly-2025-08-20".
     # Specifying the point release helps avoid redundant downloads. Observe:
     #     $ docker run --rm -it rust:1.88-alpine rustc +1.88.0 --version
     #     rustc 1.88.0 (6b00bc388 2025-06-23)

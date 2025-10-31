@@ -2,11 +2,10 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 
 use rustc_hir::{
-    self as hir,
+    self as hir, ForeignItem, HirId, Item, ItemKind,
     def::Res,
     def_id::DefId,
     intravisit::{self, Visitor},
-    ForeignItem, HirId, Item, ItemKind,
 };
 use rustc_middle::ty::TyCtxt;
 use rustc_session::config::CrateType;
@@ -150,18 +149,13 @@ impl GraphExtractionVisitor<'_> {
             //
             // Eventually we should collect the set of actually-referenced symbols.
             // For now, we conservatively retain all `#[no_mangle]` items.
-            if let Ok(line_info) = src_map.lookup_line(item_span.lo()) {
-                if line_info.line == 0 {
-                    // No preceding line
-                } else if let Some(preceding_line) = line_info.sf.get_line(line_info.line - 1) {
-                    if preceding_line.trim_start().starts_with("#[no_mangle]") {
-                        self.graf.update_edge(
-                            GNode::VirtualRoot,
-                            GNode::Def(item_def),
-                            GEdge::Mentions,
-                        );
-                    }
-                }
+            if let Ok(line_info) = src_map.lookup_line(item_span.lo())
+                && line_info.line > 0
+                && let Some(preceding_line) = line_info.sf.get_line(line_info.line - 1)
+                && preceding_line.trim_start().starts_with("#[no_mangle]")
+            {
+                self.graf
+                    .update_edge(GNode::VirtualRoot, GNode::Def(item_def), GEdge::Mentions);
             }
         } else {
             // In a library crate, `pub` items must be considered live.

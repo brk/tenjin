@@ -14,7 +14,7 @@ WANT = {
     "10j-codehawk": "d7904d71d7743369fab9020fcaf3e8b15482152b",
     "10j-codehawk-c": "92b9bbd0220281e2931bd66b83c0f6c8ab911cde",
     # Keep in sync with the version in `xj-improve-multitool/rust-toolchain.toml`.
-    "10j-xj-improve-multitool-toolchain": "nightly-2025-03-03",
+    "10j-xj-improve-multitool-toolchain": "nightly-2025-08-20",
     "10j-xj-default-rust-toolchain": "1.88.0",
     "10j-reference-c2rust-tag": "55e1c24d5f3cbe0f3ef29717eeed77ea4c51867a",
 }
