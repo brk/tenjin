@@ -2,11 +2,10 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 
 use rustc_hir::{
-    self as hir,
+    self as hir, ForeignItem, HirId, Item, ItemKind,
     def::Res,
     def_id::DefId,
     intravisit::{self, Visitor},
-    ForeignItem, HirId, Item, ItemKind,
 };
 use rustc_middle::ty::TyCtxt;
 use rustc_session::config::CrateType;
