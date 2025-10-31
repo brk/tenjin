@@ -141,14 +141,31 @@ impl GraphExtractionVisitor<'_> {
             }
         }
 
-        if !self.is_binary {
-            let vis_text = self
-                .tcx
-                .sess
-                .source_map()
-                .span_to_snippet(vis_span)
-                .unwrap_or_else(|_| "<no snippet>".to_string());
-            if vis_text == "pub" {
+        let src_map = self.tcx.sess.source_map();
+        if self.is_binary {
+            // In a binary crate, most identifiers are dead if not explicitly referenced,
+            // but items marked `#[no_mangle]` could be referenced by a companion library crate.
+            // If we remove such a referenced item, `cargo check` would pass but
+            // `cargo build` would fail with missing symbol errors during linking.
+            //
+            // Eventually we should collect the set of actually-referenced symbols.
+            // For now, we conservatively retain all `#[no_mangle]` items.
+            if let Ok(line_info) = src_map.lookup_line(item_span.lo()) {
+                if line_info.line == 0 {
+                    // No preceding line
+                } else if let Some(preceding_line) = line_info.sf.get_line(line_info.line - 1) {
+                    if preceding_line.trim_start().starts_with("#[no_mangle]") {
+                        self.graf.update_edge(
+                            GNode::VirtualRoot,
+                            GNode::Def(item_def),
+                            GEdge::Mentions,
+                        );
+                    }
+                }
+            }
+        } else {
+            // In a library crate, `pub` items must be considered live.
+            if src_map.span_to_snippet(vis_span) == Ok("pub".to_string()) {
                 self.graf
                     .update_edge(GNode::VirtualRoot, GNode::Def(item_def), GEdge::Mentions);
             }
