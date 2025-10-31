@@ -141,14 +141,10 @@ impl GraphExtractionVisitor<'_> {
             }
         }
 
+        let src_map = self.tcx.sess.source_map();
         if !self.is_binary {
-            let vis_text = self
-                .tcx
-                .sess
-                .source_map()
-                .span_to_snippet(vis_span)
-                .unwrap_or_else(|_| "<no snippet>".to_string());
-            if vis_text == "pub" {
+            // In a library crate, `pub` items must be considered live.
+            if src_map.span_to_snippet(vis_span) == Ok("pub".to_string()) {
                 self.graf
                     .update_edge(GNode::VirtualRoot, GNode::Def(item_def), GEdge::Mentions);
             }
