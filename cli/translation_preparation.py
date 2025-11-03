@@ -174,7 +174,10 @@ def run_preparation_passes(
         compdb = compilation_database.CompileCommands.from_json_file(
             compdb_path_in(current_codebase)
         )
-        pgs = c_refact.compute_globals_and_statics_for_project(compdb)
+        all_pgs = c_refact.compute_globals_and_statics_for_project(compdb)
+        # We do not want to try renaming symbols from outside the current codebase!
+        current_codebase_dir = current_codebase.as_posix()
+        pgs = {k: v for k, v in all_pgs.items() if v.file_path.startswith(current_codebase_dir)}
         all_global_names = set(g_s.spelling for g_s in pgs.values())
         uniquifiers: dict[str, int] = {}
 
