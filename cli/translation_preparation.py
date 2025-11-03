@@ -240,11 +240,37 @@ def run_preparation_passes(
 
         hermetic.run("cat *.c", cwd=current_codebase, shell=True, check=True)
 
+    def prep_expand_preprocessor(prev: Path, current_codebase: Path):
+        compdb = compilation_database.CompileCommands.from_json_file(
+            compdb_path_in(current_codebase)
+        )
+        new_compdb: compilation_database.CompileCommands = (
+            c_refact.preprocess_and_create_new_compdb(
+                compdb, current_codebase.as_posix(), with_and_without_line_directives=True
+            )
+        )
+        # new_compdb already written to current_codebase
+        for cmd in new_compdb.commands:
+            assert cmd.file_path.suffix == ".i", "Expected preprocessed .i files"
+
+    def prep_refold_preprocessor(prev: Path, current_codebase: Path):
+        compdb = compilation_database.CompileCommands.from_json_file(
+            compdb_path_in(current_codebase)
+        )
+        new_compdb: compilation_database.CompileCommands = (
+            c_refact.preprocess_and_create_new_compdb(compdb, current_codebase.as_posix())
+        )
+        # new_compdb already written to current_codebase
+        for cmd in new_compdb.commands:
+            assert cmd.file_path.suffix == ".c", "Expected un-preprocessed .c files"
+
     preparation_passes: list[tuple[str, Callable[[Path, Path], CompletedProcess | None]]] = [
         ("copy_pristine_codebase", prep_00_copy_pristine_codebase),
         ("materialize_compdb", prep_01_materialize_compdb),
         ("uniquify_statics", prep_uniquify_statics),
+        # ("refold_preprocessor", prep_refold_preprocessor),
         ("run_cclzyerpp_analysis", prep_run_cclzyerpp_analysis),
+        ("expand_preprocessor", prep_expand_preprocessor),
     ]
 
     prev = original_codebase.absolute()
