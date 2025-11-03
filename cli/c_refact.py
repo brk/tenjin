@@ -6,6 +6,7 @@ from clang.cindex import (
     StorageClass,
     TranslationUnit,
     CompilationDatabase,
+    TypeKind,
     Cursor,
 )
 import clang.cindex
@@ -542,6 +543,7 @@ def localize_mutable_globals(json_path: Path, compdb: compilation_database.Compi
                                         "var_name": var_name_mangled,
                                         "type": child.type,
                                         "file": abs_path,
+                                        "loc_line": child.location.line,
                                     }
                                     print(
                                         f"  Found at {abs_path}:{child.location.line}:{child.location.column}"
@@ -560,18 +562,23 @@ def localize_mutable_globals(json_path: Path, compdb: compilation_database.Compi
     needed_struct_defs = {}
     forward_declarable_types = set()
 
-    def collect_type_dependencies(type_obj, depth=0):
+    def collect_type_dependencies(type_obj_noncanonical, depth=0):
         """Recursively collect struct/union types needed to define this type."""
         indent = "  " * depth
 
         # Get the canonical type
-        type_obj = type_obj.get_canonical()
+        type_obj = type_obj_noncanonical.get_canonical()
         type_spelling = type_obj.spelling
 
-        print(f"{indent}Analyzing type: {type_spelling} (kind: {type_obj.kind})")
+        print(
+            f"{indent}Analyzing type: {type_spelling} (kind: {type_obj.kind}) "
+            + f" [noncanon spelling: {type_obj_noncanonical.spelling}]"
+            + f" @noncanon {type_obj_noncanonical.get_declaration().location}"
+            + f" @canon {type_obj.get_declaration().location}"
+        )
 
         # If it's a pointer, the pointee can be forward-declared
-        if type_obj.kind == 10:  # TypeKind.POINTER
+        if type_obj.kind == TypeKind.POINTER:
             pointee = type_obj.get_pointee()
             pointee_canonical = pointee.get_canonical()
             print(f"{indent}  Pointer to: {pointee.spelling}")
@@ -606,7 +613,9 @@ def localize_mutable_globals(json_path: Path, compdb: compilation_database.Compi
     print("=" * 80)
     print(f"\nFound {len(global_definitions)} global definitions:")
     for name, info in global_definitions.items():
-        print(f"  - {name}: {info['type'].spelling} in {info['function']} at {info['file']}")
+        print(
+            f"  - {name}: {info['type'].spelling} in {info['function']} at {info['file']}:{info['loc_line']}"
+        )
 
     print(f"\nNeed {len(needed_struct_defs)} struct/union definitions:")
     for name in needed_struct_defs:
