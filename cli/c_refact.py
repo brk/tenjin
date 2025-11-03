@@ -590,6 +590,18 @@ def localize_mutable_globals(json_path: Path, compdb: compilation_database.Compi
                 print(f"{indent}  -> Can forward-declare: {decl.spelling}")
             return
 
+        if type_obj_canonical.kind in (
+            TypeKind.CONSTANTARRAY,
+            TypeKind.INCOMPLETEARRAY,
+            TypeKind.VARIABLEARRAY,
+        ):
+            assert type_obj_noncanonical.kind == type_obj_canonical.kind
+
+            elem_type = type_obj_noncanonical.get_array_element_type()
+            print(f"{indent}  Array of: {elem_type.spelling}")
+            collect_type_dependencies(elem_type, depth + 1)
+            return
+
         # If it's a struct or union, we need its full definition
         decl = type_obj.get_declaration()
         if decl.kind in [CursorKind.STRUCT_DECL, CursorKind.UNION_DECL]:
