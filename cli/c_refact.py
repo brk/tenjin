@@ -560,6 +560,7 @@ def localize_mutable_globals(json_path: Path, compdb: compilation_database.Compi
     print("=" * 80)
 
     needed_struct_defs = {}
+    needed_typedefs = {}
     forward_declarable_types = set()
 
     def collect_type_dependencies(type_obj_noncanonical, depth=0):
@@ -567,19 +568,56 @@ def localize_mutable_globals(json_path: Path, compdb: compilation_database.Compi
         indent = "  " * depth
 
         # Get the canonical type
-        type_obj = type_obj_noncanonical.get_canonical()
-        type_spelling = type_obj.spelling
+        type_obj_canonical = type_obj_noncanonical.get_canonical()
 
         print(
-            f"{indent}Analyzing type: {type_spelling} (kind: {type_obj.kind}) "
-            + f" [noncanon spelling: {type_obj_noncanonical.spelling}]"
+            f"{indent}Analyzing type: {type_obj_noncanonical.spelling} (kind: {type_obj_noncanonical.kind}) "
+            + f" [canon spelling: {type_obj_canonical.spelling}]"
+            + f" @canon {type_obj_canonical.get_declaration().location}"
             + f" @noncanon {type_obj_noncanonical.get_declaration().location}"
-            + f" @canon {type_obj.get_declaration().location}"
         )
 
+        # Handle occurrences of typedef'ed names
+        if type_obj_noncanonical.kind == TypeKind.ELABORATED:
+            decl = type_obj_noncanonical.get_declaration()
+            type_name = decl.spelling
+            assert type_name, "Typedef without a name?"
+            if type_name not in needed_typedefs:
+                print(f"{indent}  -> Need typedef: {type_name}")
+                needed_typedefs[type_name] = decl
+            elif needed_typedefs[type_name] != decl:
+                raise ValueError(
+                    f"{indent}  -> Typedef {type_name} already recorded, but different declaration!"
+                )
+
+            # Continue with the underlying type
+            typedef_decl = decl.get_definition().referenced
+            print(f"{indent}  Saw typedef elaborated...")
+            print(f"{indent}    typedef cursor: {typedef_decl.kind}")
+            print(f"{indent}    typedef cursor: {typedef_decl.extent}")
+            print(f"{indent}    typedef type: {typedef_decl.type}")
+            print(f"{indent}    typedef type: {typedef_decl.type.kind}")
+            collect_type_dependencies(typedef_decl.type, depth + 1)
+            return
+
+        if type_obj_noncanonical.kind == TypeKind.TYPEDEF:
+            typedef_decl = type_obj_noncanonical.get_declaration()
+            print(f"{indent}  Saw typedef...")
+            print(f"{indent}    typedef cursor: {typedef_decl.kind}")
+            print(f"{indent}    typedef cursor: {typedef_decl.extent}")
+            print(f"{indent}    typedef type: {typedef_decl.type}")
+            print(f"{indent}    typedef type: {typedef_decl.type.kind}")
+            print(f"{indent}    underlying type: {typedef_decl.underlying_typedef_type.kind}")
+            print(f"{indent}    referenced type: {typedef_decl.get_definition().referenced.kind}")
+            collect_type_dependencies(typedef_decl.underlying_typedef_type, depth + 1)
+            pass
+
+        if type_obj_canonical.kind == TypeKind.POINTER:
+            assert type_obj_noncanonical.kind == TypeKind.POINTER
+
         # If it's a pointer, the pointee can be forward-declared
-        if type_obj.kind == TypeKind.POINTER:
-            pointee = type_obj.get_pointee()
+        if type_obj_noncanonical.kind == TypeKind.POINTER:
+            pointee = type_obj_noncanonical.get_pointee()
             pointee_canonical = pointee.get_canonical()
             print(f"{indent}  Pointer to: {pointee.spelling}")
 
@@ -603,8 +641,13 @@ def localize_mutable_globals(json_path: Path, compdb: compilation_database.Compi
             return
 
         # If it's a struct or union, we need its full definition
-        decl = type_obj.get_declaration()
-        if decl.kind in [CursorKind.STRUCT_DECL, CursorKind.UNION_DECL]:
+        decl = type_obj_noncanonical.get_declaration()
+        canonical_decl = type_obj_canonical.get_declaration()
+
+        if canonical_decl.kind in [CursorKind.STRUCT_DECL, CursorKind.UNION_DECL]:
+            assert canonical_decl.kind == decl.kind, (
+                f"Mismatched declaration kinds: {canonical_decl.kind} vs {decl.kind}"
+            )
             type_name = decl.spelling
             if type_name and type_name not in needed_struct_defs:
                 print(f"{indent}  -> Need full definition: {type_name}")
@@ -630,8 +673,26 @@ def localize_mutable_globals(json_path: Path, compdb: compilation_database.Compi
         )
 
     print(f"\nNeed {len(needed_struct_defs)} struct/union definitions:")
-    for name in needed_struct_defs:
-        print(f"  - {name}")
+    for name, decl in needed_struct_defs.items():
+        print(f"  - {name} -> {decl.location}")
+        print(f"           -> {decl.extent}")
+        print(f"           -> {decl.type}")
+        print(f"           -> {decl.type.spelling}")
+        print(f"           -> {decl.get_usr()}")
+        print(f"           -> {decl.get_definition()}")
+        print(f"           -> {decl.get_definition().extent}")
+        print()
+
+    print(f"\nNeed {len(needed_typedefs)} typedef definitions:")
+    for name, decl in needed_typedefs.items():
+        print(f"  - {name} -> {decl.location}")
+        print(f"           -> {decl.extent}")
+        print(f"           -> {decl.type}")
+        print(f"           -> {decl.type.spelling}")
+        print(f"           -> {decl.get_usr()}")
+        print(f"           -> {decl.get_definition()}")
+        print(f"           -> {decl.get_definition().extent}")
+        print()
 
     print(f"\nCan forward-declare {len(forward_declarable_types)} types:")
     for name in forward_declarable_types:
