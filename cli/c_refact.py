@@ -761,11 +761,11 @@ def localize_mutable_globals(
                 ploc = cursor.location
                 if line != ploc.line or col != ploc.column:
                     continue
-                print("WANT: ", line, col, i_file_path)
-                print("GOT:  ", ploc.line, ploc.column, ploc.file)
-                print("          paths match? ", ploc.file == i_file_path)
-                print()
-                if ploc.line == line and ploc.column == col and ploc.file == i_file_path:
+                # print("WANT: ", line, col, i_file_path)
+                # print("GOT:  ", ploc.line, ploc.column, ploc.file)
+                # print("          paths match? ", str(ploc.file) == i_file_path)
+                # print()
+                if ploc.line == line and ploc.column == col and str(ploc.file) == i_file_path:
                     # Found the call
                     call_start_offset = cursor.extent.start.offset
 
@@ -804,7 +804,7 @@ def localize_mutable_globals(
                     break
 
             if not found_call:
-                print(
+                raise ValueError(
                     f"  WARNING: Could not find call to {callee_func} from {caller_func} at {uf}:{line}:{col}"
                 )
 
