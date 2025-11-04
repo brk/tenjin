@@ -275,8 +275,8 @@ def run_preparation_passes(
         ("materialize_compdb", prep_01_materialize_compdb),
         ("uniquify_statics", prep_uniquify_statics),
         # ("refold_preprocessor", prep_refold_preprocessor),
-        ("run_cclzyerpp_analysis", prep_run_cclzyerpp_analysis),
         ("expand_preprocessor", prep_expand_preprocessor),
+        ("run_cclzyerpp_analysis", prep_run_cclzyerpp_analysis),
         ("localize_mutable_globals", prep_localize_mutable_globals),
     ]
 
