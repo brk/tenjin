@@ -150,7 +150,9 @@ def run_preparation_passes(
         compdb = compilation_database.CompileCommands.from_json_file(
             compdb_path_in(current_codebase)
         )
-        c_refact.localize_mutable_globals(current_codebase / "xj-cclyzer.json", compdb)
+        c_refact.localize_mutable_globals(
+            current_codebase / "xj-cclyzer.json", compdb, prev, current_codebase
+        )
 
     def prep_run_cclzyerpp_analysis(prev: Path, current_codebase: Path):
         # Compile and link LLVM bitcode module
@@ -252,7 +254,8 @@ def run_preparation_passes(
         )
         new_compdb: compilation_database.CompileCommands = (
             c_refact.preprocess_and_create_new_compdb(
-                compdb, current_codebase.as_posix(), with_and_without_line_directives=True
+                compdb,
+                current_codebase.as_posix(),
             )
         )
         # new_compdb already written to current_codebase

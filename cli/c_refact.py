@@ -179,7 +179,6 @@ def parse_project(
 def preprocess_and_create_new_compdb(
     compdb: compilation_database.CompileCommands,
     target_dir: str,
-    with_and_without_line_directives: bool = False,
 ) -> compilation_database.CompileCommands:
     """
     For each TU in compdb, run clang -E to preprocess it into target_dir,
@@ -201,7 +200,7 @@ def preprocess_and_create_new_compdb(
         except ValueError:
             rel_src_path = Path(abs_src_path.name)
 
-        preprocessed_file_path = (target_dir_path / rel_src_path).with_suffix(".i")
+        preprocessed_file_path = (target_dir_path / rel_src_path).with_suffix(".nolines.i")
         preprocessed_file_path.parent.mkdir(parents=True, exist_ok=True)
 
         # 2. Run preprocessor
@@ -236,26 +235,18 @@ def preprocess_and_create_new_compdb(
             *compiler_args,
         ]
 
+        refold_map_path = preprocessed_file_path.with_suffix(".refoldmap.json")
         subprocess.run(
-            [*base_pp_command, "-o", str(preprocessed_file_path)],
+            [
+                *base_pp_command,
+                f"--refold-map={refold_map_path.as_posix()}",
+                "--no-line-commands",
+                "-o",
+                str(preprocessed_file_path),
+            ],
             check=True,
             cwd=cmd.directory,
         )
-
-        if with_and_without_line_directives:
-            no_lines_path = preprocessed_file_path.with_suffix(".nolines.i")
-            refold_map_path = no_lines_path.with_suffix(".refoldmap.json")
-            subprocess.run(
-                [
-                    *base_pp_command,
-                    f"--refold-map={refold_map_path.as_posix()}",
-                    "--no-line-commands",
-                    "-o",
-                    str(no_lines_path),
-                ],
-                check=True,
-                cwd=cmd.directory,
-            )
 
         # 3. Create new command for new compdb
         new_args = original_args.copy()
@@ -415,7 +406,12 @@ def compute_globals_and_statics_for_translation_unit(
     return results
 
 
-def localize_mutable_globals(json_path: Path, compdb: compilation_database.CompileCommands):
+def localize_mutable_globals(
+    json_path: Path,
+    compdb: compilation_database.CompileCommands,
+    prev: Path,
+    current_codebase: Path,
+):
     # Here is an example of the data output by `cc2json`:
     # {
     # "mutated_or_escaped_global": [
@@ -831,14 +827,18 @@ def localize_mutable_globals(json_path: Path, compdb: compilation_database.Compi
             # Get the actual file path - need to adjust for current directory
             # The JSON has paths from c_03 but we're working in c_04
             file_path_old = un_uf(uf)
-            # Replace the old directory with the current one
-            for abs_path in tus.keys():
-                if abs_path.name == Path(file_path_old).name:
-                    file_path = abs_path.as_posix()
-                    break
-            else:
-                print(f"    ERROR: Could not map {uf} to a TU file")
-                continue
+            assert file_path_old.startswith(prev.as_posix())
+            i_file_path = file_path_old.replace(prev.as_posix(), current_codebase.as_posix())
+
+            # Working with .i files (in particular, ones without line markers)
+            # allows us to reliably edit call sites. Otherwise, we'd have to contend
+            # with call sites that are synthesized by the preprocessor in horrific ways.
+            assert i_file_path.endswith(".nolines.i")
+
+            print(list(tus.keys()))
+            print(i_file_path)
+            print(file_path_old)
+            assert i_file_path in tus
 
             # Determine what to pass based on caller
             if caller_func == "main":
@@ -853,51 +853,54 @@ def localize_mutable_globals(json_path: Path, compdb: compilation_database.Compi
             # Find the call expression at the given location
             # We need to use libclang to find the exact offset
             found_call = False
-            for abs_path, tu in tus.items():
-                if abs_path.as_posix() == file_path or str(abs_path) == file_path:
-                    for cursor in tu.cursor.walk_preorder():
-                        if (
-                            cursor.kind == CursorKind.CALL_EXPR
-                            and cursor.location.line == line
-                            and cursor.location.column == col
-                        ):
-                            # Found the call
-                            call_start_offset = cursor.extent.start.offset
+            tu = tus[i_file_path]
+            for cursor in tu.cursor.walk_preorder():
+                if cursor.kind != CursorKind.CALL_EXPR:
+                    continue
+                # ploc = presumed_location(cursor.location)
+                ploc = cursor.location
+                if line != ploc.line or col != ploc.column:
+                    continue
+                print("WANT: ", line, col, i_file_path)
+                print("GOT:  ", ploc.line, ploc.column, ploc.file)
+                print("          paths match? ", ploc.file == i_file_path)
+                print()
+                if ploc.line == line and ploc.column == col and ploc.file == i_file_path:
+                    # Found the call
+                    call_start_offset = cursor.extent.start.offset
 
-                            # Read file to find parenthesis
-                            with open(file_path, "rb") as f:
-                                content = f.read()
+                    # Read file to find parenthesis
+                    with open(i_file_path, "rb") as f:
+                        content = f.read()
 
-                            paren_pos = content.find(b"(", call_start_offset)
-                            if paren_pos == -1:
-                                break
+                    paren_pos = content.find(b"(", call_start_offset)
+                    if paren_pos == -1:
+                        break
 
-                            # Check if there are existing arguments
-                            closing_paren_pos = content.find(b")", paren_pos)
-                            if closing_paren_pos == -1:
-                                break
+                    # Check if there are existing arguments
+                    closing_paren_pos = content.find(b")", paren_pos)
+                    if closing_paren_pos == -1:
+                        break
 
                             args_section = content[paren_pos + 1 : closing_paren_pos].strip()
 
-                            if args_section == b"":
-                                # No arguments
-                                insert_offset = paren_pos + 1
-                                insert_text = param_to_pass
-                                print(
-                                    f"  Passing {param_to_pass} to {callee_func} from {caller_func} at {uf}:{line} (no args)"
-                                )
-                            else:
-                                # Has arguments, add as first argument with comma
-                                insert_offset = paren_pos + 1
-                                insert_text = param_to_pass + ", "
-                                print(
-                                    f"  Passing {param_to_pass} to {callee_func} from {caller_func} at {uf}:{line} (with args)"
-                                )
+                    if args_section == b"":
+                        # No arguments
+                        insert_offset = paren_pos + 1
+                        insert_text = param_to_pass
+                        print(
+                            f"  Passing {param_to_pass} to {callee_func} from {caller_func} at {uf}:{line} (no args)"
+                        )
+                    else:
+                        # Has arguments, add as first argument with comma
+                        insert_offset = paren_pos + 1
+                        insert_text = param_to_pass + ", "
+                        print(
+                            f"  Passing {param_to_pass} to {callee_func} from {caller_func} at {uf}:{line} (with args)"
+                        )
 
-                            rewriter.add_rewrite(file_path, insert_offset, 0, insert_text)
-                            found_call = True
-                            break
-                if found_call:
+                    rewriter.add_rewrite(i_file_path, insert_offset, 0, insert_text)
+                    found_call = True
                     break
 
             if not found_call:
