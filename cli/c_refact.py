@@ -484,7 +484,7 @@ def localize_mutable_globals(json_path: Path, compdb: compilation_database.Compi
     # To localize mutable globals, we perform the following steps:
     # 1. Inspect j["call_graph_components"], discarding those which are not all_mutable.
     # 2a. Find the definitions of of each ["mutated_or_escaped_global"].
-    # 2b. Construct the transitive closure of all directly used struct/union
+    # 2b. Construct the transitive closure of all directly used struct/union/enum/typedef
     #     definitions needed to define those globals. Note that fields which use
     #     a struct behind a pointer do not require inclusion of that struct definition,
     #     as the type can be forward-declared. (Such type names should be collected in a separate set.)
@@ -982,6 +982,26 @@ def localize_mutable_globals(json_path: Path, compdb: compilation_database.Compi
                 header_lines.append(f"struct {type_name};")
             header_lines.append("")
 
+        # Add typedefs
+        typedefs_sorted_by_line = sorted(
+            list(needed_typedefs.items()), key=lambda item: item[1].location.line
+        )
+        if typedefs_sorted_by_line:
+            for name, decl_cursor in typedefs_sorted_by_line:
+                # Get the full definition text
+                start_offset = decl_cursor.extent.start.offset
+                end_offset = decl_cursor.extent.end.offset
+                # Find the file containing this definition
+                for abs_path, tu in tus.items():
+                    if str(abs_path) == decl_cursor.location.file.name:
+                        with open(abs_path, "rb") as f:
+                            content = f.read()
+                        typedef_text = content[start_offset:end_offset].decode("utf-8")
+                        header_lines.append(typedef_text + ";")
+                        break
+
+            header_lines.append("")
+
         # Add full struct/union definitions from step 2b
         if needed_struct_defs:
             for type_name, decl_cursor in needed_struct_defs.items():
@@ -996,7 +1016,7 @@ def localize_mutable_globals(json_path: Path, compdb: compilation_database.Compi
                         with open(abs_path, "rb") as f:
                             content = f.read()
                         struct_text = content[start_offset:end_offset].decode("utf-8")
-                        header_lines.append(struct_text)
+                        header_lines.append(struct_text + ";")
                         header_lines.append("")
                         break
 
@@ -1031,7 +1051,7 @@ def localize_mutable_globals(json_path: Path, compdb: compilation_database.Compi
         header_lines.append("")
 
         # Write the header file
-        with open(header_path, "w") as f:
+        with open(header_path, "w", encoding="utf-8") as f:
             f.write("\n".join(header_lines))
 
         print(f"  Created header with {len(global_definitions)} globals")
