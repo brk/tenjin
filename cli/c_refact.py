@@ -758,11 +758,11 @@ def localize_mutable_globals(
                 if cursor.kind != CursorKind.CALL_EXPR:
                     continue
 
-                ploc = cursor.location
-                if line != ploc.line or col != ploc.column:
+                loc = cursor.location
+                if line != loc.line or col != loc.column:
                     continue
 
-                if ploc.line == line and ploc.column == col and str(ploc.file) == i_file_path:
+                if loc.line == line and loc.column == col and str(loc.file) == i_file_path:
                     # Found the call
                     call_start_offset = cursor.extent.start.offset
 
