@@ -118,7 +118,7 @@ def parse_project(
             abs_path = srcfile.resolve()
         else:
             abs_path = (cmds[0].directory_path / srcfile).resolve()
-        tus[abs_path] = tu
+        tus[abs_path.as_posix()] = tu
     return tus
 
 
@@ -680,7 +680,7 @@ def localize_mutable_globals(
         for func_name, cursors_list in all_function_cursors.items():
             for func_info in cursors_list:
                 cursor = func_info["cursor"]
-                file_path = func_info["file"].as_posix()
+                file_path = func_info["file"]
                 is_def = func_info["is_definition"]
 
                 # Find the position after the opening parenthesis
@@ -738,10 +738,6 @@ def localize_mutable_globals(
             # allows us to reliably edit call sites. Otherwise, we'd have to contend
             # with call sites that are synthesized by the preprocessor in horrific ways.
             assert i_file_path.endswith(".nolines.i")
-
-            print(list(tus.keys()))
-            print(i_file_path)
-            print(file_path_old)
             assert i_file_path in tus
 
             # Determine what to pass based on caller
@@ -834,9 +830,6 @@ def localize_mutable_globals(
                                 child.kind == CursorKind.DECL_REF_EXPR
                                 and child.spelling == var_name
                             ):
-                                # This is a reference/use of our variable
-                                file_path = abs_path.as_posix()
-
                                 # Get the extent of the variable reference
                                 start_offset = child.extent.start.offset
                                 end_offset = child.extent.end.offset
@@ -859,7 +852,7 @@ def localize_mutable_globals(
 
                                 print(f"    Replacing {var_name} with {replacement}")
 
-                                rewriter.add_rewrite(file_path, start_offset, length, replacement)
+                                rewriter.add_rewrite(abs_path, start_offset, length, replacement)
                         break
 
         # Step 3: Create xj_globals.h header file with struct XjGlobals
@@ -974,8 +967,7 @@ def localize_mutable_globals(
                     and cursor.spelling == "main"
                     and cursor.is_definition()
                 ):
-                    file_path = abs_path.as_posix()
-                    print(f"  Found main() at {file_path}:{cursor.location.line}")
+                    print(f"  Found main() at {abs_path}:{cursor.location.line}")
 
                     # Find the opening brace of main's body
                     # The compound statement is a child of the function
@@ -1013,8 +1005,8 @@ def localize_mutable_globals(
                             init_lines.append("\n  };")
 
                             init_text = "".join(init_lines)
-                            rewriter.add_rewrite(file_path, insert_offset, 0, init_text)
-                            print(f"  Added xjgv initialization in main()")
+                            rewriter.add_rewrite(abs_path, insert_offset, 0, init_text)
+                            print("  Added xjgv initialization in main()")
                             break
                     break
 
@@ -1036,9 +1028,8 @@ def localize_mutable_globals(
                     break
 
         # Add the include at the top of each file
-        for file_path in files_needing_include:
-            file_path_str = file_path.as_posix()
-            print(f"  Adding include to {file_path}")
+        for file_path_str in files_needing_include:
+            print(f"  Adding include to {file_path_str}")
 
             # Insert after any existing includes, or at the start
             # For simplicity, we'll add it at the very beginning
