@@ -21,87 +21,10 @@ import compilation_database
 import batching_rewriter
 
 
-def register_extra_clang_functions():
-    assert Config.loaded
-    ignore_errors = not Config.compatibility_check
-    for get_loc_fn in [
-        "clang_getFileLocation",
-        "clang_getSpellingLocation",
-    ]:
-        item = (
-            get_loc_fn,
-            [
-                clang.cindex.SourceLocation,
-                clang.cindex.POINTER(clang.cindex.c_object_p),
-                clang.cindex.POINTER(clang.cindex.c_uint),
-                clang.cindex.POINTER(clang.cindex.c_uint),
-                clang.cindex.POINTER(clang.cindex.c_uint),
-            ],
-        )
-        clang.cindex.register_function(clang.cindex.conf.lib, item, ignore_errors)
-    clang.cindex.register_function(
-        clang.cindex.conf.lib,
-        (
-            "clang_getPresumedLocation",
-            [
-                clang.cindex.SourceLocation,
-                clang.cindex.POINTER(clang.cindex.c_interop_string),
-                clang.cindex.POINTER(clang.cindex.c_uint),
-                clang.cindex.POINTER(clang.cindex.c_uint),
-            ],
-        ),
-        ignore_errors,
-    )
-
-
-def do_clang_getPresumedLocation(srcloc: clang.cindex.SourceLocation):
-    fraw, ln, c = (
-        clang.cindex.c_interop_string(),
-        clang.cindex.c_uint(),
-        clang.cindex.c_uint(),
-    )
-    byref = clang.cindex.byref
-    clang.cindex.conf.lib.clang_getPresumedLocation(srcloc, byref(fraw), byref(ln), byref(c))
-    return (fraw.value, int(ln.value), int(c.value))
-
-
-def do_clang_getFileLocation(srcloc: clang.cindex.SourceLocation):
-    fraw, ln, c, o = (
-        clang.cindex.c_object_p(),
-        clang.cindex.c_uint(),
-        clang.cindex.c_uint(),
-        clang.cindex.c_uint(),
-    )
-    byref = clang.cindex.byref
-    clang.cindex.conf.lib.clang_getFileLocation(srcloc, byref(fraw), byref(ln), byref(c), byref(o))
-    if fraw:
-        f = clang.cindex.File(fraw)
-    else:
-        f = None
-    return (f, int(ln.value), int(c.value), int(o.value))
-
-
-def do_clang_getSpellingLocation(srcloc: clang.cindex.SourceLocation):
-    f, ln, c, o = (
-        clang.cindex.c_object_p(),
-        clang.cindex.c_uint(),
-        clang.cindex.c_uint(),
-        clang.cindex.c_uint(),
-    )
-    byref = clang.cindex.byref
-    clang.cindex.conf.lib.clang_getSpellingLocation(srcloc, byref(f), byref(ln), byref(c), byref(o))
-    if f:
-        f = clang.cindex.File(f)
-    else:
-        f = None
-    return (f, int(ln.value), int(c.value), int(o.value))
-
-
 def create_xj_clang_index() -> Index:
     """Create a clang Index configured to use the hermetic xj-llvm installation."""
 
-    first_load = not Config.loaded
-    if first_load:
+    if not Config.loaded:
         xj_llvm = hermetic.xj_llvm_root(repo_root.localdir())
 
         if platform.system() == "Darwin":
@@ -112,11 +35,7 @@ def create_xj_clang_index() -> Index:
 
         Config.set_library_file(libclang_path)
 
-    idx = Index.create()
-
-    if first_load:
-        register_extra_clang_functions()
-    return idx
+    return Index.create()
 
 
 def xj_comp_db_from_directory(dir: str) -> compilation_database.CompileCommands:
@@ -325,48 +244,6 @@ def compute_globals_and_statics_for_project(
 
 
 @dataclass
-class ClangLocation:
-    loctype: str
-    file_path: str | None
-    line: int
-    column: int
-    byte_offset: int
-
-
-def file_location(loc) -> ClangLocation:
-    f, ln, c, o = do_clang_getFileLocation(loc)
-    return ClangLocation(
-        loctype="file",
-        file_path=f.name if f else None,
-        line=ln,
-        column=c,
-        byte_offset=o,
-    )
-
-
-def spelling_location(loc) -> ClangLocation:
-    f, ln, c, o = do_clang_getSpellingLocation(loc)
-    return ClangLocation(
-        loctype="spelling",
-        file_path=f.name if f else None,
-        line=ln,
-        column=c,
-        byte_offset=o,
-    )
-
-
-def presumed_location(loc) -> ClangLocation:
-    f, ln, c = do_clang_getPresumedLocation(loc)
-    return ClangLocation(
-        loctype="presumed",
-        file_path=f,
-        line=ln,
-        column=c,
-        byte_offset=-1,
-    )
-
-
-@dataclass
 class NamedDeclInfo:
     spelling: str
     file_path: str | None
@@ -376,10 +253,6 @@ class NamedDeclInfo:
     start_col: int
     end_line: int
     end_col: int
-    start_loc_spelling: ClangLocation | None = None
-    start_loc_file: ClangLocation | None = None
-    end_loc_spelling: ClangLocation | None = None
-    end_loc_file: ClangLocation | None = None
 
 
 def compute_globals_and_statics_for_translation_unit(
@@ -419,11 +292,6 @@ def compute_globals_and_statics_for_translation_unit(
                     start = extent.start
                     end = extent.end
 
-                    sp_start = spelling_location(start)
-                    sp_end = spelling_location(end)
-                    fi_start = file_location(start)
-                    fi_end = file_location(end)
-
                     file_path = start.file.name if start.file else None
                     results[qname] = NamedDeclInfo(
                         spelling=node.spelling,
@@ -434,10 +302,6 @@ def compute_globals_and_statics_for_translation_unit(
                         start_col=start.column,
                         end_line=end.line,
                         end_col=end.column,
-                        start_loc_file=fi_start,
-                        end_loc_file=fi_end,
-                        start_loc_spelling=sp_start,
-                        end_loc_spelling=sp_end,
                     )
         for child in node.get_children():
             visit(child)
