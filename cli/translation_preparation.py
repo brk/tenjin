@@ -182,13 +182,12 @@ def run_preparation_passes(
         compdb = compilation_database.CompileCommands.from_json_file(
             compdb_path_in(current_codebase)
         )
-        all_pgs = c_refact.compute_globals_and_statics_for_project(compdb)
+        all_pgs_cursors = c_refact.compute_globals_and_statics_for_project(compdb)
+        all_pgs = [c_refact.mk_NamedDeclInfo(c) for c in all_pgs_cursors]
         # We do not want to try renaming symbols from outside the current codebase!
         current_codebase_dir = current_codebase.as_posix()
-        pgs = {
-            k: v for k, v in all_pgs.items() if (v.file_path or "").startswith(current_codebase_dir)
-        }
-        all_global_names = set(g_s.spelling for g_s in pgs.values())
+        pgs = [v for v in all_pgs if (v.file_path or "").startswith(current_codebase_dir)]
+        all_global_names = set(g_s.spelling for g_s in pgs)
         uniquifiers: dict[str, int] = {}
 
         def mk_unique_name(base: str) -> str:
@@ -200,7 +199,7 @@ def run_preparation_passes(
                     return candidate
 
         rewrites_per_file: dict[str, dict[int, tuple[int, str, str]]] = {}
-        for _fqsymname, g_s in pgs.items():
+        for g_s in pgs:
             rewrites_per_file.setdefault(g_s.file_path or "", {})[g_s.decl_start_byte_offset] = (
                 g_s.decl_end_byte_offset,
                 mk_unique_name(g_s.spelling),

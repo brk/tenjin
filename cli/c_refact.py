@@ -243,71 +243,53 @@ class NamedDeclInfo:
 
 def compute_globals_and_statics_for_project(
     compdb: compilation_database.CompileCommands,
-    use_qualified_names: bool = True,
-) -> dict[str, NamedDeclInfo]:
+    elide_functions: bool = False,
+) -> list[Cursor]:
     index = create_xj_clang_index()
     tus = parse_project(index, compdb)
-    return compute_globals_and_statics_for_translation_units(
-        list(tus.values()), use_qualified_names
-    )
+    return compute_globals_and_statics_for_translation_units(list(tus.values()), elide_functions)
 
 
 def compute_globals_and_statics_for_translation_units(
     translation_units: list[TranslationUnit],
-    use_qualified_names: bool,
     elide_functions: bool = False,
-) -> dict[str, NamedDeclInfo]:
-    combined: dict[str, NamedDeclInfo] = {}
+) -> list[Cursor]:
+    combined: list[Cursor] = []
     for tu in translation_units:
-        results = compute_globals_and_statics_for_translation_unit(
-            tu, use_qualified_names, elide_functions
-        )
-        common_keys = set(combined.keys()).intersection(set(results.keys()))
-        assert not common_keys, f"Duplicate global/static symbols found: {common_keys}"
-        combined.update(results)
+        results = compute_globals_and_statics_for_translation_unit(tu, elide_functions)
+        combined.extend(results)
     return combined
 
 
+def mk_NamedDeclInfo(node: Cursor) -> NamedDeclInfo:
+    extent = node.extent
+    start = extent.start
+    end = extent.end
+
+    file_path = start.file.name if start.file else None
+    return NamedDeclInfo(
+        spelling=node.spelling,
+        file_path=file_path,
+        decl_start_byte_offset=start.offset,
+        decl_end_byte_offset=end.offset,
+        start_line=start.line,
+        start_col=start.column,
+        end_line=end.line,
+        end_col=end.column,
+    )
+
+
 def compute_globals_and_statics_for_translation_unit(
-    translation_unit: TranslationUnit, use_qualified_names: bool, elide_functions: bool
-) -> dict[str, NamedDeclInfo]:
+    translation_unit: TranslationUnit, elide_functions: bool
+) -> list[Cursor]:
     """Compute globals and static symbols defined in the translation unit."""
 
-    results = {}
-
-    def qualify(cursor):
-        if not use_qualified_names:
-            return cursor.spelling or "<unnamed>"
-        names = []
-        cur = cursor
-        while cur is not None:  # and cur.kind != CursorKind.TRANSLATION_UNIT:
-            if cur.spelling:
-                names.append(cur.spelling)
-            cur = cur.semantic_parent
-        if not names:
-            return cursor.spelling or ""
-        return "::".join(reversed(names))
+    results = []
 
     def grab(node):
         if elide_functions and node.kind == CursorKind.FUNCTION_DECL:
             return
-
-        qname = qualify(node)
-        extent = node.extent
-        start = extent.start
-        end = extent.end
-
-        file_path = start.file.name if start.file else None
-        results[qname] = NamedDeclInfo(
-            spelling=node.spelling,
-            file_path=file_path,
-            decl_start_byte_offset=start.offset,
-            decl_end_byte_offset=end.offset,
-            start_line=start.line,
-            start_col=start.column,
-            end_line=end.line,
-            end_col=end.column,
-        )
+        results.append(node)
 
     def visit(node: Cursor):
         if node.kind in (CursorKind.VAR_DECL, CursorKind.FUNCTION_DECL):
@@ -476,14 +458,14 @@ def localize_mutable_globals(
                         break
 
     nonvibe_globals_and_statics = compute_globals_and_statics_for_translation_units(
-        list(tus.values()), use_qualified_names=False, elide_functions=True
+        list(tus.values()), elide_functions=True
     )
     import pprint
 
     print("vibed globals:")
     pprint.pprint(global_definitions)
     print("nonvibed globals:")
-    pprint.pprint(nonvibe_globals_and_statics)
+    pprint.pprint([mk_NamedDeclInfo(cursor) for cursor in nonvibe_globals_and_statics])
 
     # Step 2b: Construct transitive closure of struct/union definitions
     print("\n" + "=" * 80)
