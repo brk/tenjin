@@ -1,5 +1,5 @@
 import json
-from clang.cindex import (
+from clang.cindex import (  # type: ignore
     Index,
     CursorKind,
     Config,
@@ -9,7 +9,6 @@ from clang.cindex import (
     TypeKind,
     Cursor,
 )
-import clang.cindex
 from dataclasses import dataclass
 import platform
 from pathlib import Path
@@ -229,20 +228,6 @@ def preprocess_and_create_new_compdb(
     return new_compdb
 
 
-def compute_globals_and_statics_for_project(
-    compdb: compilation_database.CompileCommands,
-):
-    index = create_xj_clang_index()
-    tus = parse_project(index, compdb)
-    combined = {}
-    for tu in tus.values():
-        results = compute_globals_and_statics_for_translation_unit(tu)
-        common_keys = set(combined.keys()).intersection(set(results.keys()))
-        assert not common_keys, f"Duplicate global/static symbols found: {common_keys}"
-        combined.update(results)
-    return combined
-
-
 @dataclass
 class NamedDeclInfo:
     spelling: str
@@ -253,6 +238,20 @@ class NamedDeclInfo:
     start_col: int
     end_line: int
     end_col: int
+
+
+def compute_globals_and_statics_for_project(
+    compdb: compilation_database.CompileCommands,
+) -> dict[str, NamedDeclInfo]:
+    index = create_xj_clang_index()
+    tus = parse_project(index, compdb)
+    combined: dict[str, NamedDeclInfo] = {}
+    for tu in tus.values():
+        results = compute_globals_and_statics_for_translation_unit(tu)
+        common_keys = set(combined.keys()).intersection(set(results.keys()))
+        assert not common_keys, f"Duplicate global/static symbols found: {common_keys}"
+        combined.update(results)
+    return combined
 
 
 def compute_globals_and_statics_for_translation_unit(
@@ -661,7 +660,9 @@ def localize_mutable_globals(
         # Step 5: Add xjg parameter to tissue function signatures (definitions and declarations)
 
         # Collect all declarations (both definitions and forward declarations)
-        all_function_cursors = {}  # func_name -> list of (cursor, file, is_definition)
+        all_function_cursors: dict[
+            str, list[dict[str, Cursor | str | bool]]
+        ] = {}  # func_name -> list of (cursor, file, is_definition)
 
         for abs_path, tu in tus.items():
             for cursor in tu.cursor.walk_preorder():
@@ -812,7 +813,7 @@ def localize_mutable_globals(
         for global_name, info in global_definitions.items():
             var_name = info["var_name"]
             function_name = info["function"]
-            var_decl_cursor = info["cursor"]
+            # var_decl_cursor = info["cursor"]
 
             print(f"\n  Replacing uses of {var_name} in {function_name}")
 
@@ -844,7 +845,7 @@ def localize_mutable_globals(
                                     and parent.kind == CursorKind.VAR_DECL
                                     and parent.spelling == var_name
                                 ):
-                                    print(f"      Skipping: this is part of the declaration")
+                                    print("      Skipping: this is part of the declaration")
                                     continue
 
                                 print(f"    Replacing {var_name} with {replacement}")
@@ -948,8 +949,8 @@ def localize_mutable_globals(
         header_lines.append("")
 
         # Write the header file
-        with open(header_path, "w", encoding="utf-8") as f:
-            f.write("\n".join(header_lines))
+        with open(header_path, "w", encoding="utf-8") as fh:
+            fh.write("\n".join(header_lines))
 
         print(f"  Created header with {len(global_definitions)} globals")
 

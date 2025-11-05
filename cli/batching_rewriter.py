@@ -7,7 +7,7 @@ class BatchingRewriter:
     """
 
     def __init__(self):
-        self.rewrites: dict[str, list[tuple[int, int, str]]] = {}
+        self.rewrites: dict[str, list[tuple[int, int, str]]] = {}  # type: ignore
 
     def add_rewrite(self, filepath: str, offset: int, length: int, replacement_text: str):
         """Add a rewrite operation for a specific file."""

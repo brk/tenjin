@@ -185,7 +185,9 @@ def run_preparation_passes(
         all_pgs = c_refact.compute_globals_and_statics_for_project(compdb)
         # We do not want to try renaming symbols from outside the current codebase!
         current_codebase_dir = current_codebase.as_posix()
-        pgs = {k: v for k, v in all_pgs.items() if v.file_path.startswith(current_codebase_dir)}
+        pgs = {
+            k: v for k, v in all_pgs.items() if (v.file_path or "").startswith(current_codebase_dir)
+        }
         all_global_names = set(g_s.spelling for g_s in pgs.values())
         uniquifiers: dict[str, int] = {}
 
@@ -199,7 +201,7 @@ def run_preparation_passes(
 
         rewrites_per_file: dict[str, dict[int, tuple[int, str, str]]] = {}
         for _fqsymname, g_s in pgs.items():
-            rewrites_per_file.setdefault(g_s.file_path, {})[g_s.decl_start_byte_offset] = (
+            rewrites_per_file.setdefault(g_s.file_path or "", {})[g_s.decl_start_byte_offset] = (
                 g_s.decl_end_byte_offset,
                 mk_unique_name(g_s.spelling),
                 g_s.spelling,
