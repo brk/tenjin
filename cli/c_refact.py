@@ -1065,8 +1065,6 @@ def localize_mutable_globals(
                                         # we don't want to (& cannot) duplicate their definitions
                                         # within main().
                                         continue
-                                    var_name = var_cursor.spelling
-                                    type_spelling = var_cursor.type.spelling
 
                                     # Get the initializer value
                                     initializer = "0"  # Default
@@ -1082,7 +1080,7 @@ def localize_mutable_globals(
                                             break
 
                                     init_lines.append(
-                                        f"  static {type_spelling} {var_name} = {initializer};"
+                                        f"  static {render_declaration_sans_qualifiers(var_cursor.type, var_cursor.spelling)} = {initializer};"
                                     )
 
                                 init_lines.append("")
@@ -1093,17 +1091,33 @@ def localize_mutable_globals(
                             field_inits = []
                             for global_name in sorted(mutated_globals_cursors_by_name.keys()):
                                 var_cursor = mutated_globals_cursors_by_name[global_name]
-                                initializer = "0"  # Default
-                                for child_node in var_cursor.get_children():
-                                    if child_node.kind != CursorKind.TYPE_REF:
+                                with open(var_cursor.location.file.name, "rb") as f:
+                                    content = f.read()
+                                if global_name.startswith("pathsize_"):
+                                    print(f"   Special handling for {global_name}")
+                                    for child_node in var_cursor.get_children():
+                                        print("    child node:", child_node.kind, child_node.extent)
+                                        print(
+                                            "   child node text:",
+                                            content[
+                                                child_node.extent.start.offset : child_node.extent.end.offset
+                                            ],
+                                        )
+                                        print()
+
+                                if var_cursor.is_definition():
+                                    child_node = list(var_cursor.get_children())[-1]
+                                    if child_node.kind == CursorKind.TYPE_REF:
+                                        # No initializer
+                                        initializer = "0"
+                                    else:
                                         init_start = child_node.extent.start.offset
                                         init_end = child_node.extent.end.offset
-                                        with open(var_cursor.location.file.name, "rb") as f:
-                                            content = f.read()
                                         initializer = (
                                             content[init_start:init_end].decode("utf-8").strip()
                                         )
-                                        break
+                                else:
+                                    initializer = "0"
 
                                 field_inits.append(f"    .{global_name} = {initializer}")
 
@@ -1147,6 +1161,10 @@ def localize_mutable_globals(
 
         # For the main file, collect types already in scope
         if main_file and main_cursor:
+            # Add a forward declaration for XjGlobals in case there are functions
+            # preceding main() which get modified to take an XjGlobals* parameter.
+            rewriter.add_rewrite(main_file, 0, 0, "struct XjGlobals;\n")
+
             print(f"\n  Analyzing types in scope in main TU: {main_file}")
 
             types_in_scope = set()  # Set of type names (struct/union/typedef)
