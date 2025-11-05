@@ -518,21 +518,21 @@ def localize_mutable_globals(json_path: Path, compdb: compilation_database.Compi
     for name in forward_declarable_types:
         print(f"  - {name}")
     print("=" * 80)
-    
+
     # Steps 5 and 6: Modify function signatures and call sites
     print("\n" + "=" * 80)
     print("STEPS 5 & 6: Modifying function signatures and call sites")
     print("=" * 80)
-    
+
     tissue_functions = set(j.get("mutable_global_tissue", {}).get("tissue", []))
     tissue_functions.discard("main")  # Don't modify main
-    
+
     print(f"\nTissue functions to modify: {tissue_functions}")
-    
+
     # Collect all function definitions and call sites from JSON
     function_defs = {}  # function_name -> {cursor, file, abs_path}
     call_sites_from_json = []  # From the JSON analysis
-    
+
     # Get call sites from JSON (more reliable than libclang semantic_parent)
     for component in j.get("call_graph_components", []):
         if not component.get("all_mutable", False):
@@ -557,7 +557,7 @@ def localize_mutable_globals(json_path: Path, compdb: compilation_database.Compi
                             'col': col
                         })
                         print(f"  From JSON: {caller_func} calls {callee_func} at {uf}:{line}:{col}")
-    
+
     for abs_path, tu in tus.items():
         for cursor in tu.cursor.walk_preorder():
             # Find function definitions
@@ -570,7 +570,7 @@ def localize_mutable_globals(json_path: Path, compdb: compilation_database.Compi
                         'extent': cursor.extent
                     }
                     print(f"\nFound function definition: {func_name} at {abs_path}:{cursor.location.line}")
-    
+
     # Apply all rewrites using a single BatchingRewriter
     # This ensures offsets are calculated correctly
     with batching_rewriter.BatchingRewriter() as rewriter:
@@ -635,7 +635,7 @@ def localize_mutable_globals(json_path: Path, compdb: compilation_database.Compi
                     )
 
                 rewriter.add_rewrite(file_path, insert_offset, 0, insert_text)
-        
+
         # Step 6: Modify call sites to pass xjg (using JSON call site info)
         for call_info in call_sites_from_json:
             caller_func = call_info['caller_func']
@@ -643,7 +643,7 @@ def localize_mutable_globals(json_path: Path, compdb: compilation_database.Compi
             uf = call_info['uf']
             line = call_info['line']
             col = call_info['col']
-            
+
             # Get the actual file path - need to adjust for current directory
             # The JSON has paths from c_03 but we're working in c_04
             file_path_old = un_uf(uf)
@@ -655,7 +655,7 @@ def localize_mutable_globals(json_path: Path, compdb: compilation_database.Compi
             else:
                 print(f"    ERROR: Could not map {uf} to a TU file")
                 continue
-            
+
             # Determine what to pass based on caller
             if caller_func == "main":
                 param_to_pass = "&xjgv"
@@ -665,34 +665,34 @@ def localize_mutable_globals(json_path: Path, compdb: compilation_database.Compi
                 # Caller is not in tissue, skip for now
                 print(f"    Skipping: caller {caller_func} not in tissue")
                 continue
-            
+
             # Find the call expression at the given location
             # We need to use libclang to find the exact offset
             found_call = False
             for abs_path, tu in tus.items():
                 if abs_path.as_posix() == file_path or str(abs_path) == file_path:
                     for cursor in tu.cursor.walk_preorder():
-                        if (cursor.kind == CursorKind.CALL_EXPR and 
-                            cursor.location.line == line and 
+                        if (cursor.kind == CursorKind.CALL_EXPR and
+                            cursor.location.line == line and
                             cursor.location.column == col):
                             # Found the call
                             call_start_offset = cursor.extent.start.offset
-                            
+
                             # Read file to find parenthesis
                             with open(file_path, 'rb') as f:
                                 content = f.read()
-                            
+
                             paren_pos = content.find(b'(', call_start_offset)
                             if paren_pos == -1:
                                 break
-                            
+
                             # Check if there are existing arguments
                             closing_paren_pos = content.find(b')', paren_pos)
                             if closing_paren_pos == -1:
                                 break
-                            
+
                             args_section = content[paren_pos+1:closing_paren_pos].strip()
-                            
+
                             if args_section == b'':
                                 # No arguments
                                 insert_offset = paren_pos + 1
@@ -703,16 +703,16 @@ def localize_mutable_globals(json_path: Path, compdb: compilation_database.Compi
                                 insert_offset = paren_pos + 1
                                 insert_text = param_to_pass + ", "
                                 print(f"  Passing {param_to_pass} to {callee_func} from {caller_func} at {uf}:{line} (with args)")
-                            
+
                             rewriter.add_rewrite(file_path, insert_offset, 0, insert_text)
                             found_call = True
                             break
                 if found_call:
                     break
-            
+
             if not found_call:
                 print(f"  WARNING: Could not find call to {callee_func} from {caller_func} at {uf}:{line}:{col}")
-        
+
         # Step 8: Replace uses of mutable globals with xjg->WHATEVER
         print("\n  --- Step 8: Replacing global variable accesses ---")
 
@@ -925,7 +925,7 @@ def localize_mutable_globals(json_path: Path, compdb: compilation_database.Compi
             # For simplicity, we'll add it at the very beginning
             include_text = '#include "xj_globals.h"\n'
             rewriter.add_rewrite(file_path_str, 0, 0, include_text)
-    
+
     print("=" * 80)
 
 
