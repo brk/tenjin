@@ -939,10 +939,7 @@ def localize_mutable_globals(
         )
 
         header_lines.append("struct XjGlobals {")
-        for global_name in sorted(mutd_or_escd_global_names_list):
-            assert global_name in mutated_globals_cursors_by_name, (
-                f"Expected mutated global name '{global_name}' to be in cursors map"
-            )
+        for global_name in sorted(mutated_globals_cursors_by_name.keys()):
             var_cursor = mutated_globals_cursors_by_name[global_name]
             var_name = var_cursor.spelling
             type_spelling = var_cursor.type.spelling
@@ -1024,6 +1021,8 @@ def localize_mutable_globals(
                 ):
                     print(f"  Found main() at {abs_path}:{cursor.location.line}")
 
+                    globals_and_statics_by_name = {c.spelling: c for c in globals_and_statics}
+
                     # Find the opening brace of main's body
                     # The compound statement is a child of the function
                     for child in cursor.get_children():
@@ -1059,7 +1058,13 @@ def localize_mutable_globals(
 
                                 # Generate local variable definitions
                                 for global_name in sorted_globals:
-                                    var_cursor = mutated_globals_cursors_by_name[global_name]
+                                    var_cursor = globals_and_statics_by_name.get(global_name)
+                                    if var_cursor is None:
+                                        # We want to copy immutable globals, but function that
+                                        # escape are not in the globals_and_statics list, and
+                                        # we don't want to (& cannot) duplicate their definitions
+                                        # within main().
+                                        continue
                                     var_name = var_cursor.spelling
                                     type_spelling = var_cursor.type.spelling
 
@@ -1086,8 +1091,7 @@ def localize_mutable_globals(
 
                             # Initialize each field based on original initializers
                             field_inits = []
-                            for global_name in sorted(mutd_or_escd_global_names_list):
-                                assert global_name in mutated_globals_cursors_by_name
+                            for global_name in sorted(mutated_globals_cursors_by_name.keys()):
                                 var_cursor = mutated_globals_cursors_by_name[global_name]
                                 initializer = "0"  # Default
                                 for child_node in var_cursor.get_children():
@@ -1221,8 +1225,7 @@ def localize_mutable_globals(
 
             # Add XjGlobals struct definition
             type_defs_lines.append("\nstruct XjGlobals {")
-            for global_name in sorted(mutd_or_escd_global_names_list):
-                assert global_name in mutated_globals_cursors_by_name
+            for global_name in sorted(mutated_globals_cursors_by_name.keys()):
                 var_cursor = mutated_globals_cursors_by_name[global_name]
                 type_defs_lines.append(
                     render_declaration_sans_qualifiers(var_cursor.type, var_cursor.spelling) + ";"
