@@ -1117,15 +1117,17 @@ def localize_mutable_globals(
                             break
                     break
 
-        # Step 9: Add includes to files that use mutable globals
-        print("\n  --- Step 9: Adding includes ---")
+        # Step 9: Add includes and type definitions to files that use mutable globals
+        print("\n  --- Step 9: Adding includes and type definitions ---")
 
-        # Find the file containing main()
+        # Find the file containing main() and its main function cursor
         main_file = None
+        main_cursor = None
         for abs_path, tu in tus.items():
             for cursor in tu.cursor.walk_preorder():
                 if cursor.kind == CursorKind.FUNCTION_DECL and cursor.spelling == "main":
                     main_file = abs_path
+                    main_cursor = cursor
                     break
             if main_file:
                 break
@@ -1133,27 +1135,109 @@ def localize_mutable_globals(
         # Collect files that need includes
         files_needing_include = set()
 
-        # Files with global definitions
+        # Files with global definitions (not including main file)
         for info in global_definitions.values():
-            files_needing_include.add(info["file"])
+            if info["file"] != main_file:
+                files_needing_include.add(info["file"])
 
-        # Add main file too
-        if main_file:
-            files_needing_include.add(main_file)
-
-        # Add the appropriate include to each file
+        # Add forward declaration includes to non-main files
         for file_path_str in files_needing_include:
-            if file_path_str == main_file:
-                # Main file gets the full definition header
-                include_text = '#include "xj_globals.h"\n'
-                print(f"  Adding xj_globals.h to {file_path_str} (contains main)")
-            else:
-                # Other files get the forward declaration header
-                include_text = '#include "xj_globals_fwd.h"\n'
-                print(f"  Adding xj_globals_fwd.h to {file_path_str}")
-
-            # Insert at the start of the file
+            include_text = '#include "xj_globals_fwd.h"\n'
+            print(f"  Adding xj_globals_fwd.h to {file_path_str}")
             rewriter.add_rewrite(file_path_str, 0, 0, include_text)
+
+        # For the main file, collect types already in scope
+        if main_file and main_cursor:
+            print(f"\n  Analyzing types in scope in main TU: {main_file}")
+
+            types_in_scope = set()  # Set of type names (struct/union/typedef)
+
+            # Walk the main TU to find all struct/union/typedef declarations
+            main_tu = tus[main_file]
+            for cursor in main_tu.cursor.walk_preorder():
+                if cursor.kind == CursorKind.STRUCT_DECL and cursor.spelling:
+                    types_in_scope.add(cursor.spelling)
+                    print(f"    Found struct in scope: {cursor.spelling}")
+                elif cursor.kind == CursorKind.UNION_DECL and cursor.spelling:
+                    types_in_scope.add(cursor.spelling)
+                    print(f"    Found union in scope: {cursor.spelling}")
+                elif cursor.kind == CursorKind.TYPEDEF_DECL and cursor.spelling:
+                    types_in_scope.add(cursor.spelling)
+                    print(f"    Found typedef in scope: {cursor.spelling}")
+
+            print(f"\n  Found {len(types_in_scope)} types already in scope in main TU")
+
+            # Determine which types need to be emitted
+            types_to_emit_structs = {}  # name -> decl_cursor
+            types_to_emit_typedefs = {}  # name -> decl_cursor
+
+            for type_name, decl_cursor in needed_struct_defs.items():
+                if type_name not in types_in_scope:
+                    types_to_emit_structs[type_name] = decl_cursor
+                    print(f"    Will emit struct definition: {type_name}")
+                else:
+                    print(f"    Skipping struct (already in scope): {type_name}")
+
+            for type_name, decl_cursor in needed_typedefs.items():
+                if type_name not in types_in_scope:
+                    types_to_emit_typedefs[type_name] = decl_cursor
+                    print(f"    Will emit typedef: {type_name}")
+                else:
+                    print(f"    Skipping typedef (already in scope): {type_name}")
+
+            # Build type definitions to insert before main()
+            type_defs_lines = []
+            type_defs_lines.append("\n// Type definitions needed for XjGlobals")
+
+            # Add forward declarations if needed
+            forward_decls_to_emit = forward_declarable_types - types_in_scope
+            if forward_decls_to_emit:
+                for type_name in sorted(forward_decls_to_emit):
+                    type_defs_lines.append(f"struct {type_name};")
+
+            # Add typedefs
+            if types_to_emit_typedefs:
+                typedefs_sorted = sorted(
+                    list(types_to_emit_typedefs.items()), key=lambda item: item[1].location.line
+                )
+                for name, decl_cursor in typedefs_sorted:
+                    start_offset = decl_cursor.extent.start.offset
+                    end_offset = decl_cursor.extent.end.offset
+                    for abs_path, tu in tus.items():
+                        if str(abs_path) == decl_cursor.location.file.name:
+                            with open(abs_path, "rb") as f:
+                                content = f.read()
+                            typedef_text = content[start_offset:end_offset].decode("utf-8")
+                            type_defs_lines.append(typedef_text + ";")
+                            break
+
+            # Add struct/union definitions
+            if types_to_emit_structs:
+                for type_name, decl_cursor in types_to_emit_structs.items():
+                    start_offset = decl_cursor.extent.start.offset
+                    end_offset = decl_cursor.extent.end.offset
+                    for abs_path, tu in tus.items():
+                        if str(abs_path) == decl_cursor.location.file.name:
+                            with open(abs_path, "rb") as f:
+                                content = f.read()
+                            struct_text = content[start_offset:end_offset].decode("utf-8")
+                            type_defs_lines.append(struct_text + ";")
+                            break
+
+            # Add XjGlobals struct definition
+            type_defs_lines.append("\nstruct XjGlobals {")
+            for global_name, info in sorted(global_definitions.items()):
+                var_name = info["var_name"]
+                type_spelling = info["type"].spelling
+                type_defs_lines.append(f"  {type_spelling} {var_name};")
+            type_defs_lines.append("};")
+            type_defs_lines.append("")
+
+            # Insert before main() function
+            insert_offset = main_cursor.extent.start.offset
+            type_defs_text = "\n".join(type_defs_lines) + "\n"
+            rewriter.add_rewrite(main_file, insert_offset, 0, type_defs_text)
+            print(f"\n  Added type definitions before main() in {main_file}")
 
     print("=" * 80)
 
