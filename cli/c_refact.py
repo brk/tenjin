@@ -423,11 +423,11 @@ def localize_mutable_globals(
             return mangled_name
         return mangled_name.split(".")[1]
 
-    mutated_global_names_list = [demangle_meg(name) for name in mangled_mutated_globals]
-    mutated_global_names = set(mutated_global_names_list)
-    assert len(mutated_global_names) == len(mutated_global_names_list), (
+    mutd_or_escd_global_names_list = [demangle_meg(name) for name in mangled_mutated_globals]
+    mutd_or_escd_global_names = set(mutd_or_escd_global_names_list)
+    assert len(mutd_or_escd_global_names) == len(mutd_or_escd_global_names_list), (
         "Expected all mutated global names to be unique after demangling, "
-        + f"but got duplicates within: {mutated_global_names_list}"
+        + f"but got duplicates within: {mutd_or_escd_global_names_list}"
     )
 
     print("=" * 80)
@@ -438,7 +438,7 @@ def localize_mutable_globals(
         list(tus.values()), elide_functions=True
     )
     mutated_globals_and_statics = [
-        c for c in globals_and_statics if c.spelling in mutated_global_names
+        c for c in globals_and_statics if c.spelling in mutd_or_escd_global_names
     ]
     # import pprint
 
@@ -819,7 +819,7 @@ def localize_mutable_globals(
                     for child in cursor.walk_preorder():
                         if (
                             child.kind == CursorKind.DECL_REF_EXPR
-                            and child.spelling in mutated_global_names
+                            and child.spelling in mutd_or_escd_global_names
                         ):
                             # Get the extent of the variable reference
                             start_offset = child.extent.start.offset
@@ -939,7 +939,7 @@ def localize_mutable_globals(
         )
 
         header_lines.append("struct XjGlobals {")
-        for global_name in sorted(mutated_global_names_list):
+        for global_name in sorted(mutd_or_escd_global_names_list):
             assert global_name in mutated_globals_cursors_by_name, (
                 f"Expected mutated global name '{global_name}' to be in cursors map"
             )
@@ -990,7 +990,7 @@ def localize_mutable_globals(
             for child in var_cursor.walk_preorder():
                 if (
                     child.kind == CursorKind.DECL_REF_EXPR
-                    and child.spelling not in mutated_global_names
+                    and child.spelling not in mutd_or_escd_global_names
                 ):
                     dependencies.add(child.spelling)
                     print(f"    {var_cursor.spelling} references {child.spelling}")
@@ -1009,7 +1009,7 @@ def localize_mutable_globals(
                 globals_to_copy_to_main.add(dep)
                 collect_transitive_deps(dep, visited)
 
-        for global_name in mutated_global_names_list:
+        for global_name in mutd_or_escd_global_names_list:
             collect_transitive_deps(global_name, set())
 
         print(f"\n  Globals to copy into main before xjgv: {globals_to_copy_to_main}")
@@ -1086,7 +1086,7 @@ def localize_mutable_globals(
 
                             # Initialize each field based on original initializers
                             field_inits = []
-                            for global_name in sorted(mutated_global_names_list):
+                            for global_name in sorted(mutd_or_escd_global_names_list):
                                 assert global_name in mutated_globals_cursors_by_name
                                 var_cursor = mutated_globals_cursors_by_name[global_name]
                                 initializer = "0"  # Default
@@ -1221,7 +1221,7 @@ def localize_mutable_globals(
 
             # Add XjGlobals struct definition
             type_defs_lines.append("\nstruct XjGlobals {")
-            for global_name in sorted(mutated_global_names_list):
+            for global_name in sorted(mutd_or_escd_global_names_list):
                 assert global_name in mutated_globals_cursors_by_name
                 var_cursor = mutated_globals_cursors_by_name[global_name]
                 type_defs_lines.append(
