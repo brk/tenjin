@@ -957,6 +957,46 @@ def localize_mutable_globals(
         # Step 4: Initialize xjgv in main()
         print("\n  --- Step 4: Initializing xjgv in main() ---")
 
+        # First, we need to detect which globals reference other globals
+        # and build a dependency graph
+        print("\n  Analyzing global dependencies for initializers...")
+
+        global_dependencies: dict[str, set[str]] = {}  # global_name -> set of referenced globals
+
+        for global_name, info in global_definitions.items():
+            var_cursor = info["cursor"]
+            dependencies = set()
+
+            # Walk through the initializer expression to find DECL_REF_EXPR nodes
+            for child in var_cursor.walk_preorder():
+                if child.kind == CursorKind.DECL_REF_EXPR:
+                    ref_spelling = child.spelling
+                    # Check if this reference is to another mutable global
+                    for other_global_name, other_info in global_definitions.items():
+                        if other_info["var_name"] == ref_spelling:
+                            dependencies.add(other_global_name)
+                            print(f"    {global_name} references {other_global_name}")
+                            break
+
+            global_dependencies[global_name] = dependencies
+
+        # Compute transitive closure of dependencies for all globals
+        # We need to copy (not move) any global that is referenced by another
+        globals_to_copy_to_main = set()
+
+        def collect_transitive_deps(global_name: str, visited: set[str]) -> None:
+            if global_name in visited:
+                return
+            visited.add(global_name)
+            for dep in global_dependencies.get(global_name, set()):
+                globals_to_copy_to_main.add(dep)
+                collect_transitive_deps(dep, visited)
+
+        for global_name in global_definitions.keys():
+            collect_transitive_deps(global_name, set())
+
+        print(f"\n  Globals to copy into main before xjgv: {globals_to_copy_to_main}")
+
         # Find main() function and insert initialization at the beginning
         for abs_path, tu in tus.items():
             for cursor in tu.cursor.walk_preorder():
@@ -976,6 +1016,56 @@ def localize_mutable_globals(
 
                             # Build initialization code
                             init_lines = []
+
+                            # First, copy definitions of referenced globals
+                            if globals_to_copy_to_main:
+                                init_lines.append("")
+                                init_lines.append(
+                                    "// Local copies of globals referenced by other globals"
+                                )
+
+                                # Sort by dependency order (topological sort)
+                                sorted_globals = []
+                                visited = set()
+
+                                def visit_for_topo(g: str) -> None:
+                                    if g in visited or g not in globals_to_copy_to_main:
+                                        return
+                                    visited.add(g)
+                                    for dep in global_dependencies.get(g, set()):
+                                        if dep in globals_to_copy_to_main:
+                                            visit_for_topo(dep)
+                                    sorted_globals.append(g)
+
+                                for g in globals_to_copy_to_main:
+                                    visit_for_topo(g)
+
+                                # Generate local variable definitions
+                                for global_name in sorted_globals:
+                                    info = global_definitions[global_name]
+                                    var_name = info["var_name"]
+                                    type_spelling = info["type"].spelling
+
+                                    # Get the initializer value
+                                    var_cursor = info["cursor"]
+                                    initializer = "0"  # Default
+                                    for child_node in var_cursor.get_children():
+                                        if child_node.kind != CursorKind.TYPE_REF:
+                                            init_start = child_node.extent.start.offset
+                                            init_end = child_node.extent.end.offset
+                                            with open(info["file"], "rb") as f:
+                                                content = f.read()
+                                            initializer = (
+                                                content[init_start:init_end].decode("utf-8").strip()
+                                            )
+                                            break
+
+                                    init_lines.append(
+                                        f"  static {type_spelling} {var_name} = {initializer};"
+                                    )
+
+                                init_lines.append("")
+
                             init_lines.append("\n  struct XjGlobals xjgv = {")
 
                             # Initialize each field based on original initializers
@@ -1002,7 +1092,7 @@ def localize_mutable_globals(
                             init_lines.append(",\n".join(field_inits))
                             init_lines.append("\n  };")
 
-                            init_text = "".join(init_lines)
+                            init_text = "\n".join(init_lines)
                             rewriter.add_rewrite(abs_path, insert_offset, 0, init_text)
                             print("  Added xjgv initialization in main()")
                             break
