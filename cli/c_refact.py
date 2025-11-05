@@ -18,6 +18,7 @@ import hermetic
 import repo_root
 import compilation_database
 import batching_rewriter
+from cindex_helpers import render_declaration_sans_qualifiers
 
 
 def create_xj_clang_index() -> Index:
@@ -960,7 +961,7 @@ def localize_mutable_globals(
                     break
 
             # Add the field (we'll handle initialization separately)
-            header_lines.append(f"  {type_spelling} {var_name};")
+            header_lines.append(render_declaration_sans_qualifiers(info["type"], var_name) + ";")
 
         header_lines.append("};")
         header_lines.append("")
@@ -1227,9 +1228,10 @@ def localize_mutable_globals(
             # Add XjGlobals struct definition
             type_defs_lines.append("\nstruct XjGlobals {")
             for global_name, info in sorted(global_definitions.items()):
-                var_name = info["var_name"]
-                type_spelling = info["type"].spelling
-                type_defs_lines.append(f"  {type_spelling} {var_name};")
+                type_defs_lines.append(
+                    render_declaration_sans_qualifiers(info["type"], info["var_name"]) + ";"
+                )
+
             type_defs_lines.append("};")
             type_defs_lines.append("")
 
