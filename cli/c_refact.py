@@ -413,7 +413,6 @@ def localize_mutable_globals(
     # Entries in this list are either plain global names, or for function-scoped statics,
     # they are in the format "function_name.var_name_xjtr_N"
     mangled_mutated_globals = j.get("mutated_or_escaped_global", [])
-    global_definitions = {}
 
     def demangle_meg(mangled_name: str) -> str:
         if "." not in mangled_name:
@@ -422,6 +421,18 @@ def localize_mutable_globals(
 
     mutated_global_names_list = [demangle_meg(name) for name in mangled_mutated_globals]
     mutated_global_names = set(mutated_global_names_list)
+    if not (len(mutated_global_names) == len(mutated_global_names_list)):
+        seen = set()
+        duplicate_names = set()
+        for name in mutated_global_names_list:
+            if name in seen:
+                duplicate_names.add(name)
+            else:
+                seen.add(name)
+        for name in duplicate_names:
+            for m in mangled_mutated_globals:
+                if name in m:
+                    print(f"ERROR: Duplicate name {name} in mutated global {m}")
     assert len(mutated_global_names) == len(mutated_global_names_list), (
         "Expected all mutated global names to be unique after demangling, "
         + f"but got duplicates within: {mutated_global_names_list}"
@@ -431,55 +442,16 @@ def localize_mutable_globals(
     print("STEP 2a: Finding global definitions")
     print("=" * 80)
 
-    # for global_name in mutated_globals:
-    #     # Parse the format: "function_name.var_name_xjtr_N"
-    #     parts = global_name.split(".")
-    #     if len(parts) == 2:
-    #         function_name = parts[0]
-    #         var_name_mangled = parts[1]  # This is the actual mangled name in the C file
-
-    #         print(f"\nLooking for global: {global_name}")
-    #         print(f"  Function: {function_name}, Variable: {var_name_mangled}")
-
-    #         # Search through all translation units
-    #         for abs_path, tu in tus.items():
-    #             found = False
-    #             for cursor in tu.cursor.walk_preorder():
-    #                 # Look for function definitions
-    #                 if cursor.kind == CursorKind.FUNCTION_DECL and cursor.spelling == function_name:
-    #                     # Look for static variables inside this function
-    #                     for child in cursor.walk_preorder():
-    #                         if (
-    #                             child.kind == CursorKind.VAR_DECL
-    #                             and child.spelling == var_name_mangled
-    #                         ):
-    #                             if child.storage_class == StorageClass.STATIC:
-    #                                 global_definitions[global_name] = {
-    #                                     "cursor": child,
-    #                                     "function": function_name,
-    #                                     "var_name": var_name_mangled,
-    #                                     "type": child.type,
-    #                                     "file": abs_path,
-    #                                     "loc_line": child.location.line,
-    #                                 }
-    #                                 print(
-    #                                     f"  Found at {abs_path}:{child.location.line}:{child.location.column}"
-    #                                 )
-    #                                 print(f"  Type: {child.type.spelling}")
-    #                                 found = True
-    #                                 break
-    #                 if found:
-    #                     break
-
-    nonvibe_globals_and_statics = compute_globals_and_statics_for_translation_units(
+    globals_and_statics = compute_globals_and_statics_for_translation_units(
         list(tus.values()), elide_functions=True
     )
-    import pprint
+    mutated_globals_and_statics = set(
+        c for c in globals_and_statics if c.spelling in mutated_global_names
+    )
+    # import pprint
 
-    print("vibed globals:")
-    pprint.pprint(global_definitions)
-    print("nonvibed globals:")
-    pprint.pprint([mk_NamedDeclInfo(cursor) for cursor in nonvibe_globals_and_statics])
+    # print("nonvibed globals:")
+    # pprint.pprint([mk_NamedDeclInfo(cursor) for cursor in globals_and_statics])
 
     # Step 2b: Construct transitive closure of struct/union definitions
     print("\n" + "=" * 80)
@@ -586,17 +558,17 @@ def localize_mutable_globals(
                         print(f"{indent}    Field: {field.spelling} : {field.type.spelling}")
                         collect_type_dependencies(field.type, depth + 2)
 
-    for global_name, info in global_definitions.items():
-        print(f"\nAnalyzing dependencies for {global_name}:")
-        collect_type_dependencies(info["type"], depth=1)
+    for cursor in mutated_globals_and_statics:
+        print(f"\nAnalyzing dependencies for {cursor.spelling}:")
+        collect_type_dependencies(cursor.type, depth=1)
 
     print("\n" + "=" * 80)
     print("SUMMARY")
     print("=" * 80)
-    print(f"\nFound {len(global_definitions)} global definitions:")
-    for name, info in global_definitions.items():
+    print(f"\nFound {len(mutated_globals_and_statics)} mutated global definitions:")
+    for cursor in mutated_globals_and_statics:
         print(
-            f"  - {name}: {info['type'].spelling} in {info['function']} at {info['file']}:{info['loc_line']}"
+            f"  - {cursor.spelling}: {cursor.type.spelling} at {cursor.location.file}:{cursor.location.line}"
         )
 
     print(f"\nNeed {len(needed_struct_defs)} struct/union definitions:")
@@ -836,50 +808,39 @@ def localize_mutable_globals(
 
         # Step 8: Replace uses of mutable globals with xjg->WHATEVER
         print("\n  --- Step 8: Replacing global variable accesses ---")
+        for abs_path, tu in tus.items():
+            for cursor in tu.cursor.walk_preorder():
+                if cursor.kind == CursorKind.FUNCTION_DECL:
+                    for child in cursor.walk_preorder():
+                        if (
+                            child.kind == CursorKind.DECL_REF_EXPR
+                            and child.spelling in mutated_global_names
+                        ):
+                            # Get the extent of the variable reference
+                            start_offset = child.extent.start.offset
+                            end_offset = child.extent.end.offset
+                            length = end_offset - start_offset
+                            var_name = child.spelling
 
-        # For each mutable global, find all uses and replace them
-        for global_name, info in global_definitions.items():
-            var_name = info["var_name"]
-            function_name = info["function"]
-            # var_decl_cursor = info["cursor"]
+                            replacement = f"xjg->{var_name}"
+                            print(
+                                f"    Found DECL_REF_EXPR for {var_name} at {abs_path}:{child.location.line}:{child.location.column}"
+                            )
 
-            print(f"\n  Replacing uses of {var_name} in {function_name}")
-
-            # Find all references to this variable in the TUs
-            for abs_path, tu in tus.items():
-                for cursor in tu.cursor.walk_preorder():
-                    # Find the function definition
-                    if cursor.kind == CursorKind.FUNCTION_DECL and cursor.spelling == function_name:
-                        # Find all references to the static variable within this function
-                        for child in cursor.walk_preorder():
+                            # Check the parent - if it's a VAR_DECL, skip it
+                            parent = child.semantic_parent
                             if (
-                                child.kind == CursorKind.DECL_REF_EXPR
-                                and child.spelling == var_name
+                                parent
+                                and parent.kind == CursorKind.VAR_DECL
+                                and parent.spelling == var_name
                             ):
-                                # Get the extent of the variable reference
-                                start_offset = child.extent.start.offset
-                                end_offset = child.extent.end.offset
-                                length = end_offset - start_offset
+                                print("      Skipping: this is part of the declaration")
+                                continue
 
-                                replacement = f"xjg->{var_name}"
-                                print(
-                                    f"    Found DECL_REF_EXPR for {var_name} at {abs_path}:{child.location.line}:{child.location.column}"
-                                )
+                            print(f"    Replacing {var_name} with {replacement}")
 
-                                # Check the parent - if it's a VAR_DECL, skip it
-                                parent = child.semantic_parent
-                                if (
-                                    parent
-                                    and parent.kind == CursorKind.VAR_DECL
-                                    and parent.spelling == var_name
-                                ):
-                                    print("      Skipping: this is part of the declaration")
-                                    continue
-
-                                print(f"    Replacing {var_name} with {replacement}")
-
-                                rewriter.add_rewrite(abs_path, start_offset, length, replacement)
-                        break
+                            rewriter.add_rewrite(abs_path, start_offset, length, replacement)
+                    break
 
         # Step 3: Create xj_globals_fwd.h and xj_globals.h header files
         print("\n  --- Step 3: Creating xj_globals_fwd.h and xj_globals.h ---")
@@ -966,13 +927,15 @@ def localize_mutable_globals(
                         break
 
         # Add the XjGlobals struct definition
+        mutated_globals_cursors_by_name = {c.spelling: c for c in mutated_globals_and_statics}
         header_lines.append("struct XjGlobals {")
-        for global_name, info in sorted(global_definitions.items()):
-            var_name = info["var_name"]
-            type_spelling = info["type"].spelling
+        for global_name in sorted(mutated_global_names_list):
+            assert global_name in mutated_globals_cursors_by_name
+            var_cursor = mutated_globals_cursors_by_name[global_name]
+            var_name = var_cursor.spelling
+            type_spelling = var_cursor.type.spelling
 
             # Get the initializer if present
-            var_cursor = info["cursor"]
             initializer = None
             for child in var_cursor.get_children():
                 # The initializer is a child of the VAR_DECL
@@ -981,7 +944,7 @@ def localize_mutable_globals(
                     # Extract its text
                     init_start = child.extent.start.offset
                     init_end = child.extent.end.offset
-                    file_path = info["file"]
+                    file_path = var_cursor.location.file.name
                     with open(file_path, "rb") as f:
                         content = f.read()
                     initializer = content[init_start:init_end].decode("utf-8").strip()
@@ -999,8 +962,6 @@ def localize_mutable_globals(
         with open(header_path, "w", encoding="utf-8") as fh:
             fh.write("\n".join(header_lines))
 
-        print(f"  Created full definition header with {len(global_definitions)} globals")
-
         # Step 4: Initialize xjgv in main()
         print("\n  --- Step 4: Initializing xjgv in main() ---")
 
@@ -1010,22 +971,19 @@ def localize_mutable_globals(
 
         global_dependencies: dict[str, set[str]] = {}  # global_name -> set of referenced globals
 
-        for global_name, info in global_definitions.items():
-            var_cursor = info["cursor"]
+        for var_cursor in mutated_globals_and_statics:
             dependencies = set()
 
             # Walk through the initializer expression to find DECL_REF_EXPR nodes
             for child in var_cursor.walk_preorder():
-                if child.kind == CursorKind.DECL_REF_EXPR:
-                    ref_spelling = child.spelling
-                    # Check if this reference is to another mutable global
-                    for other_global_name, other_info in global_definitions.items():
-                        if other_info["var_name"] == ref_spelling:
-                            dependencies.add(other_global_name)
-                            print(f"    {global_name} references {other_global_name}")
-                            break
+                if (
+                    child.kind == CursorKind.DECL_REF_EXPR
+                    and child.spelling not in mutated_global_names
+                ):
+                    dependencies.add(child.spelling)
+                    print(f"    {var_cursor.spelling} references {child.spelling}")
 
-            global_dependencies[global_name] = dependencies
+            global_dependencies[var_cursor.spelling] = dependencies
 
         # Compute transitive closure of dependencies for all globals
         # We need to copy (not move) any global that is referenced by another
@@ -1039,7 +997,7 @@ def localize_mutable_globals(
                 globals_to_copy_to_main.add(dep)
                 collect_transitive_deps(dep, visited)
 
-        for global_name in global_definitions.keys():
+        for global_name in mutated_global_names_list:
             collect_transitive_deps(global_name, set())
 
         print(f"\n  Globals to copy into main before xjgv: {globals_to_copy_to_main}")
@@ -1089,18 +1047,17 @@ def localize_mutable_globals(
 
                                 # Generate local variable definitions
                                 for global_name in sorted_globals:
-                                    info = global_definitions[global_name]
-                                    var_name = info["var_name"]
-                                    type_spelling = info["type"].spelling
+                                    var_cursor = mutated_globals_cursors_by_name[global_name]
+                                    var_name = var_cursor.spelling
+                                    type_spelling = var_cursor.type.spelling
 
                                     # Get the initializer value
-                                    var_cursor = info["cursor"]
                                     initializer = "0"  # Default
                                     for child_node in var_cursor.get_children():
                                         if child_node.kind != CursorKind.TYPE_REF:
                                             init_start = child_node.extent.start.offset
                                             init_end = child_node.extent.end.offset
-                                            with open(info["file"], "rb") as f:
+                                            with open(var_cursor.location.file.name, "rb") as f:
                                                 content = f.read()
                                             initializer = (
                                                 content[init_start:init_end].decode("utf-8").strip()
@@ -1117,24 +1074,22 @@ def localize_mutable_globals(
 
                             # Initialize each field based on original initializers
                             field_inits = []
-                            for global_name, info in sorted(global_definitions.items()):
-                                var_name = info["var_name"]
-
-                                # Get the initializer value
-                                var_cursor = info["cursor"]
+                            for global_name in sorted(mutated_global_names_list):
+                                assert global_name in mutated_globals_cursors_by_name
+                                var_cursor = mutated_globals_cursors_by_name[global_name]
                                 initializer = "0"  # Default
                                 for child_node in var_cursor.get_children():
                                     if child_node.kind != CursorKind.TYPE_REF:
                                         init_start = child_node.extent.start.offset
                                         init_end = child_node.extent.end.offset
-                                        with open(info["file"], "rb") as f:
+                                        with open(var_cursor.location.file.name, "rb") as f:
                                             content = f.read()
                                         initializer = (
                                             content[init_start:init_end].decode("utf-8").strip()
                                         )
                                         break
 
-                                field_inits.append(f"    .{var_name} = {initializer}")
+                                field_inits.append(f"    .{global_name} = {initializer}")
 
                             init_lines.append(",\n".join(field_inits))
                             init_lines.append("\n  };")
@@ -1164,9 +1119,9 @@ def localize_mutable_globals(
         files_needing_include = set()
 
         # Files with global definitions (not including main file)
-        for info in global_definitions.values():
-            if info["file"] != main_file:
-                files_needing_include.add(info["file"])
+        for cursor in mutated_globals_and_statics:
+            if cursor.location.file.name != main_file:
+                files_needing_include.add(cursor.location.file.name)
 
         # Add forward declaration includes to non-main files
         for file_path_str in files_needing_include:
@@ -1254,9 +1209,11 @@ def localize_mutable_globals(
 
             # Add XjGlobals struct definition
             type_defs_lines.append("\nstruct XjGlobals {")
-            for global_name, info in sorted(global_definitions.items()):
+            for global_name in sorted(mutated_global_names_list):
+                assert global_name in mutated_globals_cursors_by_name
+                var_cursor = mutated_globals_cursors_by_name[global_name]
                 type_defs_lines.append(
-                    render_declaration_sans_qualifiers(info["type"], info["var_name"]) + ";"
+                    render_declaration_sans_qualifiers(var_cursor.type, var_cursor.spelling) + ";"
                 )
 
             type_defs_lines.append("};")
