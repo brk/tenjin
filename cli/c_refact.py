@@ -550,13 +550,15 @@ def localize_mutable_globals(json_path: Path, compdb: compilation_database.Compi
                         line = site.get("line")
                         col = site.get("col")
                         call_sites_from_json.append({
-                            'caller_func': caller_func,
-                            'callee_func': callee_func,
-                            'uf': uf,
-                            'line': line,
-                            'col': col
+                            "caller_func": caller_func,
+                            "callee_func": callee_func,
+                            "uf": uf,
+                            "line": line,
+                            "col": col,
                         })
-                        print(f"  From JSON: {caller_func} calls {callee_func} at {uf}:{line}:{col}")
+                        print(
+                            f"  From JSON: {caller_func} calls {callee_func} at {uf}:{line}:{col}"
+                        )
 
     for abs_path, tu in tus.items():
         for cursor in tu.cursor.walk_preorder():
@@ -565,11 +567,13 @@ def localize_mutable_globals(json_path: Path, compdb: compilation_database.Compi
                 func_name = cursor.spelling
                 if func_name in tissue_functions:
                     function_defs[func_name] = {
-                        'cursor': cursor,
-                        'file': abs_path,
-                        'extent': cursor.extent
+                        "cursor": cursor,
+                        "file": abs_path,
+                        "extent": cursor.extent,
                     }
-                    print(f"\nFound function definition: {func_name} at {abs_path}:{cursor.location.line}")
+                    print(
+                        f"\nFound function definition: {func_name} at {abs_path}:{cursor.location.line}"
+                    )
 
     # Apply all rewrites using a single BatchingRewriter
     # This ensures offsets are calculated correctly
@@ -638,11 +642,11 @@ def localize_mutable_globals(json_path: Path, compdb: compilation_database.Compi
 
         # Step 6: Modify call sites to pass xjg (using JSON call site info)
         for call_info in call_sites_from_json:
-            caller_func = call_info['caller_func']
-            callee_func = call_info['callee_func']
-            uf = call_info['uf']
-            line = call_info['line']
-            col = call_info['col']
+            caller_func = call_info["caller_func"]
+            callee_func = call_info["callee_func"]
+            uf = call_info["uf"]
+            line = call_info["line"]
+            col = call_info["col"]
 
             # Get the actual file path - need to adjust for current directory
             # The JSON has paths from c_03 but we're working in c_04
@@ -672,37 +676,43 @@ def localize_mutable_globals(json_path: Path, compdb: compilation_database.Compi
             for abs_path, tu in tus.items():
                 if abs_path.as_posix() == file_path or str(abs_path) == file_path:
                     for cursor in tu.cursor.walk_preorder():
-                        if (cursor.kind == CursorKind.CALL_EXPR and
-                            cursor.location.line == line and
-                            cursor.location.column == col):
+                        if (
+                            cursor.kind == CursorKind.CALL_EXPR
+                            and cursor.location.line == line
+                            and cursor.location.column == col
+                        ):
                             # Found the call
                             call_start_offset = cursor.extent.start.offset
 
                             # Read file to find parenthesis
-                            with open(file_path, 'rb') as f:
+                            with open(file_path, "rb") as f:
                                 content = f.read()
 
-                            paren_pos = content.find(b'(', call_start_offset)
+                            paren_pos = content.find(b"(", call_start_offset)
                             if paren_pos == -1:
                                 break
 
                             # Check if there are existing arguments
-                            closing_paren_pos = content.find(b')', paren_pos)
+                            closing_paren_pos = content.find(b")", paren_pos)
                             if closing_paren_pos == -1:
                                 break
 
-                            args_section = content[paren_pos+1:closing_paren_pos].strip()
+                            args_section = content[paren_pos + 1 : closing_paren_pos].strip()
 
-                            if args_section == b'':
+                            if args_section == b"":
                                 # No arguments
                                 insert_offset = paren_pos + 1
                                 insert_text = param_to_pass
-                                print(f"  Passing {param_to_pass} to {callee_func} from {caller_func} at {uf}:{line} (no args)")
+                                print(
+                                    f"  Passing {param_to_pass} to {callee_func} from {caller_func} at {uf}:{line} (no args)"
+                                )
                             else:
                                 # Has arguments, add as first argument with comma
                                 insert_offset = paren_pos + 1
                                 insert_text = param_to_pass + ", "
-                                print(f"  Passing {param_to_pass} to {callee_func} from {caller_func} at {uf}:{line} (with args)")
+                                print(
+                                    f"  Passing {param_to_pass} to {callee_func} from {caller_func} at {uf}:{line} (with args)"
+                                )
 
                             rewriter.add_rewrite(file_path, insert_offset, 0, insert_text)
                             found_call = True
@@ -711,7 +721,9 @@ def localize_mutable_globals(json_path: Path, compdb: compilation_database.Compi
                     break
 
             if not found_call:
-                print(f"  WARNING: Could not find call to {callee_func} from {caller_func} at {uf}:{line}:{col}")
+                print(
+                    f"  WARNING: Could not find call to {callee_func} from {caller_func} at {uf}:{line}:{col}"
+                )
 
         # Step 8: Replace uses of mutable globals with xjg->WHATEVER
         print("\n  --- Step 8: Replacing global variable accesses ---")
