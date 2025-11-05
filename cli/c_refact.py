@@ -410,52 +410,66 @@ def localize_mutable_globals(
     index = create_xj_clang_index()
     tus = parse_project(index, compdb)
 
-    mutated_globals = j.get("mutated_or_escaped_global", [])
+    # Entries in this list are either plain global names, or for function-scoped statics,
+    # they are in the format "function_name.var_name_xjtr_N"
+    mangled_mutated_globals = j.get("mutated_or_escaped_global", [])
     global_definitions = {}
+
+    def demangle_meg(mangled_name: str) -> str:
+        if "." not in mangled_name:
+            return mangled_name
+        return mangled_name.split(".")[1]
+
+    mutated_global_names_list = [demangle_meg(name) for name in mangled_mutated_globals]
+    mutated_global_names = set(mutated_global_names_list)
+    assert len(mutated_global_names) == len(mutated_global_names_list), (
+        "Expected all mutated global names to be unique after demangling, "
+        + f"but got duplicates within: {mutated_global_names_list}"
+    )
 
     print("=" * 80)
     print("STEP 2a: Finding global definitions")
     print("=" * 80)
 
-    for global_name in mutated_globals:
-        # Parse the format: "function_name.var_name_xjtr_N"
-        parts = global_name.split(".")
-        if len(parts) == 2:
-            function_name = parts[0]
-            var_name_mangled = parts[1]  # This is the actual mangled name in the C file
+    # for global_name in mutated_globals:
+    #     # Parse the format: "function_name.var_name_xjtr_N"
+    #     parts = global_name.split(".")
+    #     if len(parts) == 2:
+    #         function_name = parts[0]
+    #         var_name_mangled = parts[1]  # This is the actual mangled name in the C file
 
-            print(f"\nLooking for global: {global_name}")
-            print(f"  Function: {function_name}, Variable: {var_name_mangled}")
+    #         print(f"\nLooking for global: {global_name}")
+    #         print(f"  Function: {function_name}, Variable: {var_name_mangled}")
 
-            # Search through all translation units
-            for abs_path, tu in tus.items():
-                found = False
-                for cursor in tu.cursor.walk_preorder():
-                    # Look for function definitions
-                    if cursor.kind == CursorKind.FUNCTION_DECL and cursor.spelling == function_name:
-                        # Look for static variables inside this function
-                        for child in cursor.walk_preorder():
-                            if (
-                                child.kind == CursorKind.VAR_DECL
-                                and child.spelling == var_name_mangled
-                            ):
-                                if child.storage_class == StorageClass.STATIC:
-                                    global_definitions[global_name] = {
-                                        "cursor": child,
-                                        "function": function_name,
-                                        "var_name": var_name_mangled,
-                                        "type": child.type,
-                                        "file": abs_path,
-                                        "loc_line": child.location.line,
-                                    }
-                                    print(
-                                        f"  Found at {abs_path}:{child.location.line}:{child.location.column}"
-                                    )
-                                    print(f"  Type: {child.type.spelling}")
-                                    found = True
-                                    break
-                    if found:
-                        break
+    #         # Search through all translation units
+    #         for abs_path, tu in tus.items():
+    #             found = False
+    #             for cursor in tu.cursor.walk_preorder():
+    #                 # Look for function definitions
+    #                 if cursor.kind == CursorKind.FUNCTION_DECL and cursor.spelling == function_name:
+    #                     # Look for static variables inside this function
+    #                     for child in cursor.walk_preorder():
+    #                         if (
+    #                             child.kind == CursorKind.VAR_DECL
+    #                             and child.spelling == var_name_mangled
+    #                         ):
+    #                             if child.storage_class == StorageClass.STATIC:
+    #                                 global_definitions[global_name] = {
+    #                                     "cursor": child,
+    #                                     "function": function_name,
+    #                                     "var_name": var_name_mangled,
+    #                                     "type": child.type,
+    #                                     "file": abs_path,
+    #                                     "loc_line": child.location.line,
+    #                                 }
+    #                                 print(
+    #                                     f"  Found at {abs_path}:{child.location.line}:{child.location.column}"
+    #                                 )
+    #                                 print(f"  Type: {child.type.spelling}")
+    #                                 found = True
+    #                                 break
+    #                 if found:
+    #                     break
 
     nonvibe_globals_and_statics = compute_globals_and_statics_for_translation_units(
         list(tus.values()), elide_functions=True
