@@ -853,18 +853,37 @@ def localize_mutable_globals(
                                 rewriter.add_rewrite(abs_path, start_offset, length, replacement)
                         break
 
-        # Step 3: Create xj_globals.h header file with struct XjGlobals
-        print("\n  --- Step 3: Creating xj_globals.h ---")
+        # Step 3: Create xj_globals_fwd.h and xj_globals.h header files
+        print("\n  --- Step 3: Creating xj_globals_fwd.h and xj_globals.h ---")
 
-        # Get the directory where we should place the header
+        # Get the directory where we should place the headers
         # Use the directory from the compilation database
         if compdb.get_source_files():
             header_dir = compdb.get_source_files()[0].parent
         else:
             header_dir = Path(".")
 
+        # Create xj_globals_fwd.h with forward declarations only
+        fwd_header_path = header_dir / "xj_globals_fwd.h"
+        print(f"  Creating forward declaration header at {fwd_header_path}")
+
+        fwd_header_lines = []
+        fwd_header_lines.append("#ifndef XJ_GLOBALS_FWD_H")
+        fwd_header_lines.append("#define XJ_GLOBALS_FWD_H")
+        fwd_header_lines.append("")
+        fwd_header_lines.append("struct XjGlobals;")
+        fwd_header_lines.append("")
+        fwd_header_lines.append("#endif /* XJ_GLOBALS_FWD_H */")
+        fwd_header_lines.append("")
+
+        with open(fwd_header_path, "w", encoding="utf-8") as fh:
+            fh.write("\n".join(fwd_header_lines))
+
+        print(f"  Created forward declaration header")
+
+        # Create xj_globals.h with full definitions
         header_path = header_dir / "xj_globals.h"
-        print(f"  Creating header at {header_path}")
+        print(f"  Creating full definition header at {header_path}")
 
         # Build the header content
         header_lines = []
@@ -952,7 +971,7 @@ def localize_mutable_globals(
         with open(header_path, "w", encoding="utf-8") as fh:
             fh.write("\n".join(header_lines))
 
-        print(f"  Created header with {len(global_definitions)} globals")
+        print(f"  Created full definition header with {len(global_definitions)} globals")
 
         # Step 4: Initialize xjgv in main()
         print("\n  --- Step 4: Initializing xjgv in main() ---")
@@ -1098,30 +1117,42 @@ def localize_mutable_globals(
                             break
                     break
 
-        # Step 9: Add #include "xj_globals.h" to files that use mutable globals
-        print('\n  --- Step 9: Adding #include "xj_globals.h" ---')
+        # Step 9: Add includes to files that use mutable globals
+        print("\n  --- Step 9: Adding includes ---")
 
-        # Collect files that need the include
+        # Find the file containing main()
+        main_file = None
+        for abs_path, tu in tus.items():
+            for cursor in tu.cursor.walk_preorder():
+                if cursor.kind == CursorKind.FUNCTION_DECL and cursor.spelling == "main":
+                    main_file = abs_path
+                    break
+            if main_file:
+                break
+
+        # Collect files that need includes
         files_needing_include = set()
 
         # Files with global definitions
         for info in global_definitions.values():
             files_needing_include.add(info["file"])
 
-        # Files with main()
-        for abs_path, tu in tus.items():
-            for cursor in tu.cursor.walk_preorder():
-                if cursor.kind == CursorKind.FUNCTION_DECL and cursor.spelling == "main":
-                    files_needing_include.add(abs_path)
-                    break
+        # Add main file too
+        if main_file:
+            files_needing_include.add(main_file)
 
-        # Add the include at the top of each file
+        # Add the appropriate include to each file
         for file_path_str in files_needing_include:
-            print(f"  Adding include to {file_path_str}")
+            if file_path_str == main_file:
+                # Main file gets the full definition header
+                include_text = '#include "xj_globals.h"\n'
+                print(f"  Adding xj_globals.h to {file_path_str} (contains main)")
+            else:
+                # Other files get the forward declaration header
+                include_text = '#include "xj_globals_fwd.h"\n'
+                print(f"  Adding xj_globals_fwd.h to {file_path_str}")
 
-            # Insert after any existing includes, or at the start
-            # For simplicity, we'll add it at the very beginning
-            include_text = '#include "xj_globals.h"\n'
+            # Insert at the start of the file
             rewriter.add_rewrite(file_path_str, 0, 0, include_text)
 
     print("=" * 80)
