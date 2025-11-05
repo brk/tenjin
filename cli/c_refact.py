@@ -244,19 +244,25 @@ class NamedDeclInfo:
 def compute_globals_and_statics_for_project(
     compdb: compilation_database.CompileCommands,
     elide_functions: bool = False,
+    statics_only: bool = False,
 ) -> list[Cursor]:
     index = create_xj_clang_index()
     tus = parse_project(index, compdb)
-    return compute_globals_and_statics_for_translation_units(list(tus.values()), elide_functions)
+    return compute_globals_and_statics_for_translation_units(
+        list(tus.values()), elide_functions, statics_only
+    )
 
 
 def compute_globals_and_statics_for_translation_units(
     translation_units: list[TranslationUnit],
     elide_functions: bool = False,
+    statics_only: bool = False,
 ) -> list[Cursor]:
     combined: list[Cursor] = []
     for tu in translation_units:
-        results = compute_globals_and_statics_for_translation_unit(tu, elide_functions)
+        results = compute_globals_and_statics_for_translation_unit(
+            tu, elide_functions, statics_only
+        )
         combined.extend(results)
     return combined
 
@@ -280,7 +286,7 @@ def mk_NamedDeclInfo(node: Cursor) -> NamedDeclInfo:
 
 
 def compute_globals_and_statics_for_translation_unit(
-    translation_unit: TranslationUnit, elide_functions: bool
+    translation_unit: TranslationUnit, elide_functions: bool, statics_only: bool = False
 ) -> list[Cursor]:
     """Compute globals and static symbols defined in the translation unit."""
 
@@ -293,18 +299,16 @@ def compute_globals_and_statics_for_translation_unit(
 
     def visit(node: Cursor):
         if node.kind in (CursorKind.VAR_DECL, CursorKind.FUNCTION_DECL):
-            # Only consider definitions
-            try:
-                is_def = node.is_definition()
-            except Exception:
-                is_def = True
-            if is_def:
-                sc = node.storage_class
+            sc = node.storage_class
+            # Clang's implementation of `is_definition()` excludes tentative
+            # definitions, but we want to include them here.
+            is_def_ish = sc != StorageClass.EXTERN and node.linkage != 0
+            if is_def_ish:
+                top_level_var_decl = node.kind == CursorKind.VAR_DECL and (
+                    node.semantic_parent.kind == CursorKind.TRANSLATION_UNIT
+                )
                 # Include top-level declarations or entities with 'static' storage
-                if (
-                    # node.semantic_parent.kind == CursorKind.TRANSLATION_UNIT or
-                    sc == StorageClass.STATIC
-                ):
+                if (top_level_var_decl and not statics_only) or sc == StorageClass.STATIC:
                     grab(node)
         for child in node.get_children():
             visit(child)
@@ -421,18 +425,6 @@ def localize_mutable_globals(
 
     mutated_global_names_list = [demangle_meg(name) for name in mangled_mutated_globals]
     mutated_global_names = set(mutated_global_names_list)
-    if not (len(mutated_global_names) == len(mutated_global_names_list)):
-        seen = set()
-        duplicate_names = set()
-        for name in mutated_global_names_list:
-            if name in seen:
-                duplicate_names.add(name)
-            else:
-                seen.add(name)
-        for name in duplicate_names:
-            for m in mangled_mutated_globals:
-                if name in m:
-                    print(f"ERROR: Duplicate name {name} in mutated global {m}")
     assert len(mutated_global_names) == len(mutated_global_names_list), (
         "Expected all mutated global names to be unique after demangling, "
         + f"but got duplicates within: {mutated_global_names_list}"
@@ -445,9 +437,9 @@ def localize_mutable_globals(
     globals_and_statics = compute_globals_and_statics_for_translation_units(
         list(tus.values()), elide_functions=True
     )
-    mutated_globals_and_statics = set(
+    mutated_globals_and_statics = [
         c for c in globals_and_statics if c.spelling in mutated_global_names
-    )
+    ]
     # import pprint
 
     # print("nonvibed globals:")
@@ -459,7 +451,7 @@ def localize_mutable_globals(
     print("=" * 80)
 
     needed_struct_defs = {}
-    needed_typedefs = {}
+    needed_typedefs: dict[str, tuple[Cursor, str]] = {}
     forward_declarable_types = set()
 
     def collect_type_dependencies(type_obj_noncanonical, depth=0):
@@ -483,8 +475,20 @@ def localize_mutable_globals(
             assert type_name, "Typedef without a name?"
             if type_name not in needed_typedefs:
                 print(f"{indent}  -> Need typedef: {type_name}")
-                needed_typedefs[type_name] = decl
-            elif needed_typedefs[type_name] != decl:
+                needed_typedefs[type_name] = (
+                    decl,
+                    decl.underlying_typedef_type.get_canonical().spelling,
+                )
+            elif needed_typedefs[type_name][0] == decl:
+                pass
+            elif (
+                needed_typedefs[type_name][1]
+                == decl.underlying_typedef_type.get_canonical().spelling
+            ):
+                # Typedefs in preprocessed code can be duplicated between translation units,
+                # as long as the associated types are identical, it's all good.
+                pass
+            elif needed_typedefs[type_name][0] != decl:
                 raise ValueError(
                     f"{indent}  -> Typedef {type_name} already recorded, but different declaration!"
                 )
@@ -583,11 +587,12 @@ def localize_mutable_globals(
         print()
 
     print(f"\nNeed {len(needed_typedefs)} typedef definitions:")
-    for name, decl in needed_typedefs.items():
+    for name, (decl, canonical_spelling) in needed_typedefs.items():
         print(f"  - {name} -> {decl.location}")
         print(f"           -> {decl.extent}")
         print(f"           -> {decl.type}")
         print(f"           -> {decl.type.spelling}")
+        print(f"  canon_ty -> {canonical_spelling}")
         print(f"           -> {decl.get_usr()}")
         print(f"           -> {decl.get_definition()}")
         print(f"           -> {decl.get_definition().extent}")
@@ -890,10 +895,10 @@ def localize_mutable_globals(
 
         # Add typedefs
         typedefs_sorted_by_line = sorted(
-            list(needed_typedefs.items()), key=lambda item: item[1].location.line
+            list(needed_typedefs.items()), key=lambda item: item[1][0].location.line
         )
         if typedefs_sorted_by_line:
-            for name, decl_cursor in typedefs_sorted_by_line:
+            for name, (decl_cursor, _u_t_canonical_spelling) in typedefs_sorted_by_line:
                 # Get the full definition text
                 start_offset = decl_cursor.extent.start.offset
                 end_offset = decl_cursor.extent.end.offset
@@ -928,9 +933,16 @@ def localize_mutable_globals(
 
         # Add the XjGlobals struct definition
         mutated_globals_cursors_by_name = {c.spelling: c for c in mutated_globals_and_statics}
+        assert len(mutated_globals_cursors_by_name) == len(mutated_globals_and_statics), (
+            "Expected all mutated global names to be unique, "
+            + f"but got duplicates within: {mutated_globals_cursors_by_name.keys()}"
+        )
+
         header_lines.append("struct XjGlobals {")
         for global_name in sorted(mutated_global_names_list):
-            assert global_name in mutated_globals_cursors_by_name
+            assert global_name in mutated_globals_cursors_by_name, (
+                f"Expected mutated global name '{global_name}' to be in cursors map"
+            )
             var_cursor = mutated_globals_cursors_by_name[global_name]
             var_name = var_cursor.spelling
             type_spelling = var_cursor.type.spelling
@@ -951,7 +963,7 @@ def localize_mutable_globals(
                     break
 
             # Add the field (we'll handle initialization separately)
-            header_lines.append(render_declaration_sans_qualifiers(info["type"], var_name) + ";")
+            header_lines.append(render_declaration_sans_qualifiers(var_cursor.type, var_name) + ";")
 
         header_lines.append("};")
         header_lines.append("")

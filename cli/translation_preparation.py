@@ -182,7 +182,9 @@ def run_preparation_passes(
         compdb = compilation_database.CompileCommands.from_json_file(
             compdb_path_in(current_codebase)
         )
-        all_pgs_cursors = c_refact.compute_globals_and_statics_for_project(compdb)
+        all_pgs_cursors = c_refact.compute_globals_and_statics_for_project(
+            compdb, statics_only=True
+        )
         all_pgs = [c_refact.mk_NamedDeclInfo(c) for c in all_pgs_cursors]
         # We do not want to try renaming symbols from outside the current codebase!
         current_codebase_dir = current_codebase.as_posix()
@@ -226,14 +228,20 @@ def run_preparation_passes(
 
                 # The variable name might occur in the type name, so we search for it
                 # prefixed by something that would count as a token separator.
-                separators = [b" ", b"*", b"&", b"\n", b"\t", b"(", b")", b","]
+                separators = [b" ", b"*", b"&", b"\n", b"\t", b"(", b")", b"[", b"]", b","]
                 name_byte_offset = -1
                 for sep in separators:
                     name_byte_offset = find_variant(name_bytes, sep)
                     if name_byte_offset != -1:
                         break
+                if name_byte_offset == -1:
+                    # Possibly it's at the start of the range, with a separator after it.
+                    if contents.startswith(name_bytes, decl_start_byte_offset):
+                        nextbyte = contents[decl_start_byte_offset + len(name_bytes)]
+                        if chr(nextbyte).encode() in separators:
+                            name_byte_offset = decl_start_byte_offset
                 assert name_byte_offset != -1, (
-                    f"Could not find bytes for '{old_name}' in source file range"
+                    f"Could not find bytes for '{old_name}' in source file range: {contents[decl_start_byte_offset:decl_end_byte_offset]}"
                 )
                 edits.extend(["--offset", str(name_byte_offset), "--new-name", new_name])
             hermetic.run(
