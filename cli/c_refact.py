@@ -399,12 +399,10 @@ def localize_mutable_globals(
     #    adn the struct/union definitions from step 2b.
     #    Place the declaration in a new header file `xj_globals.h`.
     # 4. Based on the definitions from step 2, initialize a singleton XjGlobals instance
-    #    in `main()`, called `xjgv`.
+    #    in `main()`, called `xjgv`, and a pointer to it called `xjg`.
     # 5. For each function in the "tissue" part of "mutable_global_tissue", except for `main`,
     #    pass a pointer to the XjGlobals instance, called `xjg`, as an additional first parameter.
-    # 6. For each call to a tissue function NOT occurring in `main()`, pass along
-    #    the `xjg` parameter.
-    # 7. For each call to a tissue function occurring in `main()`, pass `&xjgv`.
+    # 6. For each call to a tissue function, pass along the `xjg` parameter.
     # 8. Each syntatic use of a mutable global named WHATEVER is replaced with `xjg->WHATEVER`.
     # 9. In each file that uses mutable globals, add `#include "xj_globals.h"`
     #
@@ -747,9 +745,7 @@ def localize_mutable_globals(
             assert i_file_path in tus
 
             # Determine what to pass based on caller
-            if caller_func == "main":
-                param_to_pass = "&xjgv"
-            elif caller_func in tissue_functions:
+            if caller_func in tissue_functions:
                 param_to_pass = "xjg"
             else:
                 # Caller is not in tissue, skip for now
@@ -814,38 +810,38 @@ def localize_mutable_globals(
         # Step 8: Replace uses of mutable globals with xjg->WHATEVER
         print("\n  --- Step 8: Replacing global variable accesses ---")
         for abs_path, tu in tus.items():
-            for cursor in tu.cursor.walk_preorder():
-                if cursor.kind == CursorKind.FUNCTION_DECL:
-                    for child in cursor.walk_preorder():
-                        if (
-                            child.kind == CursorKind.DECL_REF_EXPR
-                            and child.spelling in mutd_or_escd_global_names
-                        ):
-                            # Get the extent of the variable reference
-                            start_offset = child.extent.start.offset
-                            end_offset = child.extent.end.offset
-                            length = end_offset - start_offset
-                            var_name = child.spelling
+            for child in tu.cursor.walk_preorder():
+                # if cursor.kind == CursorKind.FUNCTION_DECL:
+                #     for child in cursor.walk_preorder():
+                if (
+                    child.kind == CursorKind.DECL_REF_EXPR
+                    and child.spelling in mutd_or_escd_global_names
+                ):
+                    # Get the extent of the variable reference
+                    start_offset = child.extent.start.offset
+                    end_offset = child.extent.end.offset
+                    length = end_offset - start_offset
+                    var_name = child.spelling
 
-                            replacement = f"xjg->{var_name}"
-                            print(
-                                f"    Found DECL_REF_EXPR for {var_name} at {abs_path}:{child.location.line}:{child.location.column}"
-                            )
+                    replacement = f"xjg->{var_name}"
+                    print(
+                        f"    Found DECL_REF_EXPR for {var_name} at {abs_path}:{child.location.line}:{child.location.column}"
+                    )
 
-                            # Check the parent - if it's a VAR_DECL, skip it
-                            parent = child.semantic_parent
-                            if (
-                                parent
-                                and parent.kind == CursorKind.VAR_DECL
-                                and parent.spelling == var_name
-                            ):
-                                print("      Skipping: this is part of the declaration")
-                                continue
+                    # Check the parent - if it's a VAR_DECL, skip it
+                    parent = child.semantic_parent
+                    if (
+                        parent
+                        and parent.kind == CursorKind.VAR_DECL
+                        and parent.spelling == var_name
+                    ):
+                        print("      Skipping: this is part of the declaration")
+                        print(child.extent)
+                        continue
 
-                            print(f"    Replacing {var_name} with {replacement}")
+                    print(f"    Replacing {var_name} with {replacement}")
 
-                            rewriter.add_rewrite(abs_path, start_offset, length, replacement)
-                    break
+                    rewriter.add_rewrite(abs_path, start_offset, length, replacement)
 
         # Step 3: Create xj_globals_fwd.h and xj_globals.h header files
         print("\n  --- Step 3: Creating xj_globals_fwd.h and xj_globals.h ---")
@@ -941,25 +937,10 @@ def localize_mutable_globals(
         header_lines.append("struct XjGlobals {")
         for global_name in sorted(mutated_globals_cursors_by_name.keys()):
             var_cursor = mutated_globals_cursors_by_name[global_name]
-            var_name = var_cursor.spelling
-
-            # Get the initializer if present
-            initializer = None
-            for child in var_cursor.get_children():
-                # The initializer is a child of the VAR_DECL
-                if child.kind != CursorKind.TYPE_REF:
-                    # This is likely the initializer
-                    # Extract its text
-                    init_start = child.extent.start.offset
-                    init_end = child.extent.end.offset
-                    file_path = var_cursor.location.file.name
-                    with open(file_path, "rb") as f:
-                        content = f.read()
-                    initializer = content[init_start:init_end].decode("utf-8").strip()
-                    break
-
             # Add the field (we'll handle initialization separately)
-            header_lines.append(render_declaration_sans_qualifiers(var_cursor.type, var_name) + ";")
+            header_lines.append(
+                render_declaration_sans_qualifiers(var_cursor.type, var_cursor.spelling) + ";"
+            )
 
         header_lines.append("};")
         header_lines.append("")
@@ -1122,6 +1103,7 @@ def localize_mutable_globals(
 
                             init_lines.append(",\n".join(field_inits))
                             init_lines.append("\n  };")
+                            init_lines.append("struct XjGlobals *xjg = &xjgv;\n")
 
                             init_text = "\n".join(init_lines)
                             rewriter.add_rewrite(abs_path, insert_offset, 0, init_text)
