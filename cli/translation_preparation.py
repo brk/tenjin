@@ -276,7 +276,7 @@ def run_preparation_passes(
             compdb_path_in(current_codebase)
         )
         new_compdb: compilation_database.CompileCommands = (
-            c_refact.preprocess_and_create_new_compdb(compdb, current_codebase.as_posix())
+            c_refact.refold_preprocess_and_create_new_compdb(compdb, current_codebase.as_posix())
         )
         # new_compdb already written to current_codebase
         for cmd in new_compdb.commands:
@@ -286,10 +286,10 @@ def run_preparation_passes(
         ("copy_pristine_codebase", prep_00_copy_pristine_codebase),
         ("materialize_compdb", prep_01_materialize_compdb),
         ("uniquify_statics", prep_uniquify_statics),
-        # ("refold_preprocessor", prep_refold_preprocessor),
         ("expand_preprocessor", prep_expand_preprocessor),
         ("run_cclzyerpp_analysis", prep_run_cclzyerpp_analysis),
         ("localize_mutable_globals", prep_localize_mutable_globals),
+        ("refold_preprocessor", prep_refold_preprocessor),
     ]
 
     prev = original_codebase.absolute()

@@ -13,6 +13,7 @@ from dataclasses import dataclass
 import platform
 from pathlib import Path
 import subprocess
+import shutil
 
 import hermetic
 import repo_root
@@ -194,6 +195,8 @@ def preprocess_and_create_new_compdb(
             cwd=cmd.directory,
         )
 
+        shutil.copyfile(preprocessed_file_path, preprocessed_file_path.with_suffix(".unmodified.i"))
+
         # 3. Create new command for new compdb
         new_args = original_args.copy()
 
@@ -217,6 +220,106 @@ def preprocess_and_create_new_compdb(
             compilation_database.CompileCommand(
                 directory=cmd.directory,
                 file=str(preprocessed_file_path),
+                arguments=new_args if cmd.arguments else None,
+                command=" ".join(new_args) if cmd.command else None,
+                output=cmd.output,
+            )
+        )
+
+    # 4. Write new compile_commands.json
+    new_compdb = compilation_database.CompileCommands(commands=new_commands)
+    new_compdb.to_json_file(target_dir_path / "compile_commands.json")
+    return new_compdb
+
+
+def refold_preprocess_and_create_new_compdb(
+    compdb: compilation_database.CompileCommands,
+    target_dir: str,
+) -> compilation_database.CompileCommands:
+    """
+    For each TU in compdb, run clang-refold to produce .c files from modified .i files,
+    then create a new compile_commands.json in target_dir that refers to the .c files.
+    """
+    new_commands = []
+    target_dir_path = Path(target_dir)
+    target_dir_path.mkdir(parents=True, exist_ok=True)
+
+    repo_root_path = repo_root.find_repo_root_dir_Path()
+
+    for cmd in compdb.commands:
+        # 1. Determine paths
+        abs_src_path = cmd.absolute_file_path
+
+        assert abs_src_path.suffixes[-2:] == [".nolines", ".i"]
+        abs_src_path_base = abs_src_path.with_suffix("")
+        c_path = abs_src_path_base.with_suffix(".c")
+        refold_map_path = abs_src_path_base.with_suffix(".nolines.refoldmap.json")
+
+        # 2. Run preprocessor
+        original_args = cmd.get_command_parts()
+        compiler_args = original_args[1:]
+
+        # Remove output file from args
+        try:
+            o_index = compiler_args.index("-o")
+            del compiler_args[o_index : o_index + 2]
+        except ValueError:
+            pass
+
+        if "-c" in compiler_args:
+            compiler_args.remove("-c")
+
+        # Remove source file from args
+        temp_args = []
+        for arg in compiler_args:
+            arg_path = Path(arg)
+            if not arg_path.is_absolute():
+                arg_path = cmd.directory_path / arg_path
+
+            if arg_path.resolve() != abs_src_path.resolve():
+                temp_args.append(arg)
+        compiler_args = temp_args
+
+        hermetic.run(
+            [
+                "clang-refold",
+                "-P",  # modified preprocessed file
+                abs_src_path,
+                "-p",  # unmodified preprocessed file
+                abs_src_path.with_suffix(".unmodified.i"),
+                "-r",  # refold map
+                refold_map_path.as_posix(),
+                "-o",
+                str(c_path),
+                *compiler_args,
+            ],
+            check=True,
+            cwd=cmd.directory,
+        )
+
+        # 3. Create new command for new compdb
+        new_args = original_args.copy()
+
+        found = False
+        for i, arg in enumerate(new_args):
+            arg_path = Path(arg)
+            if not arg_path.is_absolute():
+                arg_path = cmd.directory_path / arg_path
+
+            if arg_path.resolve() == abs_src_path.resolve():
+                new_args[i] = str(c_path)
+                found = True
+                break
+
+        if not found:
+            raise ValueError(
+                f"Source file {abs_src_path} not found in command arguments: {original_args}"
+            )
+
+        new_commands.append(
+            compilation_database.CompileCommand(
+                directory=cmd.directory,
+                file=str(c_path),
                 arguments=new_args if cmd.arguments else None,
                 command=" ".join(new_args) if cmd.command else None,
                 output=cmd.output,
