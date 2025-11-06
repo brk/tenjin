@@ -942,7 +942,6 @@ def localize_mutable_globals(
         for global_name in sorted(mutated_globals_cursors_by_name.keys()):
             var_cursor = mutated_globals_cursors_by_name[global_name]
             var_name = var_cursor.spelling
-            type_spelling = var_cursor.type.spelling
 
             # Get the initializer if present
             initializer = None
