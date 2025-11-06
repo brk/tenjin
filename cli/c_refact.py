@@ -393,6 +393,12 @@ def mk_NamedDeclInfo(node: Cursor) -> NamedDeclInfo:
 type GlobalNameSpec = str
 
 
+def demangle_meg(mangled_name: str) -> str:
+    if "." not in mangled_name:
+        return mangled_name
+    return mangled_name.split(".")[1]
+
+
 def compute_globals_and_statics_for_translation_unit(
     translation_unit: TranslationUnit, elide_functions: bool, statics_only: bool = False
 ) -> list[Cursor]:
@@ -494,6 +500,13 @@ def localize_mutable_globals(
     # Assume this value holds an instance of the above JSON type
     j: dict = json.load(json_path.open("r"))
 
+    ineligible_for_lifting = set()
+    for refs in j.get("global_initializer_references", {}).values():
+        for r in refs:
+            if r.startswith(".str"):
+                continue
+            ineligible_for_lifting.add(demangle_meg(r))
+
     def un_uf(uf: str) -> str:
         nonlocal j
         v = j["unique_filenames"][uf]
@@ -524,7 +537,8 @@ def localize_mutable_globals(
     # 9. In each file that uses mutable globals, add `#include "xj_globals.h"`
     #
     # Use the `BatchingRewriter` to perform all of these rewrites in a single pass.
-
+    #
+    #
     # Step 2a: Find definitions of each mutated_or_escaped_global
     index = create_xj_clang_index()
     tus = parse_project(index, compdb)
@@ -532,11 +546,6 @@ def localize_mutable_globals(
     # Entries in this list are either plain global names, or for function-scoped statics,
     # they are in the format "function_name.var_name_xjtr_N"
     mangled_mutated_globals = j.get("mutated_or_escaped_global", [])
-
-    def demangle_meg(mangled_name: str) -> str:
-        if "." not in mangled_name:
-            return mangled_name
-        return mangled_name.split(".")[1]
 
     mutd_or_escd_global_names_list = [demangle_meg(name) for name in mangled_mutated_globals]
     mutd_or_escd_global_names = set(mutd_or_escd_global_names_list)
