@@ -507,6 +507,8 @@ def localize_mutable_globals(
                 continue
             ineligible_for_lifting.add(demangle_meg(r))
 
+    print("ineligible_lifting:", list(ineligible_for_lifting))
+
     def un_uf(uf: str) -> str:
         nonlocal j
         v = j["unique_filenames"][uf]
@@ -561,8 +563,10 @@ def localize_mutable_globals(
     globals_and_statics = compute_globals_and_statics_for_translation_units(
         list(tus.values()), elide_functions=True
     )
-    all_mutated_globals_and_statics = [
-        c for c in globals_and_statics if c.spelling in mutd_or_escd_global_names
+    liftable_mutated_globals_and_statics = [
+        c
+        for c in globals_and_statics
+        if c.spelling in mutd_or_escd_global_names and c.spelling not in ineligible_for_lifting
     ]
     # import pprint
 
@@ -686,15 +690,15 @@ def localize_mutable_globals(
                         print(f"{indent}    Field: {field.spelling} : {field.type.spelling}")
                         collect_type_dependencies(field.type, depth + 2)
 
-    for cursor in all_mutated_globals_and_statics:
+    for cursor in liftable_mutated_globals_and_statics:
         print(f"\nAnalyzing dependencies for {cursor.spelling}:")
         collect_type_dependencies(cursor.type, depth=1)
 
     print("\n" + "=" * 80)
     print("SUMMARY")
     print("=" * 80)
-    print(f"\nFound {len(all_mutated_globals_and_statics)} mutated global definitions:")
-    for cursor in all_mutated_globals_and_statics:
+    print(f"\nFound {len(liftable_mutated_globals_and_statics)} mutated global definitions:")
+    for cursor in liftable_mutated_globals_and_statics:
         print(
             f"  - {cursor.spelling}: {cursor.type.spelling} at {cursor.location.file}:{cursor.location.line}"
         )
@@ -1060,9 +1064,11 @@ def localize_mutable_globals(
                         break
 
         # Add the XjGlobals struct definition
-        mutated_globals_cursors_by_name = {c.spelling: c for c in all_mutated_globals_and_statics}
-        assert len(mutated_globals_cursors_by_name) == len(all_mutated_globals_and_statics), (
-            "Expected all mutated global names to be unique, "
+        mutated_globals_cursors_by_name = {
+            c.spelling: c for c in liftable_mutated_globals_and_statics
+        }
+        assert len(mutated_globals_cursors_by_name) == len(liftable_mutated_globals_and_statics), (
+            "Expected all (liftable) mutated global names to be unique, "
             + f"but got duplicates within: {mutated_globals_cursors_by_name.keys()}"
         )
 
@@ -1092,7 +1098,7 @@ def localize_mutable_globals(
 
         global_dependencies: dict[str, set[str]] = {}  # global_name -> set of referenced globals
 
-        for var_cursor in all_mutated_globals_and_statics:
+        for var_cursor in liftable_mutated_globals_and_statics:
             dependencies = set()
 
             # Walk through the initializer expression to find DECL_REF_EXPR nodes
@@ -1262,7 +1268,7 @@ def localize_mutable_globals(
         files_needing_include = set()
 
         # Files with global definitions (not including main file)
-        for cursor in all_mutated_globals_and_statics:
+        for cursor in liftable_mutated_globals_and_statics:
             if cursor.location.file.name != main_file:
                 files_needing_include.add(cursor.location.file.name)
 
