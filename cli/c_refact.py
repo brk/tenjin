@@ -709,10 +709,12 @@ def localize_mutable_globals(
 
                 decl_type = "definition" if is_def else "declaration"
 
+                overwrite_len = 0
                 if param_section == b"" or param_section == b"void":
                     # No parameters, just add our parameter
                     insert_offset = paren_pos + 1
                     insert_text = "struct XjGlobals *xjg"
+                    overwrite_len = len(b"void") if param_section == b"void" else 0
                     print(f"  Adding xjg parameter to {func_name} {decl_type} (no existing params)")
                 else:
                     # Has parameters, add as first parameter with comma
@@ -722,7 +724,7 @@ def localize_mutable_globals(
                         f"  Adding xjg parameter to {func_name} {decl_type} (with existing params)"
                     )
 
-                rewriter.add_rewrite(file_path, insert_offset, 0, insert_text)
+                rewriter.add_rewrite(file_path, insert_offset, overwrite_len, insert_text)
 
         # Step 6: Modify call sites to pass xjg (using JSON call site info)
         for call_info in call_sites_from_json:
