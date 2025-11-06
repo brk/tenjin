@@ -388,6 +388,11 @@ def mk_NamedDeclInfo(node: Cursor) -> NamedDeclInfo:
     )
 
 
+# A plain C identifier for a global, or "fnname.ident" for a function-scoped
+# static, or something prefixed with ".str." for a string literal
+type GlobalNameSpec = str
+
+
 def compute_globals_and_statics_for_translation_unit(
     translation_unit: TranslationUnit, elide_functions: bool, statics_only: bool = False
 ) -> list[Cursor]:
@@ -480,6 +485,9 @@ def localize_mutable_globals(
     #     "a_2",
     #     "b_1"
     #     ]
+    # },
+    # "global_initializer_references": {
+    # "basesort": ["alnumsort"]
     # }
     # }
 
@@ -492,8 +500,13 @@ def localize_mutable_globals(
         return v["directory"] + "/" + v["filename"]
 
     # To localize mutable globals, we perform the following steps:
+    # z. Inspect j["global_initializer_references"] to identify those globals which
+    #     reference other mutable globals in their initializers. To avoid creating a
+    #     self-referential Rust structure, we consider the *referenced* globals to be
+    #     ineligible for lifting.
     # 1. Inspect j["call_graph_components"], discarding those which are not all_mutable.
-    # 2a. Find the definitions of of each ["mutated_or_escaped_global"].
+    # 2a. Find the definitions of of each ["mutated_or_escaped_global"], excluding those
+    #     which are ineligible for lifting.
     # 2b. Construct the transitive closure of all directly used struct/union/enum/typedef
     #     definitions needed to define those globals. Note that fields which use
     #     a struct behind a pointer do not require inclusion of that struct definition,
@@ -506,7 +519,8 @@ def localize_mutable_globals(
     # 5. For each function in the "tissue" part of "mutable_global_tissue", except for `main`,
     #    pass a pointer to the XjGlobals instance, called `xjg`, as an additional first parameter.
     # 6. For each call to a tissue function, pass along the `xjg` parameter.
-    # 8. Each syntatic use of a mutable global named WHATEVER is replaced with `xjg->WHATEVER`.
+    # 8. Each syntatic use of a liftable mutable global named WHATEVER is replaced
+    #    with `xjg->WHATEVER`.
     # 9. In each file that uses mutable globals, add `#include "xj_globals.h"`
     #
     # Use the `BatchingRewriter` to perform all of these rewrites in a single pass.
