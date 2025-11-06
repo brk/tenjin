@@ -244,10 +244,7 @@ def refold_preprocess_and_create_new_compdb(
     target_dir_path = Path(target_dir)
     target_dir_path.mkdir(parents=True, exist_ok=True)
 
-    repo_root_path = repo_root.find_repo_root_dir_Path()
-
     for cmd in compdb.commands:
-        # 1. Determine paths
         abs_src_path = cmd.absolute_file_path
 
         assert abs_src_path.suffixes[-2:] == [".nolines", ".i"]
@@ -255,31 +252,8 @@ def refold_preprocess_and_create_new_compdb(
         c_path = abs_src_path_base.with_suffix(".c")
         refold_map_path = abs_src_path_base.with_suffix(".nolines.refoldmap.json")
 
-        # 2. Run preprocessor
-        original_args = cmd.get_command_parts()
-        compiler_args = original_args[1:]
-
-        # Remove output file from args
-        try:
-            o_index = compiler_args.index("-o")
-            del compiler_args[o_index : o_index + 2]
-        except ValueError:
-            pass
-
-        if "-c" in compiler_args:
-            compiler_args.remove("-c")
-
-        # Remove source file from args
-        temp_args = []
-        for arg in compiler_args:
-            arg_path = Path(arg)
-            if not arg_path.is_absolute():
-                arg_path = cmd.directory_path / arg_path
-
-            if arg_path.resolve() != abs_src_path.resolve():
-                temp_args.append(arg)
-        compiler_args = temp_args
-
+        print("Refolding", abs_src_path, "to", c_path)
+        print(cmd.get_command_parts())
         hermetic.run(
             [
                 "clang-refold",
@@ -291,15 +265,12 @@ def refold_preprocess_and_create_new_compdb(
                 refold_map_path.as_posix(),
                 "-o",
                 str(c_path),
-                *compiler_args,
             ],
             check=True,
             cwd=cmd.directory,
         )
 
-        # 3. Create new command for new compdb
-        new_args = original_args.copy()
-
+        new_args = cmd.get_command_parts().copy()
         found = False
         for i, arg in enumerate(new_args):
             arg_path = Path(arg)
@@ -312,9 +283,7 @@ def refold_preprocess_and_create_new_compdb(
                 break
 
         if not found:
-            raise ValueError(
-                f"Source file {abs_src_path} not found in command arguments: {original_args}"
-            )
+            raise ValueError(f"Source file {abs_src_path} not found in command arguments")
 
         new_commands.append(
             compilation_database.CompileCommand(
