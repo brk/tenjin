@@ -662,6 +662,8 @@ def localize_mutable_globals(
     with batching_rewriter.BatchingRewriter() as rewriter:
         # Step 5: Add xjg parameter to tissue function signatures (definitions and declarations)
 
+        all_function_names = set()
+
         # Collect all declarations (both definitions and forward declarations)
         all_function_cursors: dict[
             str, list[dict[str, Cursor | str | bool]]
@@ -671,6 +673,7 @@ def localize_mutable_globals(
             for cursor in tu.cursor.walk_preorder():
                 if cursor.kind == CursorKind.FUNCTION_DECL:
                     func_name = cursor.spelling
+                    all_function_names.add(func_name)
                     if func_name in tissue_functions:
                         if func_name not in all_function_cursors:
                             all_function_cursors[func_name] = []
@@ -818,6 +821,7 @@ def localize_mutable_globals(
                 if (
                     child.kind == CursorKind.DECL_REF_EXPR
                     and child.spelling in mutd_or_escd_global_names
+                    and child.spelling not in all_function_names
                 ):
                     # Get the extent of the variable reference
                     start_offset = child.extent.start.offset
