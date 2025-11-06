@@ -747,11 +747,11 @@ def localize_mutable_globals(
             assert i_file_path in tus
 
             # Determine what to pass based on caller
-            if caller_func in tissue_functions:
+            if callee_func in tissue_functions:
                 param_to_pass = "xjg"
             else:
                 # Caller is not in tissue, skip for now
-                print(f"    Skipping: caller {caller_func} not in tissue")
+                print(f"    Skipping: callee {callee_func} not in tissue")
                 continue
 
             # Find the call expression at the given location
