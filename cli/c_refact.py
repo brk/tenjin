@@ -320,6 +320,15 @@ class TissueFunctionCursorInfo:
     is_definition: bool
 
 
+@dataclass
+class CallSiteInfo:
+    caller_func: str
+    callee_func: str
+    uf: str
+    line: int
+    col: int
+
+
 def compute_globals_and_statics_for_project(
     compdb: compilation_database.CompileCommands,
     elide_functions: bool = False,
@@ -719,7 +728,7 @@ def localize_mutable_globals(
 
     # Collect all function definitions and call sites from JSON
     function_defs = {}  # function_name -> {cursor, file, abs_path}
-    call_sites_from_json = []  # From the JSON analysis
+    call_sites_from_json: list[CallSiteInfo] = []  # From the JSON analysis
 
     # Get call sites from JSON (more reliable than libclang semantic_parent)
     for component in j.get("call_graph_components", []):
@@ -737,13 +746,15 @@ def localize_mutable_globals(
                         uf = site.get("uf")
                         line = site.get("line")
                         col = site.get("col")
-                        call_sites_from_json.append({
-                            "caller_func": caller_func,
-                            "callee_func": callee_func,
-                            "uf": uf,
-                            "line": line,
-                            "col": col,
-                        })
+                        call_sites_from_json.append(
+                            CallSiteInfo(
+                                caller_func=caller_func,
+                                callee_func=callee_func,
+                                uf=uf,
+                                line=line,
+                                col=col,
+                            )
+                        )
                         print(
                             f"  From JSON: {caller_func} calls {callee_func} at {uf}:{line}:{col}"
                         )
@@ -837,11 +848,11 @@ def localize_mutable_globals(
 
         # Step 6: Modify call sites to pass xjg (using JSON call site info)
         for call_info in call_sites_from_json:
-            caller_func = call_info["caller_func"]
-            callee_func = call_info["callee_func"]
-            uf = call_info["uf"]
-            line = call_info["line"]
-            col = call_info["col"]
+            caller_func = call_info.caller_func
+            callee_func = call_info.callee_func
+            uf = call_info.uf
+            line = call_info.line
+            col = call_info.col
 
             # Get the actual file path - need to adjust for current directory
             # The JSON has paths from c_03 but we're working in c_04
