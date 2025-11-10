@@ -324,7 +324,7 @@ class TissueFunctionCursorInfo:
 class CallSiteInfo:
     caller_func: str
     callee_func: str
-    uf: str
+    i_file_path: str
     line: int
     col: int
 
@@ -746,11 +746,20 @@ def localize_mutable_globals(
                         uf = site.get("uf")
                         line = site.get("line")
                         col = site.get("col")
+
+                        # Get the actual file path - need to adjust for current directory
+                        # The JSON has paths from c_03 but we're working in c_04
+                        file_path_old = un_uf(uf)
+                        assert file_path_old.startswith(prev.as_posix())
+                        i_file_path = file_path_old.replace(
+                            prev.as_posix(), current_codebase.as_posix()
+                        )
+
                         call_sites_from_json.append(
                             CallSiteInfo(
                                 caller_func=caller_func,
                                 callee_func=callee_func,
-                                uf=uf,
+                                i_file_path=i_file_path,
                                 line=line,
                                 col=col,
                             )
@@ -850,15 +859,9 @@ def localize_mutable_globals(
         for call_info in call_sites_from_json:
             caller_func = call_info.caller_func
             callee_func = call_info.callee_func
-            uf = call_info.uf
+            i_file_path = call_info.i_file_path
             line = call_info.line
             col = call_info.col
-
-            # Get the actual file path - need to adjust for current directory
-            # The JSON has paths from c_03 but we're working in c_04
-            file_path_old = un_uf(uf)
-            assert file_path_old.startswith(prev.as_posix())
-            i_file_path = file_path_old.replace(prev.as_posix(), current_codebase.as_posix())
 
             # Working with .i files (in particular, ones without line markers)
             # allows us to reliably edit call sites. Otherwise, we'd have to contend
