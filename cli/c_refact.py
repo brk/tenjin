@@ -313,6 +313,13 @@ class NamedDeclInfo:
     end_col: int
 
 
+@dataclass
+class TissueFunctionCursorInfo:
+    cursor: Cursor
+    file: str
+    is_definition: bool
+
+
 def compute_globals_and_statics_for_project(
     compdb: compilation_database.CompileCommands,
     elide_functions: bool = False,
@@ -764,9 +771,7 @@ def localize_mutable_globals(
         all_function_names = set()
 
         # Collect all declarations (both definitions and forward declarations)
-        tissue_function_cursors: dict[
-            str, list[dict[str, Cursor | str | bool]]
-        ] = {}  # func_name -> list of (cursor, file, is_definition)
+        tissue_function_cursors: dict[str, list[TissueFunctionCursorInfo]] = {}
 
         for abs_path, tu in tus.items():
             for cursor in tu.cursor.walk_preorder():
@@ -776,18 +781,20 @@ def localize_mutable_globals(
                     if func_name in tissue_functions:
                         if func_name not in tissue_function_cursors:
                             tissue_function_cursors[func_name] = []
-                        tissue_function_cursors[func_name].append({
-                            "cursor": cursor,
-                            "file": abs_path,
-                            "is_definition": cursor.is_definition(),
-                        })
+                        tissue_function_cursors[func_name].append(
+                            TissueFunctionCursorInfo(
+                                cursor=cursor,
+                                file=abs_path,
+                                is_definition=cursor.is_definition(),
+                            )
+                        )
 
         # Update all function signatures (both declarations and definitions)
         for func_name, cursors_list in tissue_function_cursors.items():
             for func_info in cursors_list:
-                cursor = func_info["cursor"]
-                file_path = func_info["file"]
-                is_def = func_info["is_definition"]
+                cursor = func_info.cursor
+                file_path = func_info.file
+                is_def = func_info.is_definition
 
                 # Find the position after the opening parenthesis
                 with open(file_path, "rb") as f:
