@@ -289,7 +289,7 @@ def run_preparation_passes(
         ("expand_preprocessor", prep_expand_preprocessor),
         ("run_cclzyerpp_analysis", prep_run_cclzyerpp_analysis),
         ("localize_mutable_globals", prep_localize_mutable_globals),
-        ("refold_preprocessor", prep_refold_preprocessor),
+        # ("refold_preprocessor", prep_refold_preprocessor),
     ]
 
     prev = original_codebase.absolute()
