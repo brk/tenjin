@@ -721,26 +721,9 @@ def localize_mutable_globals(
 
     print(f"\nTissue functions to modify: {nonmain_tissue_functions}")
 
-    # Collect all function definitions and call sites from JSON
-    function_defs = {}  # function_name -> {cursor, file, abs_path}
     call_sites_from_json = get_call_sites_from_json(
         prev, current_codebase, j, nonmain_tissue_functions
     )
-
-    for abs_path, tu in tus.items():
-        for cursor in tu.cursor.walk_preorder():
-            # Find function definitions
-            if cursor.kind == CursorKind.FUNCTION_DECL and cursor.is_definition():
-                func_name = cursor.spelling
-                if func_name in nonmain_tissue_functions:
-                    function_defs[func_name] = {
-                        "cursor": cursor,
-                        "file": abs_path,
-                        "extent": cursor.extent,
-                    }
-                    print(
-                        f"\nFound function definition: {func_name} at {abs_path}:{cursor.location.line}"
-                    )
 
     # Apply all rewrites using a single BatchingRewriter
     # This ensures offsets are calculated correctly
