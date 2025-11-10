@@ -725,32 +725,14 @@ def localize_mutable_globals(
         prev, current_codebase, j, nonmain_tissue_functions
     )
 
+    all_function_names, nonmain_tissue_function_cursors = extract_function_info(
+        tus, nonmain_tissue_functions
+    )
+
     # Apply all rewrites using a single BatchingRewriter
     # This ensures offsets are calculated correctly
     with batching_rewriter.BatchingRewriter() as rewriter:
         # Step 5: Add xjg parameter to tissue function signatures (definitions and declarations)
-
-        all_function_names = set()
-
-        # Collect all declarations (both definitions and forward declarations)
-        nonmain_tissue_function_cursors: dict[str, list[TissueFunctionCursorInfo]] = {}
-
-        for abs_path, tu in tus.items():
-            for cursor in tu.cursor.walk_preorder():
-                if cursor.kind == CursorKind.FUNCTION_DECL:
-                    func_name = cursor.spelling
-                    all_function_names.add(func_name)
-                    if func_name in nonmain_tissue_functions:
-                        if func_name not in nonmain_tissue_function_cursors:
-                            nonmain_tissue_function_cursors[func_name] = []
-                        nonmain_tissue_function_cursors[func_name].append(
-                            TissueFunctionCursorInfo(
-                                cursor=cursor,
-                                file=abs_path,
-                                is_definition=cursor.is_definition(),
-                            )
-                        )
-
         # Update all function signatures (both declarations and definitions)
         for func_name, cursors_list in nonmain_tissue_function_cursors.items():
             for func_info in cursors_list:
@@ -1285,6 +1267,33 @@ def localize_mutable_globals(
             print(f"\n  Added type definitions before main() in {main_file}")
 
     print("=" * 80)
+
+
+def extract_function_info(
+    tus, nonmain_tissue_functions
+) -> tuple[set[str], dict[str, list[TissueFunctionCursorInfo]]]:
+    all_function_names = set()
+
+    # Collect all declarations (both definitions and forward declarations)
+    nonmain_tissue_function_cursors: dict[str, list[TissueFunctionCursorInfo]] = {}
+
+    for abs_path, tu in tus.items():
+        for cursor in tu.cursor.walk_preorder():
+            if cursor.kind == CursorKind.FUNCTION_DECL:
+                func_name = cursor.spelling
+                all_function_names.add(func_name)
+                if func_name in nonmain_tissue_functions:
+                    if func_name not in nonmain_tissue_function_cursors:
+                        nonmain_tissue_function_cursors[func_name] = []
+                    nonmain_tissue_function_cursors[func_name].append(
+                        TissueFunctionCursorInfo(
+                            cursor=cursor,
+                            file=abs_path,
+                            is_definition=cursor.is_definition(),
+                        )
+                    )
+
+    return all_function_names, nonmain_tissue_function_cursors
 
 
 def get_call_sites_from_json(prev, current_codebase, j, nonmain_tissue_functions):
