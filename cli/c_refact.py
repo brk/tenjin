@@ -712,10 +712,10 @@ def localize_mutable_globals(
     print("STEPS 5 & 6: Modifying function signatures and call sites")
     print("=" * 80)
 
-    tissue_functions = set(j.get("mutable_global_tissue", {}).get("tissue", []))
-    tissue_functions.discard("main")  # Don't modify main
+    nonmain_tissue_functions = set(j.get("mutable_global_tissue", {}).get("tissue", []))
+    nonmain_tissue_functions.discard("main")  # Don't modify main
 
-    print(f"\nTissue functions to modify: {tissue_functions}")
+    print(f"\nTissue functions to modify: {nonmain_tissue_functions}")
 
     # Collect all function definitions and call sites from JSON
     function_defs = {}  # function_name -> {cursor, file, abs_path}
@@ -730,7 +730,7 @@ def localize_mutable_globals(
             # Target format: "<llvm-link>:function_name"
             if ":" in target:
                 callee_func = target.split(":")[-1]
-                if callee_func in tissue_functions:
+                if callee_func in nonmain_tissue_functions:
                     # Record all call sites for this target
                     for site in component.get("call_sites", []):
                         caller_func = site.get("p")
@@ -753,7 +753,7 @@ def localize_mutable_globals(
             # Find function definitions
             if cursor.kind == CursorKind.FUNCTION_DECL and cursor.is_definition():
                 func_name = cursor.spelling
-                if func_name in tissue_functions:
+                if func_name in nonmain_tissue_functions:
                     function_defs[func_name] = {
                         "cursor": cursor,
                         "file": abs_path,
@@ -771,17 +771,17 @@ def localize_mutable_globals(
         all_function_names = set()
 
         # Collect all declarations (both definitions and forward declarations)
-        tissue_function_cursors: dict[str, list[TissueFunctionCursorInfo]] = {}
+        nonmain_tissue_function_cursors: dict[str, list[TissueFunctionCursorInfo]] = {}
 
         for abs_path, tu in tus.items():
             for cursor in tu.cursor.walk_preorder():
                 if cursor.kind == CursorKind.FUNCTION_DECL:
                     func_name = cursor.spelling
                     all_function_names.add(func_name)
-                    if func_name in tissue_functions:
-                        if func_name not in tissue_function_cursors:
-                            tissue_function_cursors[func_name] = []
-                        tissue_function_cursors[func_name].append(
+                    if func_name in nonmain_tissue_functions:
+                        if func_name not in nonmain_tissue_function_cursors:
+                            nonmain_tissue_function_cursors[func_name] = []
+                        nonmain_tissue_function_cursors[func_name].append(
                             TissueFunctionCursorInfo(
                                 cursor=cursor,
                                 file=abs_path,
@@ -790,7 +790,7 @@ def localize_mutable_globals(
                         )
 
         # Update all function signatures (both declarations and definitions)
-        for func_name, cursors_list in tissue_function_cursors.items():
+        for func_name, cursors_list in nonmain_tissue_function_cursors.items():
             for func_info in cursors_list:
                 cursor = func_info.cursor
                 file_path = func_info.file
@@ -856,7 +856,7 @@ def localize_mutable_globals(
             assert i_file_path in tus
 
             # Determine what to pass based on caller
-            if callee_func in tissue_functions:
+            if callee_func in nonmain_tissue_functions:
                 param_to_pass = "xjg"
             else:
                 # Caller is not in tissue, skip for now
