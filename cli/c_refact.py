@@ -905,8 +905,8 @@ def localize_mutable_globals(
 
                     rewriter.add_rewrite(abs_path, start_offset, length, replacement)
 
-        # Step 3: Create xj_globals_fwd.h and xj_globals.h header files
-        print("\n  --- Step 3: Creating xj_globals_fwd.h and xj_globals.h ---")
+        # Step 3: Create xj_globals.h header file
+        print("\n  --- Step 3: Creating xj_globals.h ---")
 
         # Get the directory where we should place the headers
         # Use the directory from the compilation database
@@ -914,24 +914,6 @@ def localize_mutable_globals(
             header_dir = compdb.get_source_files()[0].parent
         else:
             header_dir = Path(".")
-
-        # Create xj_globals_fwd.h with forward declarations only
-        fwd_header_path = header_dir / "xj_globals_fwd.h"
-        print(f"  Creating forward declaration header at {fwd_header_path}")
-
-        fwd_header_lines = []
-        fwd_header_lines.append("#ifndef XJ_GLOBALS_FWD_H")
-        fwd_header_lines.append("#define XJ_GLOBALS_FWD_H")
-        fwd_header_lines.append("")
-        fwd_header_lines.append("struct XjGlobals;")
-        fwd_header_lines.append("")
-        fwd_header_lines.append("#endif /* XJ_GLOBALS_FWD_H */")
-        fwd_header_lines.append("")
-
-        with open(fwd_header_path, "w", encoding="utf-8") as fh:
-            fh.write("\n".join(fwd_header_lines))
-
-        print(f"  Created forward declaration header")
 
         # Create xj_globals.h with full definitions
         header_path = header_dir / "xj_globals.h"
@@ -1198,11 +1180,10 @@ def localize_mutable_globals(
             if cursor.location.file.name != main_file:
                 files_needing_include.add(cursor.location.file.name)
 
-        # Add forward declaration includes to non-main files
+        # Add forward declaration to non-main files
         for file_path_str in files_needing_include:
-            include_text = '#include "xj_globals_fwd.h"\n'
-            print(f"  Adding xj_globals_fwd.h to {file_path_str}")
-            rewriter.add_rewrite(file_path_str, 0, 0, include_text)
+            fwd_decl_text = "struct XjGlobals;\n"
+            rewriter.add_rewrite(file_path_str, 0, 0, fwd_decl_text)
 
         # For the main file, collect types already in scope
         if main_file and main_cursor:
