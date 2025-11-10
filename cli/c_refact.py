@@ -1,5 +1,5 @@
 import json
-from clang.cindex import (  # type: ignore
+from clang.cindex import (
     Index,
     CursorKind,
     Config,
@@ -418,19 +418,20 @@ def compute_globals_and_statics_for_translation_unit(
 
 @dataclass
 class LocalizeMutableGlobalsPhase1Results:
-    globals_and_statics: list[Cursor]
-    liftable_mutated_globals_and_statics: list[Cursor]
     ineligible_for_lifting: set[str]
     all_function_names: set[str]
     mutd_or_escd_global_names: set[str]
 
 
 def localize_mutable_globals_phase1(
-    tus: dict[str, TranslationUnit],
+    compdb: compilation_database.CompileCommands,
     j: dict,
     nonmain_tissue_functions: set[str],
     call_sites_from_json: list[CallSiteInfo],
-):
+) -> LocalizeMutableGlobalsPhase1Results:
+    phase1index = create_xj_clang_index()
+    tus = parse_project(phase1index, compdb)
+
     all_function_names, nonmain_tissue_function_cursors = extract_function_info(
         tus, nonmain_tissue_functions
     )
@@ -465,9 +466,7 @@ def localize_mutable_globals_phase1(
     ]
 
     results = LocalizeMutableGlobalsPhase1Results(
-        liftable_mutated_globals_and_statics=liftable_mutated_globals_and_statics,
         all_function_names=all_function_names,
-        globals_and_statics=globals_and_statics,
         mutd_or_escd_global_names=mutd_or_escd_global_names,
         ineligible_for_lifting=ineligible_for_lifting,
     )
@@ -519,7 +518,7 @@ def localize_mutable_globals_phase1(
 
                 rewriter.add_rewrite(file_path, insert_offset, overwrite_len, insert_text)
 
-        # Step 6: Modify call sites to pass xjg (using JSON call site info)
+        # Step 6: Modify call sites to pass placeholder-for-xjg (using JSON call site info)
         for call_info in call_sites_from_json:
             caller_func = call_info.caller_func
             callee_func = call_info.callee_func
@@ -590,7 +589,59 @@ def localize_mutable_globals_phase1(
                     f"  WARNING: Could not find call to {callee_func} from {caller_func} at {i_file_path}:{line}:{col}"
                 )
 
+        if True:
+            # Find the file containing main() and its main function cursor
+            main_file = None
+            for abs_path, tu in tus.items():
+                for cursor in tu.cursor.walk_preorder():
+                    if cursor.kind == CursorKind.FUNCTION_DECL and cursor.spelling == "main":
+                        main_file = abs_path
+                        break
+                if main_file:
+                    break
+
+            # Collect files that need includes
+            files_needing_include = set()
+
+            # Files with global definitions (including main file)
+            for cursor in liftable_mutated_globals_and_statics:
+                files_needing_include.add(cursor.location.file.name)
+
+            # Add forward declaration to all relevant files
+            for file_path_str in files_needing_include:
+                fwd_decl_text = "struct XjGlobals;\n"
+                rewriter.add_rewrite(file_path_str, 0, 0, fwd_decl_text)
+
     return results
+
+
+def update_function_pointer_types_for_function_pointers(
+    tus: dict[str, TranslationUnit], phase1results: LocalizeMutableGlobalsPhase1Results
+):
+    for tu in tus.values():
+        for cursor in tu.cursor.walk_preorder():
+            if cursor.kind == CursorKind.DECL_REF_EXPR:
+                sp = cursor.spelling
+                if (
+                    sp in phase1results.mutd_or_escd_global_names
+                    and sp in phase1results.all_function_names
+                    and sp not in phase1results.ineligible_for_lifting
+                ):
+                    # Update the pointer type as needed
+                    print(cursor.spelling)
+                    print(cursor.extent)
+                    print(cursor.type.spelling)
+                    print(cursor.type.get_declaration().extent)
+                    if cursor.semantic_parent:
+                        print("semantic parent location:")
+                        print(cursor.semantic_parent.location)
+                        print("semantic parent kind:", cursor.semantic_parent.kind)
+                    if cursor.lexical_parent:
+                        print("lexical_parent location:")
+                        print(cursor.lexical_parent.location)
+                        print("lexical_parent kind:", cursor.lexical_parent.kind)
+
+                    print()
 
 
 def localize_mutable_globals(
@@ -690,22 +741,42 @@ def localize_mutable_globals(
     #
     #
     # Step 2a: Find definitions of each mutated_or_escaped_global
-    index = create_xj_clang_index()
-    tus = parse_project(index, compdb)
-
     nonmain_tissue_functions: set[str] = set(j.get("mutable_global_tissue", {}).get("tissue", []))
     nonmain_tissue_functions.discard("main")  # Don't modify main
 
+    # This is conceptually part of step 1, but it's the only thing that
+    # needs prev & current_codebase so we do it out here.
     call_sites_from_json = get_call_sites_from_json(
         prev, current_codebase, j, nonmain_tissue_functions
     )
 
     phase1results = localize_mutable_globals_phase1(
-        tus,
+        compdb,
         j,
         nonmain_tissue_functions,
         call_sites_from_json,
     )
+
+    index = create_xj_clang_index()
+    tus = parse_project(index, compdb)
+
+    globals_and_statics = compute_globals_and_statics_for_translation_units(
+        list(tus.values()), elide_functions=True
+    )
+    liftable_mutated_globals_and_statics = [
+        c
+        for c in globals_and_statics
+        if c.spelling in phase1results.mutd_or_escd_global_names
+        and c.spelling not in phase1results.ineligible_for_lifting
+    ]
+
+    update_function_pointer_types_for_function_pointers(tus, phase1results)
+
+    return
+
+    # NOTE: the call site location information
+    # in `j["call_graph_components"]` / call_sites_from_json is now invalid,
+    # but we no longer need it.
 
     # Step 2b: Construct transitive closure of struct/union definitions
     print("\n" + "=" * 80)
@@ -872,18 +943,7 @@ def localize_mutable_globals(
     print("STEPS 5 & 6: Modifying function signatures and call sites")
     print("=" * 80)
 
-    nonmain_tissue_functions = set(j.get("mutable_global_tissue", {}).get("tissue", []))
-    nonmain_tissue_functions.discard("main")  # Don't modify main
-
     print(f"\nTissue functions to modify: {nonmain_tissue_functions}")
-
-    call_sites_from_json = get_call_sites_from_json(
-        prev, current_codebase, j, nonmain_tissue_functions
-    )
-
-    all_function_names, nonmain_tissue_function_cursors = extract_function_info(
-        tus, nonmain_tissue_functions
-    )
 
     # Apply all rewrites using a single BatchingRewriter
     # This ensures offsets are calculated correctly
@@ -897,7 +957,7 @@ def localize_mutable_globals(
                 if (
                     child.kind == CursorKind.DECL_REF_EXPR
                     and child.spelling in phase1results.mutd_or_escd_global_names
-                    and child.spelling not in all_function_names
+                    and child.spelling not in phase1results.all_function_names
                 ):
                     # Get the extent of the variable reference
                     start_offset = child.extent.start.offset
@@ -1195,19 +1255,6 @@ def localize_mutable_globals(
                     break
             if main_file:
                 break
-
-        # Collect files that need includes
-        files_needing_include = set()
-
-        # Files with global definitions (not including main file)
-        for cursor in phase1results.liftable_mutated_globals_and_statics:
-            if cursor.location.file.name != main_file:
-                files_needing_include.add(cursor.location.file.name)
-
-        # Add forward declaration to non-main files
-        for file_path_str in files_needing_include:
-            fwd_decl_text = "struct XjGlobals;\n"
-            rewriter.add_rewrite(file_path_str, 0, 0, fwd_decl_text)
 
         # For the main file, collect types already in scope
         if main_file and main_cursor:
