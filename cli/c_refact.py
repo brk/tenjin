@@ -494,11 +494,6 @@ def localize_mutable_globals(
 
     print("ineligible_lifting:", list(ineligible_for_lifting))
 
-    def un_uf(uf: str) -> str:
-        nonlocal j
-        v = j["unique_filenames"][uf]
-        return v["directory"] + "/" + v["filename"]
-
     # To localize mutable globals, we perform the following steps:
     # z. Inspect j["global_initializer_references"] to identify those globals which
     #     reference other mutable globals in their initializers. To avoid creating a
@@ -728,45 +723,9 @@ def localize_mutable_globals(
 
     # Collect all function definitions and call sites from JSON
     function_defs = {}  # function_name -> {cursor, file, abs_path}
-    call_sites_from_json: list[CallSiteInfo] = []  # From the JSON analysis
-
-    # Get call sites from JSON (more reliable than libclang semantic_parent)
-    for component in j.get("call_graph_components", []):
-        if not component.get("all_mutable", False):
-            continue
-        call_targets = component.get("call_targets", [])
-        for target in call_targets:
-            # Target format: "<llvm-link>:function_name"
-            if ":" in target:
-                callee_func = target.split(":")[-1]
-                if callee_func in nonmain_tissue_functions:
-                    # Record all call sites for this target
-                    for site in component.get("call_sites", []):
-                        caller_func = site.get("p")
-                        uf = site.get("uf")
-                        line = site.get("line")
-                        col = site.get("col")
-
-                        # Get the actual file path - need to adjust for current directory
-                        # The JSON has paths from c_03 but we're working in c_04
-                        file_path_old = un_uf(uf)
-                        assert file_path_old.startswith(prev.as_posix())
-                        i_file_path = file_path_old.replace(
-                            prev.as_posix(), current_codebase.as_posix()
-                        )
-
-                        call_sites_from_json.append(
-                            CallSiteInfo(
-                                caller_func=caller_func,
-                                callee_func=callee_func,
-                                i_file_path=i_file_path,
-                                line=line,
-                                col=col,
-                            )
-                        )
-                        print(
-                            f"  From JSON: {caller_func} calls {callee_func} at {uf}:{line}:{col}"
-                        )
+    call_sites_from_json = get_call_sites_from_json(
+        prev, current_codebase, j, nonmain_tissue_functions
+    )
 
     for abs_path, tu in tus.items():
         for cursor in tu.cursor.walk_preorder():
@@ -912,16 +871,10 @@ def localize_mutable_globals(
                         # No arguments
                         insert_offset = paren_pos + 1
                         insert_text = param_to_pass
-                        print(
-                            f"  Passing {param_to_pass} to {callee_func} from {caller_func} at {uf}:{line} (no args)"
-                        )
                     else:
                         # Has arguments, add as first argument with comma
                         insert_offset = paren_pos + 1
                         insert_text = param_to_pass + ", "
-                        print(
-                            f"  Passing {param_to_pass} to {callee_func} from {caller_func} at {uf}:{line} (with args)"
-                        )
 
                     rewriter.add_rewrite(i_file_path, insert_offset, 0, insert_text)
                     found_call = True
@@ -929,7 +882,7 @@ def localize_mutable_globals(
 
             if not found_call:
                 raise ValueError(
-                    f"  WARNING: Could not find call to {callee_func} from {caller_func} at {uf}:{line}:{col}"
+                    f"  WARNING: Could not find call to {callee_func} from {caller_func} at {i_file_path}:{line}:{col}"
                 )
 
         # Step 8: Replace uses of mutable globals with xjg->WHATEVER
@@ -1368,6 +1321,50 @@ def localize_mutable_globals(
             print(f"\n  Added type definitions before main() in {main_file}")
 
     print("=" * 80)
+
+
+def get_call_sites_from_json(prev, current_codebase, j, nonmain_tissue_functions):
+    def un_uf(uf: str) -> str:
+        v = j["unique_filenames"][uf]
+        return v["directory"] + "/" + v["filename"]
+
+    call_sites: list[CallSiteInfo] = []
+
+    # Get call sites from JSON (more reliable than libclang semantic_parent)
+    for component in j.get("call_graph_components", []):
+        if not component.get("all_mutable", False):
+            continue
+        call_targets = component.get("call_targets", [])
+        for target in call_targets:
+            # Target format: "<llvm-link>:function_name"
+            if ":" in target:
+                callee_func = target.split(":")[-1]
+                if callee_func in nonmain_tissue_functions:
+                    # Record all call sites for this target
+                    for site in component.get("call_sites", []):
+                        caller_func = site.get("p")
+                        line = site.get("line")
+                        col = site.get("col")
+
+                        # Get the actual file path - need to adjust for current directory
+                        # The JSON has paths from c_03 but we're working in c_04
+                        file_path_old = un_uf(site.get("uf"))
+                        assert file_path_old.startswith(prev.as_posix())
+                        i_file_path = file_path_old.replace(
+                            prev.as_posix(), current_codebase.as_posix()
+                        )
+
+                        call_sites.append(
+                            CallSiteInfo(
+                                caller_func=caller_func,
+                                callee_func=callee_func,
+                                i_file_path=i_file_path,
+                                line=line,
+                                col=col,
+                            )
+                        )
+
+    return call_sites
 
 
 """
