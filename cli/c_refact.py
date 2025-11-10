@@ -416,6 +416,183 @@ def compute_globals_and_statics_for_translation_unit(
     return results
 
 
+@dataclass
+class LocalizeMutableGlobalsPhase1Results:
+    globals_and_statics: list[Cursor]
+    liftable_mutated_globals_and_statics: list[Cursor]
+    ineligible_for_lifting: set[str]
+    all_function_names: set[str]
+    mutd_or_escd_global_names: set[str]
+
+
+def localize_mutable_globals_phase1(
+    tus: dict[str, TranslationUnit],
+    j: dict,
+    nonmain_tissue_functions: set[str],
+    call_sites_from_json: list[CallSiteInfo],
+):
+    all_function_names, nonmain_tissue_function_cursors = extract_function_info(
+        tus, nonmain_tissue_functions
+    )
+
+    ineligible_for_lifting = set()
+    for refs in j.get("global_initializer_references", {}).values():
+        for r in refs:
+            if r.startswith(".str"):
+                continue
+            ineligible_for_lifting.add(demangle_meg(r))
+
+    print("ineligible_lifting:", list(ineligible_for_lifting))
+
+    # Entries in this list are either plain global names, or for function-scoped statics,
+    # they are in the format "function_name.var_name_xjtr_N"
+    mangled_mutated_globals = j.get("mutated_or_escaped_global", [])
+
+    mutd_or_escd_global_names_list = [demangle_meg(name) for name in mangled_mutated_globals]
+    mutd_or_escd_global_names = set(mutd_or_escd_global_names_list)
+    assert len(mutd_or_escd_global_names) == len(mutd_or_escd_global_names_list), (
+        "Expected all mutated global names to be unique after demangling, "
+        + f"but got duplicates within: {mutd_or_escd_global_names_list}"
+    )
+    print("mutated_or_escaped_globals:", list(mutd_or_escd_global_names))
+    globals_and_statics = compute_globals_and_statics_for_translation_units(
+        list(tus.values()), elide_functions=True
+    )
+    liftable_mutated_globals_and_statics = [
+        c
+        for c in globals_and_statics
+        if c.spelling in mutd_or_escd_global_names and c.spelling not in ineligible_for_lifting
+    ]
+
+    results = LocalizeMutableGlobalsPhase1Results(
+        liftable_mutated_globals_and_statics=liftable_mutated_globals_and_statics,
+        all_function_names=all_function_names,
+        globals_and_statics=globals_and_statics,
+        mutd_or_escd_global_names=mutd_or_escd_global_names,
+        ineligible_for_lifting=ineligible_for_lifting,
+    )
+
+    with batching_rewriter.BatchingRewriter() as rewriter:
+        # For each non-main tissue function, add 'struct XjGlobals *xjg' as first parameter
+        for func_name, func_cursors in nonmain_tissue_function_cursors.items():
+            for func_info in func_cursors:
+                cursor = func_info.cursor
+                file_path = func_info.file
+                is_def = func_info.is_definition
+
+                # Find the position after the opening parenthesis
+                with open(file_path, "rb") as f:
+                    content = f.read()
+
+                # Get the function start location
+                func_start_offset = cursor.extent.start.offset
+
+                # Find the opening parenthesis
+                paren_pos = content.find(b"(", func_start_offset)
+                if paren_pos == -1:
+                    continue
+
+                # Check if there are existing parameters
+                closing_paren_pos = content.find(b")", paren_pos)
+                if closing_paren_pos == -1:
+                    continue
+
+                # Check if there are parameters already
+                param_section = content[paren_pos + 1 : closing_paren_pos].strip()
+
+                decl_type = "definition" if is_def else "declaration"
+
+                overwrite_len = 0
+                if param_section == b"" or param_section == b"void":
+                    # No parameters, just add our parameter
+                    insert_offset = paren_pos + 1
+                    insert_text = "struct XjGlobals *xjg"
+                    overwrite_len = len(b"void") if param_section == b"void" else 0
+                    print(f"  Adding xjg parameter to {func_name} {decl_type} (no existing params)")
+                else:
+                    # Has parameters, add as first parameter with comma
+                    insert_offset = paren_pos + 1
+                    insert_text = "struct XjGlobals *xjg, "
+                    print(
+                        f"  Adding xjg parameter to {func_name} {decl_type} (with existing params)"
+                    )
+
+                rewriter.add_rewrite(file_path, insert_offset, overwrite_len, insert_text)
+
+        # Step 6: Modify call sites to pass xjg (using JSON call site info)
+        for call_info in call_sites_from_json:
+            caller_func = call_info.caller_func
+            callee_func = call_info.callee_func
+            i_file_path = call_info.i_file_path
+            line = call_info.line
+            col = call_info.col
+
+            # Working with .i files (in particular, ones without line markers)
+            # allows us to reliably edit call sites. Otherwise, we'd have to contend
+            # with call sites that are synthesized by the preprocessor in horrific ways.
+            assert i_file_path.endswith(".nolines.i")
+            assert i_file_path in tus
+
+            # Determine what to pass based on caller
+            if callee_func in nonmain_tissue_functions:
+                param_to_pass = "((XjGlobals*)NULL)"
+            else:
+                # Caller is not in tissue, skip for now
+                print(f"    Skipping: callee {callee_func} not in tissue")
+                continue
+
+            # Find the call expression at the given location
+            # We need to use libclang to find the exact offset
+            found_call = False
+            tu = tus[i_file_path]
+            for cursor in tu.cursor.walk_preorder():
+                if cursor.kind != CursorKind.CALL_EXPR:
+                    continue
+
+                loc = cursor.location
+                if line != loc.line or col != loc.column:
+                    continue
+
+                if loc.line == line and loc.column == col and str(loc.file) == i_file_path:
+                    # Found the call
+                    call_start_offset = cursor.extent.start.offset
+
+                    # Read file to find parenthesis
+                    with open(i_file_path, "rb") as f:
+                        content = f.read()
+
+                    paren_pos = content.find(b"(", call_start_offset)
+                    if paren_pos == -1:
+                        break
+
+                    # Check if there are existing arguments
+                    closing_paren_pos = content.find(b")", paren_pos)
+                    if closing_paren_pos == -1:
+                        break
+
+                    args_section = content[paren_pos + 1 : closing_paren_pos].strip()
+
+                    if args_section == b"":
+                        # No arguments
+                        insert_offset = paren_pos + 1
+                        insert_text = param_to_pass
+                    else:
+                        # Has arguments, add as first argument with comma
+                        insert_offset = paren_pos + 1
+                        insert_text = param_to_pass + ", "
+
+                    rewriter.add_rewrite(i_file_path, insert_offset, 0, insert_text)
+                    found_call = True
+                    break
+
+            if not found_call:
+                raise ValueError(
+                    f"  WARNING: Could not find call to {callee_func} from {caller_func} at {i_file_path}:{line}:{col}"
+                )
+
+    return results
+
+
 def localize_mutable_globals(
     json_path: Path,
     compdb: compilation_database.CompileCommands,
@@ -485,15 +662,6 @@ def localize_mutable_globals(
     # Assume this value holds an instance of the above JSON type
     j: dict = json.load(json_path.open("r"))
 
-    ineligible_for_lifting = set()
-    for refs in j.get("global_initializer_references", {}).values():
-        for r in refs:
-            if r.startswith(".str"):
-                continue
-            ineligible_for_lifting.add(demangle_meg(r))
-
-    print("ineligible_lifting:", list(ineligible_for_lifting))
-
     # To localize mutable globals, we perform the following steps:
     # z. Inspect j["global_initializer_references"] to identify those globals which
     #     reference other mutable globals in their initializers. To avoid creating a
@@ -525,33 +693,19 @@ def localize_mutable_globals(
     index = create_xj_clang_index()
     tus = parse_project(index, compdb)
 
-    # Entries in this list are either plain global names, or for function-scoped statics,
-    # they are in the format "function_name.var_name_xjtr_N"
-    mangled_mutated_globals = j.get("mutated_or_escaped_global", [])
+    nonmain_tissue_functions: set[str] = set(j.get("mutable_global_tissue", {}).get("tissue", []))
+    nonmain_tissue_functions.discard("main")  # Don't modify main
 
-    mutd_or_escd_global_names_list = [demangle_meg(name) for name in mangled_mutated_globals]
-    mutd_or_escd_global_names = set(mutd_or_escd_global_names_list)
-    assert len(mutd_or_escd_global_names) == len(mutd_or_escd_global_names_list), (
-        "Expected all mutated global names to be unique after demangling, "
-        + f"but got duplicates within: {mutd_or_escd_global_names_list}"
+    call_sites_from_json = get_call_sites_from_json(
+        prev, current_codebase, j, nonmain_tissue_functions
     )
 
-    print("=" * 80)
-    print("STEP 2a: Finding global definitions")
-    print("=" * 80)
-
-    globals_and_statics = compute_globals_and_statics_for_translation_units(
-        list(tus.values()), elide_functions=True
+    phase1results = localize_mutable_globals_phase1(
+        tus,
+        j,
+        nonmain_tissue_functions,
+        call_sites_from_json,
     )
-    liftable_mutated_globals_and_statics = [
-        c
-        for c in globals_and_statics
-        if c.spelling in mutd_or_escd_global_names and c.spelling not in ineligible_for_lifting
-    ]
-    # import pprint
-
-    # print("nonvibed globals:")
-    # pprint.pprint([mk_NamedDeclInfo(cursor) for cursor in globals_and_statics])
 
     # Step 2b: Construct transitive closure of struct/union definitions
     print("\n" + "=" * 80)
@@ -670,15 +824,17 @@ def localize_mutable_globals(
                         print(f"{indent}    Field: {field.spelling} : {field.type.spelling}")
                         collect_type_dependencies(field.type, depth + 2)
 
-    for cursor in liftable_mutated_globals_and_statics:
+    for cursor in phase1results.liftable_mutated_globals_and_statics:
         print(f"\nAnalyzing dependencies for {cursor.spelling}:")
         collect_type_dependencies(cursor.type, depth=1)
 
     print("\n" + "=" * 80)
     print("SUMMARY")
     print("=" * 80)
-    print(f"\nFound {len(liftable_mutated_globals_and_statics)} mutated global definitions:")
-    for cursor in liftable_mutated_globals_and_statics:
+    print(
+        f"\nFound {len(phase1results.liftable_mutated_globals_and_statics)} mutated global definitions:"
+    )
+    for cursor in phase1results.liftable_mutated_globals_and_statics:
         print(
             f"  - {cursor.spelling}: {cursor.type.spelling} at {cursor.location.file}:{cursor.location.line}"
         )
@@ -732,124 +888,6 @@ def localize_mutable_globals(
     # Apply all rewrites using a single BatchingRewriter
     # This ensures offsets are calculated correctly
     with batching_rewriter.BatchingRewriter() as rewriter:
-        # Step 5: Add xjg parameter to tissue function signatures (definitions and declarations)
-        # Update all function signatures (both declarations and definitions)
-        for func_name, cursors_list in nonmain_tissue_function_cursors.items():
-            for func_info in cursors_list:
-                cursor = func_info.cursor
-                file_path = func_info.file
-                is_def = func_info.is_definition
-
-                # Find the position after the opening parenthesis
-                with open(file_path, "rb") as f:
-                    content = f.read()
-
-                # Get the function start location
-                func_start_offset = cursor.extent.start.offset
-
-                # Find the opening parenthesis
-                paren_pos = content.find(b"(", func_start_offset)
-                if paren_pos == -1:
-                    continue
-
-                # Check if there are existing parameters
-                closing_paren_pos = content.find(b")", paren_pos)
-                if closing_paren_pos == -1:
-                    continue
-
-                # Check if there are parameters already
-                param_section = content[paren_pos + 1 : closing_paren_pos].strip()
-
-                decl_type = "definition" if is_def else "declaration"
-
-                overwrite_len = 0
-                if param_section == b"" or param_section == b"void":
-                    # No parameters, just add our parameter
-                    insert_offset = paren_pos + 1
-                    insert_text = "struct XjGlobals *xjg"
-                    overwrite_len = len(b"void") if param_section == b"void" else 0
-                    print(f"  Adding xjg parameter to {func_name} {decl_type} (no existing params)")
-                else:
-                    # Has parameters, add as first parameter with comma
-                    insert_offset = paren_pos + 1
-                    insert_text = "struct XjGlobals *xjg, "
-                    print(
-                        f"  Adding xjg parameter to {func_name} {decl_type} (with existing params)"
-                    )
-
-                rewriter.add_rewrite(file_path, insert_offset, overwrite_len, insert_text)
-
-        # Step 6: Modify call sites to pass xjg (using JSON call site info)
-        for call_info in call_sites_from_json:
-            caller_func = call_info.caller_func
-            callee_func = call_info.callee_func
-            i_file_path = call_info.i_file_path
-            line = call_info.line
-            col = call_info.col
-
-            # Working with .i files (in particular, ones without line markers)
-            # allows us to reliably edit call sites. Otherwise, we'd have to contend
-            # with call sites that are synthesized by the preprocessor in horrific ways.
-            assert i_file_path.endswith(".nolines.i")
-            assert i_file_path in tus
-
-            # Determine what to pass based on caller
-            if callee_func in nonmain_tissue_functions:
-                param_to_pass = "xjg"
-            else:
-                # Caller is not in tissue, skip for now
-                print(f"    Skipping: callee {callee_func} not in tissue")
-                continue
-
-            # Find the call expression at the given location
-            # We need to use libclang to find the exact offset
-            found_call = False
-            tu = tus[i_file_path]
-            for cursor in tu.cursor.walk_preorder():
-                if cursor.kind != CursorKind.CALL_EXPR:
-                    continue
-
-                loc = cursor.location
-                if line != loc.line or col != loc.column:
-                    continue
-
-                if loc.line == line and loc.column == col and str(loc.file) == i_file_path:
-                    # Found the call
-                    call_start_offset = cursor.extent.start.offset
-
-                    # Read file to find parenthesis
-                    with open(i_file_path, "rb") as f:
-                        content = f.read()
-
-                    paren_pos = content.find(b"(", call_start_offset)
-                    if paren_pos == -1:
-                        break
-
-                    # Check if there are existing arguments
-                    closing_paren_pos = content.find(b")", paren_pos)
-                    if closing_paren_pos == -1:
-                        break
-
-                    args_section = content[paren_pos + 1 : closing_paren_pos].strip()
-
-                    if args_section == b"":
-                        # No arguments
-                        insert_offset = paren_pos + 1
-                        insert_text = param_to_pass
-                    else:
-                        # Has arguments, add as first argument with comma
-                        insert_offset = paren_pos + 1
-                        insert_text = param_to_pass + ", "
-
-                    rewriter.add_rewrite(i_file_path, insert_offset, 0, insert_text)
-                    found_call = True
-                    break
-
-            if not found_call:
-                raise ValueError(
-                    f"  WARNING: Could not find call to {callee_func} from {caller_func} at {i_file_path}:{line}:{col}"
-                )
-
         # Step 8: Replace uses of mutable globals with xjg->WHATEVER
         print("\n  --- Step 8: Replacing global variable accesses ---")
         for abs_path, tu in tus.items():
@@ -858,7 +896,7 @@ def localize_mutable_globals(
                 #     for child in cursor.walk_preorder():
                 if (
                     child.kind == CursorKind.DECL_REF_EXPR
-                    and child.spelling in mutd_or_escd_global_names
+                    and child.spelling in phase1results.mutd_or_escd_global_names
                     and child.spelling not in all_function_names
                 ):
                     # Get the extent of the variable reference
@@ -955,9 +993,11 @@ def localize_mutable_globals(
 
         # Add the XjGlobals struct definition
         mutated_globals_cursors_by_name = {
-            c.spelling: c for c in liftable_mutated_globals_and_statics
+            c.spelling: c for c in phase1results.liftable_mutated_globals_and_statics
         }
-        assert len(mutated_globals_cursors_by_name) == len(liftable_mutated_globals_and_statics), (
+        assert len(mutated_globals_cursors_by_name) == len(
+            phase1results.liftable_mutated_globals_and_statics
+        ), (
             "Expected all (liftable) mutated global names to be unique, "
             + f"but got duplicates within: {mutated_globals_cursors_by_name.keys()}"
         )
@@ -988,14 +1028,14 @@ def localize_mutable_globals(
 
         global_dependencies: dict[str, set[str]] = {}  # global_name -> set of referenced globals
 
-        for var_cursor in liftable_mutated_globals_and_statics:
+        for var_cursor in phase1results.liftable_mutated_globals_and_statics:
             dependencies = set()
 
             # Walk through the initializer expression to find DECL_REF_EXPR nodes
             for child in var_cursor.walk_preorder():
                 if (
                     child.kind == CursorKind.DECL_REF_EXPR
-                    and child.spelling not in mutd_or_escd_global_names
+                    and child.spelling not in phase1results.mutd_or_escd_global_names
                 ):
                     dependencies.add(child.spelling)
                     print(f"    {var_cursor.spelling} references {child.spelling}")
@@ -1014,7 +1054,7 @@ def localize_mutable_globals(
                 globals_to_copy_to_main.add(dep)
                 collect_transitive_deps(dep, visited)
 
-        for global_name in mutd_or_escd_global_names_list:
+        for global_name in phase1results.mutd_or_escd_global_names:
             collect_transitive_deps(global_name, set())
 
         print(f"\n  Globals to copy into main before xjgv: {globals_to_copy_to_main}")
@@ -1029,7 +1069,9 @@ def localize_mutable_globals(
                 ):
                     print(f"  Found main() at {abs_path}:{cursor.location.line}")
 
-                    globals_and_statics_by_name = {c.spelling: c for c in globals_and_statics}
+                    globals_and_statics_by_name = {
+                        c.spelling: c for c in phase1results.globals_and_statics
+                    }
 
                     # Find the opening brace of main's body
                     # The compound statement is a child of the function
@@ -1158,7 +1200,7 @@ def localize_mutable_globals(
         files_needing_include = set()
 
         # Files with global definitions (not including main file)
-        for cursor in liftable_mutated_globals_and_statics:
+        for cursor in phase1results.liftable_mutated_globals_and_statics:
             if cursor.location.file.name != main_file:
                 files_needing_include.add(cursor.location.file.name)
 
