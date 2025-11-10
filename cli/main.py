@@ -105,6 +105,7 @@ def cli():
 def translate(codebase, resultsdir, cratename, c_main_in, guidance, buildcmd, reset_resultsdir):
     root = repo_root.find_repo_root_dir_Path()
     cli_subcommands.do_build_rs(root)
+    cli_subcommands.do_build_xj_prepare_findfnptrdecls()
 
     if Path(codebase).is_dir() and list(Path(codebase).glob("*.*")) == []:
         click.echo(
@@ -135,6 +136,7 @@ def translate(codebase, resultsdir, cratename, c_main_in, guidance, buildcmd, re
 def translate_and_run(c_file_or_codebase):
     root = repo_root.find_repo_root_dir_Path()
     cli_subcommands.do_build_rs(root, capture_output=True)
+    cli_subcommands.do_build_xj_prepare_findfnptrdecls(capture_output=True)
 
     with tempfile.TemporaryDirectory() as tempdir:
         tempdir_path = Path(tempdir)

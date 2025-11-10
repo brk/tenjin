@@ -55,6 +55,10 @@ def xj_codehawk_c(localdir: Path) -> Path:
     return localdir / "codehawk-c"
 
 
+def xj_prepare_findfnptrdecls_build_dir(localdir: Path) -> Path:
+    return localdir / "_build_findfnptrdecls"
+
+
 def mk_env_for(localdir: Path, with_tenjin_deps=True, env_ext=None, **kwargs) -> dict[str, str]:
     if "env" in kwargs:
         env = kwargs["env"]

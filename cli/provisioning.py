@@ -1190,9 +1190,16 @@ def provision_10j_llvm_with(version: str, keyname: str):
 
     if target_dir_existed:
         # We must clean up any executables that dynamically linked against the old LLVM.
-        # Tenjin's c2rust binary will be rebuilt on demand.
         sez("Cleaning up binaries linked against the prior LLVM version...", ctx="(c2rust) ")
+
+        # Tenjin's c2rust binary will be rebuilt on demand.
         hermetic.run_cargo_in(["clean"], repo_root.find_repo_root_dir_Path() / "c2rust")
+
+        # So will xj-prepare-find-fn-ptr-decls, so we can just delete its build dir.
+        shutil.rmtree(
+            hermetic.xj_prepare_findfnptrdecls_build_dir(localdir),
+            ignore_errors=False,
+        )
 
         # Upstream c2rust is not rebuilt automatically, so we need to do it here.
         upstream_c2rust_dir = hermetic.xj_upstream_c2rust(localdir)

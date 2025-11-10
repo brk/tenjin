@@ -426,11 +426,20 @@ class LocalizeMutableGlobalsPhase1Results:
 def localize_mutable_globals_phase1(
     compdb: compilation_database.CompileCommands,
     j: dict,
+    current_codebase: Path,
+    prev: Path,
     nonmain_tissue_functions: set[str],
-    call_sites_from_json: list[CallSiteInfo],
 ) -> LocalizeMutableGlobalsPhase1Results:
     phase1index = create_xj_clang_index()
     tus = parse_project(phase1index, compdb)
+
+    fn_ptr_type_ranges_needing_modifications = run_xj_prepare_findfnptrdecls(
+        current_codebase, nonmain_tissue_functions
+    )
+
+    call_sites_from_json = get_call_sites_from_json(
+        prev, current_codebase, j, nonmain_tissue_functions
+    )
 
     all_function_names, nonmain_tissue_function_cursors = extract_function_info(
         tus, nonmain_tissue_functions
@@ -472,6 +481,31 @@ def localize_mutable_globals_phase1(
     )
 
     with batching_rewriter.BatchingRewriter() as rewriter:
+        for filepath_str, ranges in fn_ptr_type_ranges_needing_modifications.items():
+            content = rewriter.get_content(filepath_str)
+
+            print(filepath_str)
+            print(ranges)
+            print("7777777777777777777777777777")
+
+            for start_offset, end_offset in ranges:
+                original_text = content[start_offset:end_offset].decode("utf-8")
+                between_parens = original_text[1:].strip()
+                add_trailing_comma = False
+                if between_parens == "void" or not between_parens:
+                    target_offset = end_offset  # replace void (and whitespace)
+                else:
+                    add_trailing_comma = True
+                    target_offset = start_offset + 1
+
+                after_opening_paren = start_offset + 1
+                rewriter.add_rewrite(
+                    filepath_str,
+                    after_opening_paren,
+                    target_offset - after_opening_paren,
+                    f"struct XjGlobals *{', ' if add_trailing_comma else ''}",
+                )
+
         # For each non-main tissue function, add 'struct XjGlobals *xjg' as first parameter
         for func_name, func_cursors in nonmain_tissue_function_cursors.items():
             for func_info in func_cursors:
@@ -533,7 +567,7 @@ def localize_mutable_globals_phase1(
 
             # Determine what to pass based on caller
             if callee_func in nonmain_tissue_functions:
-                param_to_pass = "((XjGlobals*)NULL)"
+                param_to_pass = "((struct XjGlobals*)0)"
             else:
                 # Caller is not in tissue, skip for now
                 print(f"    Skipping: callee {callee_func} not in tissue")
@@ -616,8 +650,23 @@ def localize_mutable_globals_phase1(
 def update_function_pointer_types_for_function_pointers(
     tus: dict[str, TranslationUnit], phase1results: LocalizeMutableGlobalsPhase1Results
 ):
+    rhs_of_assignment = []
     for tu in tus.values():
         for cursor in tu.cursor.walk_preorder():
+            if cursor.kind == CursorKind.BINARY_OPERATOR:
+                # Check if this is an assignment to a function pointer
+                children = list(cursor.get_children())
+                if len(children) != 2:
+                    continue
+                lhs, rhs = children
+                if lhs.kind != CursorKind.DECL_REF_EXPR:
+                    continue
+                lhs_type = lhs.type
+                if lhs_type.kind != TypeKind.POINTER:
+                    continue
+                pointee_type = lhs_type.get_pointee()
+                if pointee_type.kind != TypeKind.FUNCTIONPROTO:
+                    continue
             if cursor.kind == CursorKind.DECL_REF_EXPR:
                 sp = cursor.spelling
                 if (
@@ -640,6 +689,42 @@ def update_function_pointer_types_for_function_pointers(
                         print("lexical_parent kind:", cursor.lexical_parent.kind)
 
                     print()
+
+
+def run_xj_prepare_findfnptrdecls(
+    current_codebase: Path,
+    nonmain_tissue_functions: set[str],
+) -> dict[str, list[tuple[int, int]]]:
+    builddir = hermetic.xj_prepare_findfnptrdecls_build_dir(repo_root.localdir())
+    assert builddir.exists(), (
+        f"Build directory {builddir} does not exist, should have been built already"
+    )
+
+    names_path = current_codebase / "nonmain_tissue_functions.txt"
+    with open(names_path, "w", encoding="utf-8") as f:
+        for fn in sorted(nonmain_tissue_functions):
+            f.write(fn + "\n")
+
+    # Keep in sync with `xj-prepare-findfnptrdecls/CMakeLists.txt`
+    binary_path = builddir / "xj-find-fn-ptr-decls"
+
+    cp = hermetic.run(
+        [
+            binary_path.as_posix(),
+            "--extra-arg=-Wno-zero-length-array",
+            "--extra-arg=-Wno-implicit-int-conversion",
+            "--extra-arg=-Wno-unused-function",
+            "--executor=all-TUs",
+            "--modified_fns_file",
+            names_path.as_posix(),
+            (current_codebase / "compile_commands.json").as_posix(),
+        ],
+        cwd=current_codebase,
+        check=True,
+        capture_output=True,
+    )
+
+    return json.loads(cp.stdout.decode("utf-8"))
 
 
 def localize_mutable_globals(
@@ -742,17 +827,8 @@ def localize_mutable_globals(
     nonmain_tissue_functions: set[str] = set(j.get("mutable_global_tissue", {}).get("tissue", []))
     nonmain_tissue_functions.discard("main")  # Don't modify main
 
-    # This is conceptually part of step 1, but it's the only thing that
-    # needs prev & current_codebase so we do it out here.
-    call_sites_from_json = get_call_sites_from_json(
-        prev, current_codebase, j, nonmain_tissue_functions
-    )
-
     phase1results = localize_mutable_globals_phase1(
-        compdb,
-        j,
-        nonmain_tissue_functions,
-        call_sites_from_json,
+        compdb, j, current_codebase, prev, nonmain_tissue_functions
     )
 
     index = create_xj_clang_index()
@@ -768,13 +844,9 @@ def localize_mutable_globals(
         and c.spelling not in phase1results.ineligible_for_lifting
     ]
 
-    update_function_pointer_types_for_function_pointers(tus, phase1results)
+    # update_function_pointer_types_for_function_pointers(tus, phase1results)
 
     return
-
-    # NOTE: the call site location information
-    # in `j["call_graph_components"]` / call_sites_from_json is now invalid,
-    # but we no longer need it.
 
     # Step 2b: Construct transitive closure of struct/union definitions
     print("\n" + "=" * 80)
