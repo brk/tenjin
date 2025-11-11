@@ -480,8 +480,7 @@ def localize_mutable_globals_phase1(
                 is_def = func_info.is_definition
 
                 # Find the position after the opening parenthesis
-                with open(file_path, "rb") as f:
-                    content = f.read()
+                content = rewriter.get_content(file_path)
 
                 # Get the function start location
                 func_start_offset = cursor.extent.start.offset
@@ -557,8 +556,7 @@ def localize_mutable_globals_phase1(
                     call_start_offset = cursor.extent.start.offset
 
                     # Read file to find parenthesis
-                    with open(i_file_path, "rb") as f:
-                        content = f.read()
+                    content = rewriter.get_content(i_file_path)
 
                     paren_pos = content.find(b"(", call_start_offset)
                     if paren_pos == -1:
@@ -1025,8 +1023,7 @@ def localize_mutable_globals(
                 # Find the file containing this definition
                 for abs_path, tu in tus.items():
                     if str(abs_path) == decl_cursor.location.file.name:
-                        with open(abs_path, "rb") as f:
-                            content = f.read()
+                        content = rewriter.get_content(abs_path)
                         typedef_text = content[start_offset:end_offset].decode("utf-8")
                         header_lines.append(typedef_text + ";")
                         break
@@ -1044,8 +1041,7 @@ def localize_mutable_globals(
                 # Find the file containing this definition
                 for abs_path, tu in tus.items():
                     if str(abs_path) == decl_cursor.location.file.name:
-                        with open(abs_path, "rb") as f:
-                            content = f.read()
+                        content = rewriter.get_content(abs_path)
                         struct_text = content[start_offset:end_offset].decode("utf-8")
                         header_lines.append(struct_text + ";")
                         header_lines.append("")
@@ -1182,8 +1178,9 @@ def localize_mutable_globals(
                                         if child_node.kind != CursorKind.TYPE_REF:
                                             init_start = child_node.extent.start.offset
                                             init_end = child_node.extent.end.offset
-                                            with open(var_cursor.location.file.name, "rb") as f:
-                                                content = f.read()
+                                            content = rewriter.get_content(
+                                                var_cursor.location.file.name
+                                            )
                                             initializer = (
                                                 content[init_start:init_end].decode("utf-8").strip()
                                             )
@@ -1201,8 +1198,7 @@ def localize_mutable_globals(
                             field_inits = []
                             for global_name in sorted(mutated_globals_cursors_by_name.keys()):
                                 var_cursor = mutated_globals_cursors_by_name[global_name]
-                                with open(var_cursor.location.file.name, "rb") as f:
-                                    content = f.read()
+                                content = rewriter.get_content(var_cursor.location.file.name)
                                 if global_name.startswith("pathsize_"):
                                     print(f"   Special handling for {global_name}")
                                     for child_node in var_cursor.get_children():
@@ -1319,8 +1315,7 @@ def localize_mutable_globals(
                     end_offset = decl_cursor.extent.end.offset
                     for abs_path, tu in tus.items():
                         if str(abs_path) == decl_cursor.location.file.name:
-                            with open(abs_path, "rb") as f:
-                                content = f.read()
+                            content = rewriter.get_content(abs_path)
                             typedef_text = content[start_offset:end_offset].decode("utf-8")
                             type_defs_lines.append(typedef_text + ";")
                             break
@@ -1332,8 +1327,7 @@ def localize_mutable_globals(
                     end_offset = decl_cursor.extent.end.offset
                     for abs_path, tu in tus.items():
                         if str(abs_path) == decl_cursor.location.file.name:
-                            with open(abs_path, "rb") as f:
-                                content = f.read()
+                            content = rewriter.get_content(abs_path)
                             struct_text = content[start_offset:end_offset].decode("utf-8")
                             type_defs_lines.append(struct_text + ";")
                             break
