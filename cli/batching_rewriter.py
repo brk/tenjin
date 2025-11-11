@@ -8,12 +8,20 @@ class BatchingRewriter:
 
     def __init__(self):
         self.rewrites: dict[str, list[tuple[int, int, str]]] = {}  # type: ignore
+        self.contents_cache: dict[str, bytes] = {}
 
     def add_rewrite(self, filepath: str, offset: int, length: int, replacement_text: str):
         """Add a rewrite operation for a specific file."""
         if filepath not in self.rewrites:
             self.rewrites[filepath] = []
         self.rewrites[filepath].append((offset, length, replacement_text))
+
+    def get_content(self, filepath: str) -> bytes:
+        """Get the current content of a file, using cache if available."""
+        if filepath not in self.contents_cache:
+            with open(filepath, "rb") as f:
+                self.contents_cache[filepath] = f.read()
+        return self.contents_cache[filepath]
 
     def __enter__(self):
         return self
