@@ -14,6 +14,7 @@ import platform
 from pathlib import Path
 import subprocess
 import shutil
+from typing import TypedDict
 
 import hermetic
 import repo_root
@@ -433,16 +434,16 @@ def localize_mutable_globals_phase1(
     phase1index = create_xj_clang_index()
     tus = parse_project(phase1index, compdb)
 
+    all_function_names, nonmain_tissue_function_cursors = extract_function_info(
+        tus, nonmain_tissue_functions
+    )
+
     fn_ptr_type_ranges_needing_modifications = run_xj_prepare_findfnptrdecls(
-        current_codebase, nonmain_tissue_functions
+        current_codebase, nonmain_tissue_functions, all_function_names
     )
 
     call_sites_from_json = get_call_sites_from_json(
         prev, current_codebase, j, nonmain_tissue_functions
-    )
-
-    all_function_names, nonmain_tissue_function_cursors = extract_function_info(
-        tus, nonmain_tissue_functions
     )
 
     ineligible_for_lifting = set()
@@ -691,20 +692,76 @@ def update_function_pointer_types_for_function_pointers(
                     print()
 
 
+class SingleUnmodFnOccWrapper(TypedDict):
+    name: str
+    suffix: str
+    occ_offset: int
+    decl_offset: int
+    wrapper_defn: str
+
+
+class CombinedUnmodFnOccWrapper(TypedDict):
+    name: str
+    suffix: str
+    occ_offsets: list[int]
+    decl_offset: int
+    wrapper_defn: str
+
+
+def combine_unmod_fn_occ_wrappers(
+    raws: list[SingleUnmodFnOccWrapper],
+) -> list[CombinedUnmodFnOccWrapper]:
+    # Deduplicate by decl_offset
+    combined_by_decl: dict[int, CombinedUnmodFnOccWrapper] = {}
+    
+    for raw in raws:
+        decl_offset = raw["decl_offset"]
+        if decl_offset not in combined_by_decl:
+            combined_by_decl[decl_offset] = {
+                "name": raw["name"],
+                "suffix": raw["suffix"],
+                "occ_offsets": [raw["occ_offset"]],
+                "decl_offset": decl_offset,
+                "wrapper_defn": raw["wrapper_defn"],
+            }
+        else:
+            combined_by_decl[decl_offset]["occ_offsets"].append(raw["occ_offset"])
+    
+    return list(combined_by_decl.values())
+
+
+type ModifiedFnPtrTypeLoc = tuple[int, int]  # start offsets for fn ty param parens
+
+
+class RawXjFindPtrDeclsOutput(TypedDict):
+    unmod_fn_occ_wrappers: dict[str, list[SingleUnmodFnOccWrapper]]
+    modified_fn_ptr_type_locs: dict[str, list[ModifiedFnPtrTypeLoc]]
+
+
+class XjFindPtrDeclsOutput(TypedDict):
+    unmod_fn_occ_wrappers: dict[str, list[CombinedUnmodFnOccWrapper]]
+    modified_fn_ptr_type_locs: dict[str, list[ModifiedFnPtrTypeLoc]]
+
+
 def run_xj_prepare_findfnptrdecls(
     current_codebase: Path,
     nonmain_tissue_functions: set[str],
+    all_function_names: set[str],
 ) -> dict[str, list[tuple[int, int]]]:
     builddir = hermetic.xj_prepare_findfnptrdecls_build_dir(repo_root.localdir())
     assert builddir.exists(), (
         f"Build directory {builddir} does not exist, should have been built already"
     )
 
-    names_path = current_codebase / "nonmain_tissue_functions.txt"
-    with open(names_path, "w", encoding="utf-8") as f:
+    mod_fn_names_path = current_codebase / "nonmain_tissue_functions.txt"
+    with open(mod_fn_names_path, "w", encoding="utf-8") as f:
         for fn in sorted(nonmain_tissue_functions):
             f.write(fn + "\n")
 
+    unmod_fn_names_path = current_codebase / "unmod_fn_names.txt"
+    with open(unmod_fn_names_path, "w", encoding="utf-8") as f:
+        for fn in sorted(all_function_names - nonmain_tissue_functions):
+            f.write(fn + "\n")
     # Keep in sync with `xj-prepare-findfnptrdecls/CMakeLists.txt`
     binary_path = builddir / "xj-find-fn-ptr-decls"
 
@@ -716,13 +773,20 @@ def run_xj_prepare_findfnptrdecls(
             "--extra-arg=-Wno-unused-function",
             "--executor=all-TUs",
             "--modified_fns_file",
-            names_path.as_posix(),
+            mod_fn_names_path.as_posix(),
+            "--unmodified_fns_file",
+            unmod_fn_names_path.as_posix(),
             (current_codebase / "compile_commands.json").as_posix(),
         ],
         cwd=current_codebase,
         check=True,
         capture_output=True,
     )
+
+    print("xj-find-fn-ptr-decls stderr:")
+    print("==========================")
+    print(cp.stderr.decode("utf-8"))
+    print("==========================")
 
     return json.loads(cp.stdout.decode("utf-8"))
 

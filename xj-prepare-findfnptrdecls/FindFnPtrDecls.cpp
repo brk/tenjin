@@ -2,6 +2,7 @@
 #include "clang/ASTMatchers/ASTMatchers.h"
 #include "clang/Basic/SourceManager.h"
 #include "clang/Frontend/FrontendActions.h"
+#include "clang/Lex/Lexer.h"
 #include "clang/Tooling/Execution.h"
 #include "clang/Tooling/Tooling.h"
 #include "llvm/ADT/DenseMap.h"
@@ -18,18 +19,76 @@ using namespace llvm;
 
 namespace {
 StringSet ModifiedFnNames;
+StringSet UnmodifiedFnNames;
+
 bool is_modified_fn_name(const std::string &s) {
   return ModifiedFnNames.contains(s);
 }
 
+bool is_unmodified_fn_name(const std::string &s) {
+  return UnmodifiedFnNames.contains(s);
+}
+
+// In phase 1, we look for non-call occurrences of functions which we
+// know will be getting their signature modified with an XjGlobals*
+// parameter, and try to identify what type declaration needs to be
+// modified accordingly.
+//
+// For now, we look for specific usage contexts in which function
+// pointers occur in practice: assignments where the RHS is a function
+// name, and occurences of a function name in a (possibly nested)
+// initializer list expression. These patterns can be expanded over
+// time as we encounter additional programs.
+//      (The "right" way to do this is probably some type inference/
+//      abstract interpretation of the Clang AST, which would permit 
+//      arbitrarily long chains of assignments. Our approach here is
+//      incomplete but useful in the short term.)
+//
+// By the end of phase 1, we've identified a set of type declarations
+// which need modifications because they have modified functions flowing
+// to them. These will be concretely serialized as a list of int pairs
+// for the open and close parens of the relevant function pointer type's
+// parameter list.
+//
+// In phase 2, we look for the same kinds of occurrences of functions
+// which we know will NOT be getting modified signatures, but which
+// flow to the same type declarations identified in phase 1. These
+// occurrences require us to generate wrapper functions with the
+// XjGlobals* parameter in order to maintain type compatibility.
+//      (The phases are conceptually separate/sequential. In practice,
+//       we collect the information about occurrences during phase 1.
+//       Only the analysis is implemented separately.)
+//
+// TODO: in general, we may need to link declarations across translation
+//       units: if we have TU A and TU B, where B has an extern decl
+//       for a definition in A, and B's (extern) decl is marked as
+//       needing modification, we must also modify the definition in A,
+//       or else we've introduced undefined behavior.
+//
+// TODO: even within a single translation unit, we must update both
+//       definitions (from the .c code) and declarations (from
+//       project headers).
+//
+// TODO: typedef introduces sharing in the type graph; when modifying
+//       types, we don't want it to become false sharing.
+//       E.g. if we have function pointer vars A and B, sharing
+//       typedef T, we may need to change the types independently.
+
+struct InitListOccurrence {
+   unsigned idx;
+   const DeclRefExpr* dre;
+   bool dre_fn_was_mod; 
+};
+
 class FindFnPtrDeclsCallback : public MatchFinder::MatchCallback {
 public:
   FindFnPtrDeclsCallback(ExecutionContext &Context)
-      : Context(Context), SM(nullptr) {}
+      : Context(Context), SM(nullptr), Ctx(nullptr) {}
 
   void run(const MatchFinder::MatchResult &Result) override {
     if (!SM) {
       SM = Result.SourceManager;
+      Ctx = Result.Context;
     }
 
     auto *ILE = Result.Nodes.getNodeAs<InitListExpr>("init_list_expr");
@@ -43,6 +102,7 @@ public:
       handle_assign_to_decl(D, Result);
       return;
     }
+
   }
 
   void handle_assign_to_decl(const Stmt *D,
@@ -50,51 +110,50 @@ public:
     auto *rhs = Result.Nodes.getNodeAs<DeclRefExpr>("rhs");
     if (rhs && rhs->getBeginLoc().isValid()) {
       std::string rhs_name = rhs->getNameInfo().getName().getAsString();
-      if (is_modified_fn_name(rhs_name)) {
-        auto *lhs_dd = Result.Nodes.getNodeAs<DeclaratorDecl>("lhs_decl");
-        if (lhs_dd) {
-          QualType QT = lhs_dd->getType();
+      bool was_mod_fn = is_modified_fn_name(rhs_name);
+      bool was_unmod_fn = is_unmodified_fn_name(rhs_name);
+      if (!was_mod_fn && !was_unmod_fn) {
+          return;
+      }
 
-          // Strip pointer to get function type
-          if (const PointerType *PT = QT->getAs<PointerType>()) {
-            QualType PointeeType = PT->getPointeeType();
+      auto *lhs_dd = Result.Nodes.getNodeAs<DeclaratorDecl>("lhs_decl");
+      if (lhs_dd && lhs_dd->getType()->isFunctionPointerType()) {
+          // Get the TypeSourceInfo for better location tracking
+          if (TypeSourceInfo *TSI = lhs_dd->getTypeSourceInfo()) {
+            // We should have a PointerTypeLoc because lhs_dd was a function pointer type
+            if (PointerTypeLoc PTL = TSI->getTypeLoc().getAs<PointerTypeLoc>()) {
+              TypeLoc FuncTL = PTL.getPointeeLoc();
 
-            if (const FunctionProtoType *FPT =
-                    PointeeType->getAs<FunctionProtoType>()) {
-              // Get the TypeSourceInfo for better location tracking
-              TypeSourceInfo *TSI = lhs_dd->getTypeSourceInfo();
-              if (TSI) {
-                TypeLoc TL = TSI->getTypeLoc();
-
-                // Navigate through pointer type loc
-                if (PointerTypeLoc PTL = TL.getAs<PointerTypeLoc>()) {
-                  TypeLoc PointeeTL = PTL.getPointeeLoc();
-                  // llvm::outs() << "PointeeTL = " <<
-                  // PointeeTL.getType().getAsString() << "\n";
-                  if (try_find_fn_ptr_lparen_loc(PointeeTL)) {
-                    // pass
-                  }
+              SourceLocation LParen, RParen;
+              if (try_find_fn_ptr_lparen_loc(FuncTL, LParen, RParen)) {
+                if (was_mod_fn) {
+                    FnPtrTypeOpenParens[LParen] = RParen;
+                    ModifyingDeclIDs.insert(lhs_dd);
+                } else {
+                    // found a non-modified function occurrence; record its location
+                    // and the targeted declaration, so we can correlate in phase 2.
+                    UnmodFnOccurrences.push_back(std::make_pair(rhs, lhs_dd));
                 }
               }
             }
           }
-        }
       }
     }
   }
 
   void handle_init_list_expr(const InitListExpr *ILE,
                              const MatchFinder::MatchResult &Result) {
-    SmallVector<int> field_nums;
+    SmallVector<InitListOccurrence> field_nums;
+
     for (unsigned i = 0; i < ILE->getNumInits(); ++i) {
       const Expr *e = ILE->getInit(i)->IgnoreParenCasts();
       if (const DeclRefExpr *dre = dyn_cast<DeclRefExpr>(e)) {
         std::string name = dre->getDecl()->getNameAsString();
         if (is_modified_fn_name(name)) {
-          // Context.reportResult(Change.getKey(), std::string("initlist -> ") +
-          // name);
-          field_nums.push_back(i);
-        }
+          field_nums.push_back(InitListOccurrence { .idx = i, .dre = dre, .dre_fn_was_mod = true });
+        } else if (is_unmodified_fn_name(name)) {
+          field_nums.push_back(InitListOccurrence { .idx = i, .dre = dre, .dre_fn_was_mod = false });
+        } // else not a fn, ignore it
       }
     }
 
@@ -104,15 +163,22 @@ public:
       RecordDecl *RD = RT->getDecl();
       auto FieldIt = RD->field_begin();
       for (unsigned i = 0; i < field_nums.size(); ++i) {
-        while (curr_num < field_nums[i]) {
+        while (curr_num < field_nums[i].idx) {
           ++curr_num;
           ++FieldIt;
         }
         FieldDecl *TargetField = *FieldIt;
-        auto TSI = TargetField->getTypeSourceInfo();
-        if (TSI) {
-          if (try_find_fn_ptr_lparen_loc(TSI->getTypeLoc())) {
-            // pass
+        if (auto TSI = TargetField->getTypeSourceInfo()) {
+          SourceLocation LParen, RParen;
+          if (try_find_fn_ptr_lparen_loc(TSI->getTypeLoc(), LParen, RParen)) {
+              if (field_nums[i].dre_fn_was_mod) {
+                FnPtrTypeOpenParens[LParen] = RParen;
+                ModifyingDeclIDs.insert(TargetField);
+              } else {
+                // found a non-modified function occurrence; record its location
+                // and the targeted declaration, so we can correlate in phase 2.
+                UnmodFnOccurrences.push_back(std::make_pair(field_nums[i].dre, TargetField));
+              }
           } else {
             llvm::errs() << "unable to find fn ptr lparen loc for InitListExpr"
                          << "\n";
@@ -124,16 +190,38 @@ public:
     }
   }
 
-  bool try_find_fn_ptr_lparen_loc(TypeLoc TL) {
+  bool try_find_fn_ptr_TL(TypeLoc TL, FunctionTypeLoc& FTL) {
     while (1) {
       // FunctionProtoTypeLoc is the one that has parameter parens
       if (auto FPTL = TL.getAs<FunctionProtoTypeLoc>()) {
-        FnPtrTypeOpenParens[FPTL.getLParenLoc()] = FPTL.getRParenLoc();
-        return true;
+          FTL = TL.getAs<FunctionTypeLoc>();
+          return true;
       }
       if (auto FNPL = TL.getAs<FunctionNoProtoTypeLoc>()) {
-        FnPtrTypeOpenParens[FNPL.getLParenLoc()] = FNPL.getRParenLoc();
-        return true;
+          FTL = TL.getAs<FunctionTypeLoc>();
+          return true;
+      }
+
+      // walk "inward" one TypeLoc
+      TL = TL.getNextTypeLoc();
+      if (TL.isNull())
+        break; // defensive
+    }
+    return false;
+  }
+
+  bool try_find_fn_ptr_lparen_loc(TypeLoc TL, SourceLocation& LParen, SourceLocation& RParen) {
+    while (1) {
+      // FunctionProtoTypeLoc is the one that has parameter parens
+      if (auto FPTL = TL.getAs<FunctionProtoTypeLoc>()) {
+          LParen = FPTL.getLParenLoc();
+          RParen = FPTL.getRParenLoc();
+          return true;
+      }
+      if (auto FNPL = TL.getAs<FunctionNoProtoTypeLoc>()) {
+          LParen = FNPL.getLParenLoc();
+          RParen = FNPL.getRParenLoc();
+          return true;
       }
 
       // walk "inward" one TypeLoc
@@ -146,7 +234,10 @@ public:
 
   void onStartOfTranslationUnit() override {
     SM = nullptr;
+    Ctx = nullptr;
     FnPtrTypeOpenParens.clear();
+    ModifyingDeclIDs.clear();
+    UnmodFnOccurrences.clear();
   }
 
   void onEndOfTranslationUnit() override {
@@ -162,7 +253,137 @@ public:
         byFile[F].push_back(
             std::make_pair(SM->getFileOffset(Loc), SM->getFileOffset(RLoc)));
     }
+
+
+    for (auto &dre_dd : UnmodFnOccurrences) {
+        if (ModifyingDeclIDs.count(dre_dd.second) > 0) {
+            auto F = SM->getFilename(dre_dd.first->getLocation());
+            byFile_wrappers[F].push_back(
+                    fmtJSONDictForUnmodFnOccWrapper(dre_dd));
+        }
+    }
   }
+
+  std::string fmtUnmodFnWrapper(const DeclaratorDecl* d, const std::string& suffix) {
+      std::string rv;
+      llvm::raw_string_ostream sout(rv);
+
+      FunctionTypeLoc FTL;
+      if (d->getType()->isFunctionPointerType()) {
+          auto TSI = d->getTypeSourceInfo();
+          if (!TSI) {
+              return "!<no TypeSourceInfo for unmod fn ptr decl>";
+          }
+          if (!try_find_fn_ptr_TL(TSI->getTypeLoc(), FTL)) {
+              return "!<unable to find type loc for fn ptr>";
+          }
+      } else if (const FunctionDecl* fd = dyn_cast<FunctionDecl>(d)) {
+          FTL = fd->getFunctionTypeLoc();
+            //sout << "hasWrittenPrototype()=" << fd->hasWrittenPrototype();
+      } else {
+        sout << "!<not a function decl!?> offset=";
+        sout << SM->getFileOffset(d->getBeginLoc()); 
+        return rv;
+      }
+
+      llvm::errs() << "ret type range: " << FTL.getReturnLoc().getSourceRange().printToString(*SM) << "\n";
+      llvm::errs() << "ret type begin loc: " << FTL.getReturnLoc().getBeginLoc().printToString(*SM) << "\n";
+      llvm::errs() << "ret type end loc: " << FTL.getReturnLoc().getEndLoc().printToString(*SM) << "\n";
+      llvm::errs() << "decl primary loc: " << d->getLocation().printToString(*SM) << "\n";
+      llvm::errs() << "\n";
+
+      // return type as written
+      //    (getReturnLoc().getSourceRange() can be empty for void returns)
+      //    (d->getLocation() is the start of the name of the function)
+      sout << Lexer::getSourceText(CharSourceRange::getCharRange(
+                                        FTL.getReturnLoc().getBeginLoc(),
+                                        d->getLocation()),
+                                   *SM, Ctx->getLangOpts());
+
+      // wrapper function name
+      sout << d->getName() << suffix;
+
+      sout << "(struct XjGlobals*";
+
+      if (FTL.getNumParams() > 0) {
+         sout << ", ";
+         // existing parameters, as-is
+         sout << Lexer::getSourceText(
+                 CharSourceRange::getCharRange(
+                    FTL.getLParenLoc().getLocWithOffset(1),
+                    FTL.getRParenLoc()
+                 ),
+                 *SM, Ctx->getLangOpts());
+      }
+      sout << ")";
+      sout << " { return " << d->getName() << "(";
+      for (unsigned i = 0; i < FTL.getNumParams(); ++i) {
+          ParmVarDecl* pvd = FTL.getParam(i);
+          if (i > 0) { sout << ", "; }
+          if (pvd) {
+              sout << pvd->getName();
+          } else {
+              sout << "_";
+          }
+      }
+      sout << "); }";
+
+      return rv;
+  }
+
+  std::string fmtJSONDictForUnmodFnOccWrapper(std::pair<const DeclRefExpr*, const DeclaratorDecl*> p) {
+      std::string rv;
+      llvm::raw_string_ostream sout(rv);
+
+      // The DeclaratorDecl of p.second is the location the fn occurrence is flowing to,
+      // but we need the decl of the function itself.
+      const DeclaratorDecl* fdd = dyn_cast<DeclaratorDecl>(p.first->getDecl());
+      if (!fdd) {
+        return "<unmod fn decl was not a declarator?!>";
+      }
+      std::string suffix = "_xjw";
+      sout << "{ \"name\": \"" << p.first->getNameInfo().getAsString() << "\""
+           << ", \"suffix\": \"" << suffix << "\""
+           << ", \"occ_offset\": " << SM->getFileOffset(p.first->getBeginLoc())
+           << ", \"decl_offset\": " << SM->getFileOffset(p.second->getBeginLoc())
+           << ", \"wrapper_defn\": \"" << fmtUnmodFnWrapper(fdd, suffix) << "\""
+           << "}";
+      return rv;
+  }
+
+  // Prints a JSON dict of the form
+  // ```
+  //     { "<FILEPATH_1>":[ {...}, ...],
+  //       "<FILEPATH_2>":[...], ... }
+  // ```
+  void emitJSONDictForUnmodFnOccWrappers() {
+      llvm::outs() << "{" << "\n";
+      bool firstfile = true;
+      for (auto &[F, PreformattedJsonStrs] : byFile_wrappers) {
+        if (!firstfile) {
+          llvm::outs() << ",\n";
+        } else {
+          firstfile = false;
+        }
+
+        llvm::outs() << "\"" << F << "\""
+                     << ":" << "\n"
+                     << "[";
+
+        bool first = true;
+        for (auto S : PreformattedJsonStrs) {
+          if (!first) {
+            llvm::outs() << ", ";
+          } else {
+            first = false;
+          }
+          llvm::outs() << S;
+        }
+        llvm::outs() << "]";
+      }
+      llvm::outs() << "}" << "\n";
+  }
+
 
  // Prints a JSON dict of the form
  // ```
@@ -203,11 +424,25 @@ public:
 private:
   ExecutionContext &Context;
   SourceManager *SM;
+  ASTContext *Ctx;
+
+  DenseSet<const DeclaratorDecl*>
+     ModifyingDeclIDs;
+
+  std::vector<std::pair<const DeclRefExpr*, const DeclaratorDecl*>>
+      UnmodFnOccurrences;
 
   DenseMap<SourceLocation, SourceLocation>
       FnPtrTypeOpenParens; // maps left paren to right paren
-  StringMap<SmallVector<std::pair<int, int>>> byFile; // file -> list[pair[offset]]
+
+  StringMap<SmallVector<std::pair<int, int>>>
+      byFile; // file -> list[pair[offset]]
+
+  StringMap<SmallVector<std::string>>
+      byFile_wrappers;
 };
+
+
 } // end anonymous namespace
 
 static cl::extrahelp CommonHelp(CommonOptionsParser::HelpMessage);
@@ -219,7 +454,67 @@ static cl::opt<std::string> ModifiedFunctionNamesFile(
     cl::desc("File containing names of modified functions"),
     cl::cat(FindFnPtrDeclsCategory));
 
+static cl::opt<std::string> UnmodifiedFunctionNamesFile(
+    "unmodified_fns_file",
+    cl::desc("File containing names of unmodified functions"),
+    cl::cat(FindFnPtrDeclsCategory));
+
+// return false on failure
+bool initialize_ModifiedFnNames() {
+  if (ModifiedFunctionNamesFile.empty()) {
+    llvm::errs() << "Must provide path for --modified_fns_file" << "\n";
+    return false;
+  }
+
+  llvm::ErrorOr<std::unique_ptr<llvm::MemoryBuffer>> Buffer =
+      llvm::MemoryBuffer::getFile(ModifiedFunctionNamesFile);
+
+  if (auto Err = Buffer.getError()) {
+    llvm::errs() << "Unable to open " << ModifiedFunctionNamesFile << ": "
+                 << Err.message() << "\n";
+    return false;
+  }
+
+  llvm::StringRef FileContent = Buffer.get()->getBuffer();
+  while (!FileContent.empty()) {
+    llvm::StringRef Name;
+    std::tie(Name, FileContent) = FileContent.split("\n");
+    ModifiedFnNames.insert(Name);
+  }
+
+  return true;
+}
+
+// return false on failure
+bool initialize_UnmodFnNames() {
+  if (UnmodifiedFunctionNamesFile.empty()) {
+    llvm::errs() << "Must provide path for --unmodified_fns_file" << "\n";
+    return false;
+  }
+
+  llvm::ErrorOr<std::unique_ptr<llvm::MemoryBuffer>> Buffer =
+      llvm::MemoryBuffer::getFile(UnmodifiedFunctionNamesFile);
+
+  if (auto Err = Buffer.getError()) {
+    llvm::errs() << "Unable to open " << UnmodifiedFunctionNamesFile << ": "
+                 << Err.message() << "\n";
+    return false;
+  }
+
+  llvm::StringRef FileContent = Buffer.get()->getBuffer();
+  while (!FileContent.empty()) {
+    llvm::StringRef Name;
+    std::tie(Name, FileContent) = FileContent.split("\n");
+    UnmodifiedFnNames.insert(Name);
+  }
+
+  return true;
+}
+
+
+
 int main(int argc, const char **argv) {
+  // Standard LLVM boilerplate
   llvm::sys::PrintStackTraceOnErrorSignal(argv[0]);
 
   auto Executor = clang::tooling::createExecutorFromCommandLineArgs(
@@ -230,30 +525,14 @@ int main(int argc, const char **argv) {
     return 1;
   }
 
-  if (ModifiedFunctionNamesFile.empty()) {
-    llvm::errs() << "Must provide path for --modified_fns_file" << "\n";
-    return 1;
-  } else {
-    llvm::ErrorOr<std::unique_ptr<llvm::MemoryBuffer>> Buffer =
-        llvm::MemoryBuffer::getFile(ModifiedFunctionNamesFile);
-
-    if (auto Err = Buffer.getError()) {
-      llvm::errs() << "Unable to open " << ModifiedFunctionNamesFile << ": "
-                   << Err.message() << "\n";
-      return 1;
-    }
-
-    llvm::StringRef FileContent = Buffer.get()->getBuffer();
-    while (!FileContent.empty()) {
-      llvm::StringRef Name;
-      std::tie(Name, FileContent) = FileContent.split("\n");
-      ModifiedFnNames.insert(Name);
-    }
-  }
+  if (!initialize_ModifiedFnNames()) { return 1; }
+  if (!initialize_UnmodFnNames()) { return 1; }
 
   ast_matchers::MatchFinder Finder;
   FindFnPtrDeclsCallback Callback(*Executor->get()->getExecutionContext());
 
+  // Configure matchers to identify non-call occurrences
+  // of (potential) function pointers. 
   Finder.addMatcher(
       binaryOperator(
           hasOperatorName("="),
@@ -267,6 +546,7 @@ int main(int argc, const char **argv) {
                         .bind("init_list_expr"),
                     &Callback);
 
+  // Run the matchers over whatever TU(s) the command line args specified.
   auto Err = Executor->get()->execute(newFrontendActionFactory(&Finder));
   if (Err) {
     llvm::errs() << llvm::toString(std::move(Err)) << "\n";
@@ -276,5 +556,11 @@ int main(int argc, const char **argv) {
         llvm::errs() << "----" << key.str() << "\n" << value.str() << "\n";
       });
 
+  llvm::outs() << "{";
+  llvm::outs() << "\"modified_fn_ptr_type_locs\": ";
   Callback.emitJSONDictForModifiedFnPtrTypeLocs();
+  llvm::outs() << ",";
+  llvm::outs() << "\"unmod_fn_occ_wrappers\": ";
+  Callback.emitJSONDictForUnmodFnOccWrappers();
+  llvm::outs() << "}";
 }
