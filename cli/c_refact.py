@@ -442,10 +442,6 @@ def localize_mutable_globals_phase1(
         current_codebase, nonmain_tissue_functions, all_function_names
     )
 
-    call_sites_from_json = get_call_sites_from_json(
-        prev, current_codebase, j, nonmain_tissue_functions
-    )
-
     ineligible_for_lifting = set()
     for refs in j.get("global_initializer_references", {}).values():
         for r in refs:
@@ -474,6 +470,10 @@ def localize_mutable_globals_phase1(
         for c in globals_and_statics
         if c.spelling in mutd_or_escd_global_names and c.spelling not in ineligible_for_lifting
     ]
+
+    call_sites_from_json = get_call_sites_from_json(
+        prev, current_codebase, j, nonmain_tissue_functions, mutd_or_escd_global_names
+    )
 
     results = LocalizeMutableGlobalsPhase1Results(
         all_function_names=all_function_names,
@@ -1550,10 +1550,83 @@ def extract_function_info(
     return all_function_names, nonmain_tissue_function_cursors
 
 
-def get_call_sites_from_json(prev, current_codebase, j, nonmain_tissue_functions):
+def get_call_sites_from_json(
+    prev: Path,
+    current_codebase: Path,
+    j: dict,
+    nonmain_tissue_functions: set[str],
+    mutd_or_escd_global_names: set[str],
+) -> list[CallSiteInfo]:
     def un_uf(uf: str) -> str:
         v = j["unique_filenames"][uf]
         return v["directory"] + "/" + v["filename"]
+
+    fns_with_possibly_unknown_call_sites = nonmain_tissue_functions.intersection(
+        mutd_or_escd_global_names
+    )
+    if fns_with_possibly_unknown_call_sites:
+        print(
+            f"""
+===============================================================================
+Error: Some functions which access mutable globals (or may eventually call one)
+    appear to have unknown call sites outside of our control. They are:
+
+{fns_with_possibly_unknown_call_sites}
+
+To help produce safe Rust output, we seek to move all mutable globals into
+   a context struct which is passed explicitly to functions that need them.
+   So the target functions involved must have their signatures modified to
+   take an additional parameter.
+But we cannot safely modify the signatures
+   of functions that have call sites outside of our control. An example
+   of such a call site would be `qsort()` calling a comparison function.
+Our determination of what functions might have unknown call sites is
+   by necessity conservative; it's uncomputable in general. We basically
+   assume that any function pointer which is stored in memory might end
+   up being called externally.
+Often an application will use function pointers in ways that are hard
+   for a static analyzer to track, but which a human can verify do not have
+   any external call sites.
+If, upon review, you believe the functions listed above do not escape,
+   you can add their names to the "assume_no_unknown_call_sites" list in
+   the input guidance provided to Tenjin.
+
+If a function which accesses globals does in fact get called externally,
+   there are two ways one might address the situation:
+
+   1. Mark the globals it accesses as being ineligible
+      for lifting into the context struct.
+   2. Modify the C code by hand to access globals via an explicit context struct.
+
+For many standard library functions which call user-provided function pointers,
+a bare function pointer is often paired with a `void*` context parameter.
+For `qsort()` specifically, context parameter support is only provided by
+non-standard variants like `qsort_r()`.
+    See https://stackoverflow.com/a/39561369/169305 for details.
+
+Tenjin is not yet sophisticated enough to do option 2 automatically.
+
+
+Here are the call sites which may have been affected by this issue:
+"""
+        )
+        print()
+
+        print("""
+To err on the side of safety, we currently lift all mutable globals,
+but indirect calls to functions that might escape must be left unchanged,
+to match the signatures expected by the external callers.
+
+Rather than "resolving" this mismatch automatically by not lifting any
+globals transitively accessed during the execution of conflicted functions
+              (which could easily mean silently not lifting
+               any globals at all; a very confusing outcome),
+we're instead going to print this wall of text for you to enjoy. Oh,
+and we shan't proceed further with the refactoring, either, since the
+code we'd be generating would almost certainly have type mismatches.
+===============================================================================
+              """)
+        raise ValueError("please look ABOVE traceback for error info")
 
     call_sites: list[CallSiteInfo] = []
 
