@@ -438,7 +438,7 @@ def localize_mutable_globals_phase1(
         tus, nonmain_tissue_functions
     )
 
-    fn_ptr_type_ranges_needing_modifications = run_xj_prepare_findfnptrdecls(
+    fpd_output = run_xj_prepare_findfnptrdecls(
         current_codebase, nonmain_tissue_functions, all_function_names
     )
 
@@ -482,12 +482,13 @@ def localize_mutable_globals_phase1(
     )
 
     with batching_rewriter.BatchingRewriter() as rewriter:
-        for filepath_str, ranges in fn_ptr_type_ranges_needing_modifications.items():
+        # In each translation unit,
+        #   for each identified function pointer type,
+        #       modify it to add 'struct XjGlobals *' as first parameter.
+        # This may require removing 'void' if it's the only parameter.
+        # In non-empty parameter lists, we must add a trailing comma.
+        for filepath_str, ranges in fpd_output["modified_fn_ptr_type_locs"].items():
             content = rewriter.get_content(filepath_str)
-
-            print(filepath_str)
-            print(ranges)
-            print("7777777777777777777777777777")
 
             for start_offset, end_offset in ranges:
                 original_text = content[start_offset:end_offset].decode("utf-8")
@@ -506,6 +507,23 @@ def localize_mutable_globals_phase1(
                     target_offset - after_opening_paren,
                     f"struct XjGlobals *{', ' if add_trailing_comma else ''}",
                 )
+
+        for filepath_str, wrappers in fpd_output["unmod_fn_occ_wrappers"].items():
+            for combined_wrapper in wrappers:
+                # Add the wrapper function definition to the file
+                rewriter.add_rewrite(
+                    filepath_str,
+                    combined_wrapper["decl_post_offset"],
+                    0,
+                    "\n" + combined_wrapper["wrapper_defn"] + "\n",
+                )
+
+                # For each occurrence of an unmodified function name,
+                # in a position where we need to pass a wrapper instead,
+                # modify the occurrence to refer to the wrapper.
+                for occ in combined_wrapper["occ_offsets"]:
+                    name_end = occ + len(combined_wrapper["name"])
+                    rewriter.add_rewrite(filepath_str, name_end, 0, combined_wrapper["suffix"])
 
         # For each non-main tissue function, add 'struct XjGlobals *xjg' as first parameter
         for func_name, func_cursors in nonmain_tissue_function_cursors.items():
@@ -648,55 +666,55 @@ def localize_mutable_globals_phase1(
     return results
 
 
-def update_function_pointer_types_for_function_pointers(
-    tus: dict[str, TranslationUnit], phase1results: LocalizeMutableGlobalsPhase1Results
-):
-    rhs_of_assignment = []
-    for tu in tus.values():
-        for cursor in tu.cursor.walk_preorder():
-            if cursor.kind == CursorKind.BINARY_OPERATOR:
-                # Check if this is an assignment to a function pointer
-                children = list(cursor.get_children())
-                if len(children) != 2:
-                    continue
-                lhs, rhs = children
-                if lhs.kind != CursorKind.DECL_REF_EXPR:
-                    continue
-                lhs_type = lhs.type
-                if lhs_type.kind != TypeKind.POINTER:
-                    continue
-                pointee_type = lhs_type.get_pointee()
-                if pointee_type.kind != TypeKind.FUNCTIONPROTO:
-                    continue
-            if cursor.kind == CursorKind.DECL_REF_EXPR:
-                sp = cursor.spelling
-                if (
-                    sp in phase1results.mutd_or_escd_global_names
-                    and sp in phase1results.all_function_names
-                    and sp not in phase1results.ineligible_for_lifting
-                ):
-                    # Update the pointer type as needed
-                    print(cursor.spelling)
-                    print(cursor.extent)
-                    print(cursor.type.spelling)
-                    print(cursor.type.get_declaration().extent)
-                    if cursor.semantic_parent:
-                        print("semantic parent location:")
-                        print(cursor.semantic_parent.location)
-                        print("semantic parent kind:", cursor.semantic_parent.kind)
-                    if cursor.lexical_parent:
-                        print("lexical_parent location:")
-                        print(cursor.lexical_parent.location)
-                        print("lexical_parent kind:", cursor.lexical_parent.kind)
+# def update_function_pointer_types_for_function_pointers(
+#     tus: dict[str, TranslationUnit], phase1results: LocalizeMutableGlobalsPhase1Results
+# ):
+#     rhs_of_assignment = []
+#     for tu in tus.values():
+#         for cursor in tu.cursor.walk_preorder():
+#             if cursor.kind == CursorKind.BINARY_OPERATOR:
+#                 # Check if this is an assignment to a function pointer
+#                 children = list(cursor.get_children())
+#                 if len(children) != 2:
+#                     continue
+#                 lhs, rhs = children
+#                 if lhs.kind != CursorKind.DECL_REF_EXPR:
+#                     continue
+#                 lhs_type = lhs.type
+#                 if lhs_type.kind != TypeKind.POINTER:
+#                     continue
+#                 pointee_type = lhs_type.get_pointee()
+#                 if pointee_type.kind != TypeKind.FUNCTIONPROTO:
+#                     continue
+#             if cursor.kind == CursorKind.DECL_REF_EXPR:
+#                 sp = cursor.spelling
+#                 if (
+#                     sp in phase1results.mutd_or_escd_global_names
+#                     and sp in phase1results.all_function_names
+#                     and sp not in phase1results.ineligible_for_lifting
+#                 ):
+#                     # Update the pointer type as needed
+#                     print(cursor.spelling)
+#                     print(cursor.extent)
+#                     print(cursor.type.spelling)
+#                     print(cursor.type.get_declaration().extent)
+#                     if cursor.semantic_parent:
+#                         print("semantic parent location:")
+#                         print(cursor.semantic_parent.location)
+#                         print("semantic parent kind:", cursor.semantic_parent.kind)
+#                     if cursor.lexical_parent:
+#                         print("lexical_parent location:")
+#                         print(cursor.lexical_parent.location)
+#                         print("lexical_parent kind:", cursor.lexical_parent.kind)
 
-                    print()
+#                     print()
 
 
 class SingleUnmodFnOccWrapper(TypedDict):
     name: str
     suffix: str
     occ_offset: int
-    decl_offset: int
+    decl_post_offset: int
     wrapper_defn: str
 
 
@@ -704,29 +722,28 @@ class CombinedUnmodFnOccWrapper(TypedDict):
     name: str
     suffix: str
     occ_offsets: list[int]
-    decl_offset: int
+    decl_post_offset: int
     wrapper_defn: str
 
 
 def combine_unmod_fn_occ_wrappers(
     raws: list[SingleUnmodFnOccWrapper],
 ) -> list[CombinedUnmodFnOccWrapper]:
-    # Deduplicate by decl_offset
     combined_by_decl: dict[int, CombinedUnmodFnOccWrapper] = {}
-    
+
     for raw in raws:
-        decl_offset = raw["decl_offset"]
-        if decl_offset not in combined_by_decl:
-            combined_by_decl[decl_offset] = {
+        decl_post_offset = raw["decl_post_offset"]
+        if decl_post_offset not in combined_by_decl:
+            combined_by_decl[decl_post_offset] = {
                 "name": raw["name"],
                 "suffix": raw["suffix"],
                 "occ_offsets": [raw["occ_offset"]],
-                "decl_offset": decl_offset,
+                "decl_post_offset": decl_post_offset,
                 "wrapper_defn": raw["wrapper_defn"],
             }
         else:
-            combined_by_decl[decl_offset]["occ_offsets"].append(raw["occ_offset"])
-    
+            combined_by_decl[decl_post_offset]["occ_offsets"].append(raw["occ_offset"])
+
     return list(combined_by_decl.values())
 
 
@@ -747,7 +764,7 @@ def run_xj_prepare_findfnptrdecls(
     current_codebase: Path,
     nonmain_tissue_functions: set[str],
     all_function_names: set[str],
-) -> dict[str, list[tuple[int, int]]]:
+) -> XjFindPtrDeclsOutput:
     builddir = hermetic.xj_prepare_findfnptrdecls_build_dir(repo_root.localdir())
     assert builddir.exists(), (
         f"Build directory {builddir} does not exist, should have been built already"
@@ -788,7 +805,25 @@ def run_xj_prepare_findfnptrdecls(
     print(cp.stderr.decode("utf-8"))
     print("==========================")
 
-    return json.loads(cp.stdout.decode("utf-8"))
+    print("xj-find-fn-ptr-decls stdout:")
+    print("==========================")
+    print(cp.stdout.decode("utf-8"))
+    print("==========================")
+    try:
+        raw: RawXjFindPtrDeclsOutput = json.loads(cp.stdout.decode("utf-8"))
+        processed: XjFindPtrDeclsOutput = {
+            "unmod_fn_occ_wrappers": {
+                f: combine_unmod_fn_occ_wrappers(occs)
+                for f, occs in raw["unmod_fn_occ_wrappers"].items()
+            },
+            "modified_fn_ptr_type_locs": raw["modified_fn_ptr_type_locs"],
+        }
+    except:
+        print("Failed to parse xj-find-fn-ptr-decls output as JSON:")
+        print(cp.stdout.decode("utf-8"))
+        raise
+
+    return processed
 
 
 def localize_mutable_globals(

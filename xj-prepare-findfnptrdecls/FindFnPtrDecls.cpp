@@ -341,11 +341,26 @@ public:
       if (!fdd) {
         return "<unmod fn decl was not a declarator?!>";
       }
+      auto final_tok = fdd->hasBody() ? tok::r_brace : tok::semi ;
+      SourceLocation post_loc =
+          Lexer::findLocationAfterToken(
+                        fdd->getEndLoc(),
+                        final_tok,
+                        *SM,
+                        Ctx->getLangOpts(),
+                        /*SkipTrailingWhitespaceAndNewline=*/ true);
+      if (fdd->hasBody()) { 
+          llvm::errs() << "post_loc for body after rbrace was " << post_loc.printToString(*SM) << "\n";
+          llvm::errs() << "end_loc for body               was " << fdd->getEndLoc().printToString(*SM) << "\n";
+      }
+      if (post_loc.isInvalid()) {
+          post_loc = fdd->getEndLoc().getLocWithOffset(1); // YOLO i guess
+      }
       std::string suffix = "_xjw";
       sout << "{ \"name\": \"" << p.first->getNameInfo().getAsString() << "\""
            << ", \"suffix\": \"" << suffix << "\""
            << ", \"occ_offset\": " << SM->getFileOffset(p.first->getBeginLoc())
-           << ", \"decl_offset\": " << SM->getFileOffset(p.second->getBeginLoc())
+           << ", \"decl_post_offset\": " << SM->getFileOffset(post_loc)
            << ", \"wrapper_defn\": \"" << fmtUnmodFnWrapper(fdd, suffix) << "\""
            << "}";
       return rv;
@@ -391,7 +406,6 @@ public:
  //       "<FILEPATH_2>":[...], ... }
  // ```
  void emitJSONDictForModifiedFnPtrTypeLocs() {
-    if (!byFile.empty()) {
       llvm::outs() << "{" << "\n";
       bool firstfile = true;
       for (auto &[F, Offsets] : byFile) {
@@ -417,8 +431,6 @@ public:
         llvm::outs() << "]";
       }
       llvm::outs() << "}" << "\n";
-    }
-    // Context.reportResult("END", "End of TU.");
   }
 
 private:
