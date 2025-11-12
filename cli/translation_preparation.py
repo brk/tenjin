@@ -172,6 +172,7 @@ def run_preparation_passes(
                 "--datalog-analysis=unification",
                 "--debug-datalog=false",
                 "--context-sensitivity=insensitive",
+                "--entrypoints=library",  # consider all functions to be reachable
                 f"--json-out={json_out_path}",
             ],
             check=True,
