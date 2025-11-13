@@ -174,6 +174,7 @@ def run_preparation_passes(
                 "--context-sensitivity=insensitive",
                 "--entrypoints=library",  # consider all functions to be reachable
                 f"--json-out={json_out_path}",
+                # "--internalize-globals",
             ],
             check=True,
         )

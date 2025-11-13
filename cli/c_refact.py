@@ -421,7 +421,8 @@ def compute_globals_and_statics_for_translation_unit(
 class LocalizeMutableGlobalsPhase1Results:
     ineligible_for_lifting: set[str]
     all_function_names: set[str]
-    mutd_or_escd_global_names: set[str]
+    mutd_global_names: set[str]
+    escd_global_names: set[str]
 
 
 def localize_mutable_globals_phase1(
@@ -453,31 +454,42 @@ def localize_mutable_globals_phase1(
 
     # Entries in this list are either plain global names, or for function-scoped statics,
     # they are in the format "function_name.var_name_xjtr_N"
-    mangled_mutated_globals = j.get("mutated_or_escaped_global", [])
+    mangled_mutated_globals = j.get("mutated_globals", [])
+    mangled_escaped_globals = j.get("escaped_globals", [])
 
-    mutd_or_escd_global_names_list = [demangle_meg(name) for name in mangled_mutated_globals]
-    mutd_or_escd_global_names = set(mutd_or_escd_global_names_list)
-    assert len(mutd_or_escd_global_names) == len(mutd_or_escd_global_names_list), (
+    mutd_global_names_list = [demangle_meg(name) for name in mangled_mutated_globals]
+    mutd_global_names = set(mutd_global_names_list)
+    assert len(mutd_global_names) == len(mutd_global_names_list), (
         "Expected all mutated global names to be unique after demangling, "
-        + f"but got duplicates within: {mutd_or_escd_global_names_list}"
+        + f"but got duplicates within: {mutd_global_names_list}"
     )
-    print("mutated_or_escaped_globals:", list(mutd_or_escd_global_names))
+    print("mutated_globals:", list(mutd_global_names))
+
+    escd_global_names_list = [demangle_meg(name) for name in mangled_escaped_globals]
+    escd_global_names = set(escd_global_names_list)
+    assert len(escd_global_names) == len(escd_global_names_list), (
+        "Expected all escaped global names to be unique after demangling, "
+        + f"but got duplicates within: {escd_global_names_list}"
+    )
+    print("escaped_globals:", list(escd_global_names))
+
     globals_and_statics = compute_globals_and_statics_for_translation_units(
         list(tus.values()), elide_functions=True
     )
     liftable_mutated_globals_and_statics = [
         c
         for c in globals_and_statics
-        if c.spelling in mutd_or_escd_global_names and c.spelling not in ineligible_for_lifting
+        if c.spelling in mutd_global_names and c.spelling not in ineligible_for_lifting
     ]
 
     call_sites_from_json = get_call_sites_from_json(
-        prev, current_codebase, j, nonmain_tissue_functions, mutd_or_escd_global_names
+        prev, current_codebase, j, nonmain_tissue_functions, escd_global_names
     )
 
     results = LocalizeMutableGlobalsPhase1Results(
         all_function_names=all_function_names,
-        mutd_or_escd_global_names=mutd_or_escd_global_names,
+        mutd_global_names=mutd_global_names,
+        escd_global_names=escd_global_names,
         ineligible_for_lifting=ineligible_for_lifting,
     )
 
@@ -834,9 +846,12 @@ def localize_mutable_globals(
 ):
     # Here is an example of the data output by `cc2json`:
     # {
-    # "mutated_or_escaped_global": [
+    # "mutated_globals": [
     #     "a_1.foo_xjtr_1",
     #     "a_2.foo_xjtr_2",
+    #     "b_1.foo_xjtr_0"
+    # ],
+    # "escaped_globals": [
     #     "b_1.foo_xjtr_0"
     # ],
     # "call_graph_components": [
@@ -901,7 +916,7 @@ def localize_mutable_globals(
     #     self-referential Rust structure, we consider the *referenced* globals to be
     #     ineligible for lifting.
     # 1. Inspect j["call_graph_components"], discarding those which are not all_mutable.
-    # 2a. Find the definitions of of each ["mutated_or_escaped_global"], excluding those
+    # 2a. Find the definitions of of each mutated global, excluding those
     #     which are ineligible for lifting.
     # 2b. Construct the transitive closure of all directly used struct/union/enum/typedef
     #     definitions needed to define those globals. Note that fields which use
@@ -921,8 +936,7 @@ def localize_mutable_globals(
     #
     # Use the `BatchingRewriter` to perform all of these rewrites in a single pass.
     #
-    #
-    # Step 2a: Find definitions of each mutated_or_escaped_global
+
     nonmain_tissue_functions: set[str] = set(j.get("mutable_global_tissue", {}).get("tissue", []))
     nonmain_tissue_functions.discard("main")  # Don't modify main
 
@@ -939,7 +953,7 @@ def localize_mutable_globals(
     liftable_mutated_globals_and_statics = [
         c
         for c in globals_and_statics
-        if c.spelling in phase1results.mutd_or_escd_global_names
+        if c.spelling in phase1results.mutd_global_names
         and c.spelling not in phase1results.ineligible_for_lifting
     ]
 
@@ -1555,15 +1569,13 @@ def get_call_sites_from_json(
     current_codebase: Path,
     j: dict,
     nonmain_tissue_functions: set[str],
-    mutd_or_escd_global_names: set[str],
+    escd_global_names: set[str],
 ) -> list[CallSiteInfo]:
     def un_uf(uf: str) -> str:
         v = j["unique_filenames"][uf]
         return v["directory"] + "/" + v["filename"]
 
-    fns_with_possibly_unknown_call_sites = nonmain_tissue_functions.intersection(
-        mutd_or_escd_global_names
-    )
+    fns_with_possibly_unknown_call_sites = nonmain_tissue_functions.intersection(escd_global_names)
     if fns_with_possibly_unknown_call_sites:
         print(
             f"""
