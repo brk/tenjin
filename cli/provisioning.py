@@ -304,7 +304,7 @@ def want_ocaml():
 
 def want_10j_llvm():
     want("10j-llvm", "llvm", "LLVM", provision_10j_llvm_with)
-    want_10j_sysroot_extras()
+    want_10j_sysroot_extras(hermetic.xj_llvm_root(HAVE.localdir))
 
 
 def want_10j_rust_toolchains():
@@ -551,7 +551,7 @@ def want_codehawk_c():
     )
 
 
-def want_10j_sysroot_extras():
+def want_10j_sysroot_extras(xj_llvm_root: Path):
     if platform.system() != "Linux":
         return
 
@@ -561,12 +561,11 @@ def want_10j_sysroot_extras():
     ):
         filename = f"xj-bullseye-sysroot-extras_{machine_normalized()}.tar.xz"
         url = f"https://github.com/Aarno-Labs/tenjin-build-deps/releases/download/{version}/{filename}"
-        localdir = HAVE.localdir
 
-        tarball = hermetic.xj_llvm_root(localdir) / filename
+        tarball = xj_llvm_root / filename
         download(url, tarball)
 
-        tmp_dest = hermetic.xj_llvm_root(localdir) / "tmp"
+        tmp_dest = xj_llvm_root / "tmp"
         tmp_dest.mkdir()
 
         shutil.unpack_archive(tarball, tmp_dest, filter="tar")
@@ -577,14 +576,14 @@ def want_10j_sysroot_extras():
         triple = f"{platform.machine()}-linux-gnu"
         shutil.copytree(
             tmp_dest / "debian-bullseye_gcc_glibc" / machine_normalized() / "usr_lib",
-            hermetic.xj_llvm_root(localdir) / "sysroot" / "usr" / "lib" / triple,
+            xj_llvm_root / "sysroot" / "usr" / "lib" / triple,
             dirs_exist_ok=True,
         )
 
         # We need the .a files to enable static linking for our hermetic clang.
         shutil.copytree(
             tmp_dest / "debian-bullseye_gcc_glibc" / machine_normalized() / "usr_lib_gcc",
-            hermetic.xj_llvm_root(localdir) / "sysroot" / "usr" / "lib" / "gcc" / triple / "10",
+            xj_llvm_root / "sysroot" / "usr" / "lib" / "gcc" / triple / "10",
             dirs_exist_ok=True,
         )
 
