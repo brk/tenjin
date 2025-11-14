@@ -43,6 +43,10 @@ def xj_llvm_root(localdir: Path) -> Path:
     return localdir / "xj-llvm"
 
 
+def xj_llvm14_root(localdir: Path) -> Path:
+    return localdir / "xj-llvm-14"
+
+
 def xj_upstream_c2rust(localdir: Path) -> Path:
     return localdir / "upstream-c2rust"
 
@@ -60,6 +64,11 @@ def xj_prepare_findfnptrdecls_build_dir(localdir: Path) -> Path:
 
 
 def mk_env_for(localdir: Path, with_tenjin_deps=True, env_ext=None, **kwargs) -> dict[str, str]:
+    if isinstance(env_ext, dict) and env_ext.get("XJ_USE_LLVM14", "") == "1":
+        llvm_root = xj_llvm14_root(localdir)
+    else:
+        llvm_root = xj_llvm_root(localdir)
+
     if "env" in kwargs:
         env = kwargs["env"]
         del kwargs["env"]  # we'll pass it explicitly, so not via kwargs
@@ -71,16 +80,17 @@ def mk_env_for(localdir: Path, with_tenjin_deps=True, env_ext=None, **kwargs) ->
 
     if with_tenjin_deps:
         # We define LLVM_LIB_DIR for c2rust (unconditionally).
-        env["LLVM_LIB_DIR"] = str(xj_llvm_root(localdir) / "lib")
+        env["LLVM_LIB_DIR"] = str(llvm_root / "lib")
         env["PATH"] = os.pathsep.join([
             str(xj_build_deps(localdir) / "bin"),
             str(xj_more_deps(localdir) / "bin"),
-            str(xj_llvm_root(localdir) / "bin"),
+            str(llvm_root / "bin"),
             str(localdir / "cmake" / "bin"),
             env["PATH"],
         ])
+
         env["LD_LIBRARY_PATH"] = os.pathsep.join([
-            str(xj_llvm_root(localdir) / "lib"),
+            str(llvm_root / "lib"),
             env.get("LD_LIBRARY_PATH", ""),
         ])
 
@@ -175,7 +185,11 @@ def run(
     return subprocess.run(
         cmd,
         check=check,
-        env=mk_env_for(repo_root.localdir(), with_tenjin_deps, env_ext),
+        env=mk_env_for(
+            repo_root.localdir(),
+            with_tenjin_deps=with_tenjin_deps,
+            env_ext=env_ext,
+        ),
         **kwargs,
     )
 

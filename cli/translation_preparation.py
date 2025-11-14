@@ -159,7 +159,7 @@ def run_preparation_passes(
         bitcode_module_path = current_codebase / "linked_module.bc"
 
         llvm_bitcode_linking.compile_and_link_bitcode(
-            compdb_path_in(current_codebase), bitcode_module_path
+            compdb_path_in(current_codebase), bitcode_module_path, use_llvm14=True
         )
 
         assert bitcode_module_path.exists()
@@ -167,7 +167,7 @@ def run_preparation_passes(
         json_out_path = current_codebase / "xj-cclyzer.json"
         hermetic.run(
             [
-                "cc2json",
+                "cc2json-llvm14",
                 str(bitcode_module_path),
                 "--datalog-analysis=unification",
                 "--debug-datalog=false",
@@ -177,6 +177,7 @@ def run_preparation_passes(
                 # "--internalize-globals",
             ],
             check=True,
+            env_ext={"XJ_USE_LLVM14": "1"},
         )
         click.echo(json_out_path.read_text())
 

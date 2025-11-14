@@ -14,12 +14,12 @@ import click
 
 import hermetic
 from compilation_database import CompileCommands
-from repo_root import localdir
 
 
 def compile_and_link_bitcode(
     compile_commands_path: Path,
     target_path: Path,
+    use_llvm14: bool = False,
 ) -> None:
     """Compile translation units to LLVM bitcode and link them.
 
@@ -36,11 +36,6 @@ def compile_and_link_bitcode(
     """
     # Load the compilation database
     compile_commands = CompileCommands.from_json_file(compile_commands_path)
-
-    # Get paths to clang and llvm-link from hermetic installation
-    llvm_root = hermetic.xj_llvm_root(localdir())
-    clang_path = llvm_root / "bin" / "clang"
-    llvm_link_path = llvm_root / "bin" / "llvm-link"
 
     # Create a temporary directory for intermediate bitcode files
     with tempfile.TemporaryDirectory() as temp_dir:
@@ -62,7 +57,7 @@ def compile_and_link_bitcode(
 
             # Build the clang command to emit LLVM bitcode
             # Start with clang and add the original compilation flags
-            clang_args = [str(clang_path)]
+            clang_args = ["clang"]
 
             # Add all flags from the original command except the compiler name
             # and any output specification
@@ -96,6 +91,7 @@ def compile_and_link_bitcode(
                     cwd=cmd.directory_path,
                     check=True,
                     capture_output=True,
+                    env_ext={"XJ_USE_LLVM14": "1"} if use_llvm14 else None,
                 )
                 bitcode_files.append(bc_file)
             except CalledProcessError as e:
@@ -115,7 +111,7 @@ def compile_and_link_bitcode(
             bitcode_files[0].replace(target_path)
         else:
             llvm_link_args = [
-                str(llvm_link_path),
+                "llvm-link",
                 *[str(bc) for bc in bitcode_files],
                 "-o",
                 str(target_path),
@@ -126,6 +122,7 @@ def compile_and_link_bitcode(
                     llvm_link_args,
                     check=True,
                     capture_output=True,
+                    env_ext={"XJ_USE_LLVM14": "1"} if use_llvm14 else None,
                 )
             except CalledProcessError as e:
                 click.echo("Failed to link bitcode files")
