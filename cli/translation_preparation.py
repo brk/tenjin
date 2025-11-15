@@ -165,7 +165,8 @@ def run_preparation_passes(
         assert bitcode_module_path.exists()
 
         json_out_path = current_codebase / "xj-cclyzer.json"
-        hermetic.run(
+        print("Running cclyzer++ analysis, this can take a while for larger programs...")
+        hermetic.run_command_with_progress(
             [
                 "cc2json-llvm14",
                 str(bitcode_module_path),
@@ -176,7 +177,9 @@ def run_preparation_passes(
                 f"--json-out={json_out_path}",
                 # "--internalize-globals",
             ],
-            check=True,
+            current_codebase / "xj-cc2json-stdout.txt",
+            current_codebase / "xj-cc2json-stderr.txt",
+            # check=True,
             env_ext={"XJ_USE_LLVM14": "1"},
         )
         click.echo(json_out_path.read_text())
