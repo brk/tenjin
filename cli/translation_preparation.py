@@ -164,6 +164,16 @@ def run_preparation_passes(
 
         assert bitcode_module_path.exists()
 
+        cp = hermetic.run(
+            ["llvm-nm", str(bitcode_module_path)],
+            capture_output=True,
+            check=True,
+        )
+
+        main_func_defined = cp.stdout.decode().find(" T main") != -1
+        # TODO: could also accept guidance to override this decision
+        internalize_globals_flag = ["--internalize-globals"] if main_func_defined else []
+
         json_out_path = current_codebase / "xj-cclyzer.json"
         print("Running cclyzer++ analysis, this can take a while for larger programs...")
         hermetic.run_command_with_progress(
@@ -175,7 +185,7 @@ def run_preparation_passes(
                 "--context-sensitivity=insensitive",
                 "--entrypoints=library",  # consider all functions to be reachable
                 f"--json-out={json_out_path}",
-                # "--internalize-globals",
+                *internalize_globals_flag,
             ],
             current_codebase / "xj-cc2json-stdout.txt",
             current_codebase / "xj-cc2json-stderr.txt",
