@@ -185,7 +185,7 @@ def preprocess_and_create_new_compdb(
         ]
 
         refold_map_path = preprocessed_file_path.with_suffix(".refoldmap.json")
-        subprocess.run(
+        cp = subprocess.run(
             [
                 *base_pp_command,
                 f"--refold-map={refold_map_path.as_posix()}",
@@ -193,9 +193,13 @@ def preprocess_and_create_new_compdb(
                 "-o",
                 str(preprocessed_file_path),
             ],
-            check=True,
+            check=False,
             cwd=cmd.directory,
+            capture_output=True,
         )
+        preprocessed_file_path.with_suffix(".refold-stdout.txt").write_bytes(cp.stdout)
+        preprocessed_file_path.with_suffix(".refold-stderr.txt").write_bytes(cp.stderr)
+        cp.check_returncode()
 
         shutil.copyfile(preprocessed_file_path, preprocessed_file_path.with_suffix(".unmodified.i"))
 
