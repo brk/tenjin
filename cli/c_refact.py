@@ -1581,12 +1581,14 @@ But we cannot safely modify the signatures
    of functions that have call sites outside of our control. An example
    of such a call site would be `qsort()` calling a comparison function.
 Our determination of what functions might have unknown call sites is
-   by necessity conservative; it's uncomputable in general. We basically
-   assume that any function pointer which is stored in memory might end
-   up being called externally.
+   by necessity conservative; it's uncomputable in general. Any function
+   pointer in a struct passed to an unknown third-party library function
+   might end up being called by that library. And when analyzing library
+   code (without a `main()` function), any non-static global is likewise
+   potentially accessible by whatever code links against it.
 Often an application will use function pointers in ways that are hard
-   for a static analyzer to track, but which a human can verify do not have
-   any external call sites.
+   for a static analyzer to track, but which a human can verify do not
+   have any external call sites.
 If, upon review, you believe the functions listed above do not escape,
    you can add their names to the "assume_no_unknown_call_sites" list in
    the input guidance provided to Tenjin.
@@ -1596,7 +1598,8 @@ If a function which accesses globals does in fact get called externally,
 
    1. Mark the globals it accesses as being ineligible
       for lifting into the context struct.
-   2. Modify the C code by hand to access globals via an explicit context struct.
+   2. Modify the C code by hand to access globals
+      via an explicit context struct.
 
 For many standard library functions which call user-provided function pointers,
 a bare function pointer is often paired with a `void*` context parameter.
@@ -1606,11 +1609,62 @@ non-standard variants like `qsort_r()`.
 
 Tenjin is not yet sophisticated enough to do option 2 automatically.
 
-
 Here are the call sites which may have been affected by this issue:
 """
         )
         print()
+        affected_call_sites_by_location: dict[tuple[str, int, int], list[str]] = {}
+
+        for component in j.get("call_graph_components", []):
+            if component.get("all_mutable", True):
+                continue  # all-mutable call sites not affected!
+            call_targets = component.get("call_targets", [])
+            affected_targets = []
+            for target in call_targets:
+                # Target format: "<llvm-link>:function_name"
+                if ":" in target:
+                    callee_func = target.split(":")[-1]
+                    if callee_func in nonmain_tissue_functions:
+                        affected_targets.append(callee_func)
+
+            if affected_targets:
+                # Record all call sites for these targets
+                for site in component.get("call_sites", []):
+                    caller_func = site.get("p")
+                    line = site.get("line")
+                    col = site.get("col")
+
+                    # Get the actual file path - need to adjust for current directory
+                    # The JSON has paths from c_03 but we're working in c_04
+                    file_path_old = un_uf(site.get("uf"))
+                    assert file_path_old.startswith(prev.as_posix())
+                    i_file_path = file_path_old.replace(
+                        prev.as_posix(), current_codebase.as_posix()
+                    )
+
+                    location_key = (i_file_path, line, col)
+                    if location_key not in affected_call_sites_by_location:
+                        affected_call_sites_by_location[location_key] = []
+                    affected_call_sites_by_location[location_key].extend(affected_targets)
+
+        lines_by_file_path = {}
+        # Sort by file path, then line, then column
+        for location_key in sorted(affected_call_sites_by_location.keys()):
+            i_file_path, line, col = location_key
+            target_funcs = affected_call_sites_by_location[location_key]
+            print(f"Call site at {i_file_path}:{line}:{col}")
+            startline = max(0, line - 2)
+            endline = line + 1  # include one line after
+            if i_file_path not in lines_by_file_path:
+                with open(i_file_path, "r", encoding="utf-8") as fh:
+                    lines_by_file_path[i_file_path] = fh.readlines()
+            file_lines = lines_by_file_path[i_file_path][startline:endline]
+            for idx, file_line in enumerate(file_lines, start=startline + 1):
+                pointer = ">> " if idx == line else "   "
+                print(f"{pointer}{idx:4d}: {file_line.rstrip()}")
+            print()
+            print("            May call: " + " or ".join(target_funcs))
+            print()
 
         print("""
 To err on the side of safety, we currently lift all mutable globals,
