@@ -1,4 +1,5 @@
 import json
+import time
 from clang.cindex import (
     Index,
     CursorKind,
@@ -802,7 +803,7 @@ def run_xj_prepare_findfnptrdecls(
             f.write(fn + "\n")
     # Keep in sync with `xj-prepare-findfnptrdecls/CMakeLists.txt`
     binary_path = builddir / "xj-find-fn-ptr-decls"
-
+    xj_find_start = time.time()
     cp = hermetic.run(
         [
             binary_path.as_posix(),
@@ -821,6 +822,8 @@ def run_xj_prepare_findfnptrdecls(
         check=True,
         capture_output=True,
     )
+    xj_find_elapsed = time.time() - xj_find_start
+    print(f"xj-find-fn-ptr-decls completed in {xj_find_elapsed:.1f} seconds")
 
     print("xj-find-fn-ptr-decls stderr:")
     print("==========================")
@@ -950,9 +953,13 @@ def localize_mutable_globals(
     nonmain_tissue_functions: set[str] = set(j.get("mutable_global_tissue", {}).get("tissue", []))
     nonmain_tissue_functions.discard("main")  # Don't modify main
 
+    print("calling localize_mutable_globals_phase1()...")
+    time_start = time.time()
     phase1results = localize_mutable_globals_phase1(
         compdb, j, current_codebase, prev, nonmain_tissue_functions
     )
+    time_elapsed = time.time() - time_start
+    print("... localize_mutable_globals_phase1() done, elapsed: ", time_elapsed)
 
     index = create_xj_clang_index()
     tus = parse_project(index, compdb)
