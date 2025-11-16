@@ -41,8 +41,9 @@ class BatchingRewriter:
             # Read file contents
             with open(filepath, "rb") as f:
                 content = f.read()
+            unique_file_rewrites = set(file_rewrites)
             # Sort rewrites by descending offset
-            sorted_rewrites = sorted(file_rewrites, key=lambda r: r[0], reverse=True)
+            sorted_rewrites = sorted(unique_file_rewrites, key=lambda r: r[0], reverse=True)
             # Apply rewrites
             for offset, length, replacement_text in sorted_rewrites:
                 if offset < 0 or offset + length > len(content):
