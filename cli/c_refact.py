@@ -794,6 +794,7 @@ def run_xj_prepare_findfnptrdecls(
             "--extra-arg=-Wno-implicit-int-conversion",
             "--extra-arg=-Wno-unused-function",
             "--executor=all-TUs",
+            "--execute-concurrency=1",  # avoid race conditions, etc.
             "--modified_fns_file",
             mod_fn_names_path.as_posix(),
             "--unmodified_fns_file",

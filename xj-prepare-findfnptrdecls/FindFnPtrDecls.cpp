@@ -97,12 +97,17 @@ public:
       return;
     }
 
-    auto *D = Result.Nodes.getNodeAs<Stmt>("assign_to_decl");
+    auto *D = Result.Nodes.getNodeAs<Stmt>("assign_to_declrefexpr");
     if (D && D->getBeginLoc().isValid()) {
       handle_assign_to_decl(D, Result);
       return;
     }
 
+    D = Result.Nodes.getNodeAs<Stmt>("assign_to_member");
+    if (D && D->getBeginLoc().isValid()) {
+      handle_assign_to_decl(D, Result);
+      return;
+    }
   }
 
   void handle_assign_to_decl(const Stmt *D,
@@ -116,7 +121,13 @@ public:
           return;
       }
 
-      auto *lhs_dd = Result.Nodes.getNodeAs<DeclaratorDecl>("lhs_decl");
+      // MemberExpr in Clang has ValueDecl for the member, but for C it will
+      // always be a FieldDecl (which is a DeclaratorDecl).
+      auto *lhs_dd = Result.Nodes.getNodeAs<DeclaratorDecl>("lhs_value_decl");
+      if (!lhs_dd) {
+          lhs_dd = Result.Nodes.getNodeAs<DeclaratorDecl>("lhs_dcrr_decl");
+      }
+      
       if (lhs_dd && lhs_dd->getType()->isFunctionPointerType()) {
           // Get the TypeSourceInfo for better location tracking
           if (TypeSourceInfo *TSI = lhs_dd->getTypeSourceInfo()) {
@@ -250,6 +261,20 @@ public:
 
     for (auto &[Loc, RLoc] : FnPtrTypeOpenParens) {
         auto F = SM->getFilename(Loc);
+        if (F.empty()) {
+            llvm::errs() << "WARNING: empty filename for loc "
+                         << Loc.printToString(*SM) << "\n";
+            llvm::errs() << "    loc valid? " << Loc.isValid() << "\n";
+            if (auto FER = SM->getFileEntryRefForID(SM->getFileID(Loc))) {
+                //auto *FER = OFER;
+                llvm::errs() << "    file entry name: "
+                             << FER->getName() << "\n";
+                llvm::errs() << "    canonical name: "
+                  << Ctx->getSourceManager().getFileManager().getCanonicalName(*FER);
+            } else {
+                llvm::errs() << "    no file entry for loc\n";
+            }
+        }
         byFile[F].push_back(
             std::make_pair(SM->getFileOffset(Loc), SM->getFileOffset(RLoc)));
     }
@@ -437,6 +462,7 @@ private:
   ExecutionContext &Context;
   SourceManager *SM;
   ASTContext *Ctx;
+  std::string CurrentTUPath;
 
   DenseSet<const DeclaratorDecl*>
      ModifyingDeclIDs;
@@ -548,10 +574,19 @@ int main(int argc, const char **argv) {
   Finder.addMatcher(
       binaryOperator(
           hasOperatorName("="),
-          hasLHS(declRefExpr(hasDeclaration(declaratorDecl().bind("lhs_decl")))
+          hasLHS(declRefExpr(hasDeclaration(declaratorDecl().bind("lhs_dcrr_decl")))
                      .bind("lhs")),
           hasRHS(expr(ignoringImpCasts(declRefExpr().bind("rhs")))))
-          .bind("assign_to_decl"),
+          .bind("assign_to_declrefexpr"),
+      &Callback);
+
+  Finder.addMatcher(
+      binaryOperator(
+          hasOperatorName("="),
+          hasLHS(memberExpr(member(valueDecl().bind("lhs_value_decl")))
+                     .bind("lhs")),
+          hasRHS(expr(ignoringImpCasts(declRefExpr().bind("rhs")))))
+          .bind("assign_to_member"),
       &Callback);
 
   Finder.addMatcher(initListExpr(has(expr(ignoringImpCasts(declRefExpr()))))
