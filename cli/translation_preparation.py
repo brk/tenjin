@@ -255,7 +255,10 @@ def run_preparation_passes(
                     return candidate
 
         rewrites_per_file: dict[str, dict[int, tuple[int, str, str]]] = {}
-        for g_s in pgs:
+        pgs_in_determinstic_order = sorted(
+            pgs, key=lambda g: (g.file_path or "", g.decl_start_byte_offset)
+        )
+        for g_s in pgs_in_determinstic_order:
             rewrites_per_file.setdefault(g_s.file_path or "", {})[g_s.decl_start_byte_offset] = (
                 g_s.decl_end_byte_offset,
                 mk_unique_name(g_s.spelling),
