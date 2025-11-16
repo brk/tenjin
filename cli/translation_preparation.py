@@ -312,8 +312,6 @@ def run_preparation_passes(
                 check=True,
             )
 
-        hermetic.run("cat *.c", cwd=current_codebase, shell=True, check=True)
-
     def prep_expand_preprocessor(prev: Path, current_codebase: Path):
         compdb = compilation_database.CompileCommands.from_json_file(
             compdb_path_in(current_codebase)
