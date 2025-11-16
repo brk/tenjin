@@ -21,6 +21,7 @@ import repo_root
 import compilation_database
 import batching_rewriter
 from cindex_helpers import render_declaration_sans_qualifiers
+import c_refact_type_mod_replicator
 
 
 def create_xj_clang_index() -> Index:
@@ -668,6 +669,17 @@ def localize_mutable_globals_phase1(
                 fwd_decl_text = "struct XjGlobals;\n"
                 rewriter.add_rewrite(file_path_str, 0, 0, fwd_decl_text)
 
+        # Replicate edits to type definitions across translation units
+        equiv_classes = c_refact_type_mod_replicator.collect_type_definitions(list(tus.values()))
+        json.dump(
+            equiv_classes,
+            open(current_codebase / "xj-type_mod_equiv_classes.json", "w", encoding="utf-8"),
+            indent=2,
+        )
+        ext_rewrites = c_refact_type_mod_replicator.replicate_type_modifications(
+            rewriter.get_rewrites(), equiv_classes
+        )
+        rewriter.replace_rewrites(ext_rewrites)
     return results
 
 

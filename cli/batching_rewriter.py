@@ -23,6 +23,12 @@ class BatchingRewriter:
                 self.contents_cache[filepath] = f.read()
         return self.contents_cache[filepath]
 
+    def get_rewrites(self) -> dict[str, list[tuple[int, int, str]]]:
+        return self.rewrites
+
+    def replace_rewrites(self, rewrites: dict[str, list[tuple[int, int, str]]]):
+        self.rewrites = rewrites
+
     def __enter__(self):
         return self
 
