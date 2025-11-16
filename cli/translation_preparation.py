@@ -1,17 +1,19 @@
+import json
 import shutil
 import time
 import tempfile
 from pathlib import Path
 from typing import Callable
 from subprocess import CompletedProcess
-
-import click
+import hashlib
 
 import compilation_database
 import c_refact
 import hermetic
+import repo_root
 import ingest_tracking
 import llvm_bitcode_linking
+from constants import WANT
 
 
 def elapsed_ms_of_ns(start_ns: int, end_ns: int) -> float:
@@ -154,14 +156,7 @@ def run_preparation_passes(
             current_codebase / "xj-cclyzer.json", compdb, prev, current_codebase
         )
 
-    def prep_run_cclzyerpp_analysis(prev: Path, current_codebase: Path):
-        # Compile and link LLVM bitcode module
-        bitcode_module_path = current_codebase / "linked_module.bc"
-
-        llvm_bitcode_linking.compile_and_link_bitcode(
-            compdb_path_in(current_codebase), bitcode_module_path, use_llvm14=True
-        )
-
+    def run_cc2json_or_cached(bitcode_module_path: Path, current_codebase: Path) -> None:
         assert bitcode_module_path.exists()
 
         cp = hermetic.run(
@@ -175,24 +170,67 @@ def run_preparation_passes(
         internalize_globals_flag = ["--internalize-globals"] if main_func_defined else []
 
         json_out_path = current_codebase / "xj-cclyzer.json"
+
+        cache_relevant_cc2json_flags = [
+            "--datalog-analysis=unification",
+            "--debug-datalog=false",
+            "--context-sensitivity=insensitive",
+            "--entrypoints=library",  # consider all functions to be reachable
+            *internalize_globals_flag,
+        ]
+
+        bitcode_hash = hashlib.sha256(bitcode_module_path.read_bytes()).hexdigest()
+        cache_signature = [bitcode_hash, WANT["10j-more-deps"], *cache_relevant_cc2json_flags]
+
+        xj_cclyzer_results_cache_path = repo_root.localdir() / "xj-cclyzer-cache.json"
+        if xj_cclyzer_results_cache_path.exists():
+            cache_data = json.load(open(xj_cclyzer_results_cache_path, "r", encoding="utf-8"))
+            print("cached  signature:", cache_data["signature"])
+            print("current signature:", cache_signature)
+            if cache_data["signature"] == cache_signature:
+                print("Reusing cached cclyzer++ analysis results...")
+                json.dump(
+                    cache_data["contents"], open(json_out_path, "w", encoding="utf-8"), indent=2
+                )
+
+                return
+            if cache_data["signature"][0] == cache_signature[0]:
+                print(
+                    "Bitcode matches cached cclyzer++ results, but flags differ; recomputing analysis..."
+                )
+            else:
+                print("Bitcode differs from cached cclyzer++ results; recomputing analysis...")
+
         print("Running cclyzer++ analysis, this can take a while for larger programs...")
         hermetic.run_command_with_progress(
             [
                 "cc2json-llvm14",
                 str(bitcode_module_path),
-                "--datalog-analysis=unification",
-                "--debug-datalog=false",
-                "--context-sensitivity=insensitive",
-                "--entrypoints=library",  # consider all functions to be reachable
+                *cache_relevant_cc2json_flags,
                 f"--json-out={json_out_path}",
-                *internalize_globals_flag,
             ],
             current_codebase / "xj-cc2json-stdout.txt",
             current_codebase / "xj-cc2json-stderr.txt",
             # check=True,
             env_ext={"XJ_USE_LLVM14": "1"},
         )
-        click.echo(json_out_path.read_text())
+
+        contents = json.load(open(json_out_path, "r", encoding="utf-8"))
+        json.dump(
+            {"signature": cache_signature, "contents": contents},
+            open(xj_cclyzer_results_cache_path, "w", encoding="utf-8"),
+            indent=2,
+        )
+
+    def prep_run_cclzyerpp_analysis(prev: Path, current_codebase: Path):
+        # Compile and link LLVM bitcode module
+        bitcode_module_path = current_codebase / "linked_module.bc"
+
+        llvm_bitcode_linking.compile_and_link_bitcode(
+            compdb_path_in(current_codebase), bitcode_module_path, use_llvm14=True
+        )
+
+        run_cc2json_or_cached(bitcode_module_path, current_codebase)
 
     def prep_uniquify_statics(prev: Path, current_codebase: Path):
         compdb = compilation_database.CompileCommands.from_json_file(
