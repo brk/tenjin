@@ -322,9 +322,9 @@ class TissueFunctionCursorInfo:
 
 
 @dataclass
-class CallSiteInfo:
+class TissueCallSiteInfo:
     caller_func: str
-    callee_func: str
+    callee_funcs: list[str]  # currently unused, kept for possible future use/debugging
     i_file_path: str
     line: int
     col: int
@@ -585,7 +585,6 @@ def localize_mutable_globals_phase1(
         # Step 6: Modify call sites to pass placeholder-for-xjg (using JSON call site info)
         for call_info in call_sites_from_json:
             caller_func = call_info.caller_func
-            callee_func = call_info.callee_func
             i_file_path = call_info.i_file_path
             line = call_info.line
             col = call_info.col
@@ -596,13 +595,7 @@ def localize_mutable_globals_phase1(
             assert i_file_path.endswith(".nolines.i")
             assert i_file_path in tus
 
-            # Determine what to pass based on caller
-            if callee_func in nonmain_tissue_functions:
-                param_to_pass = "((struct XjGlobals*)0)"
-            else:
-                # Caller is not in tissue, skip for now
-                print(f"    Skipping: callee {callee_func} not in tissue")
-                continue
+            param_to_pass = "((struct XjGlobals*)0)"
 
             # Find the call expression at the given location
             # We need to use libclang to find the exact offset
@@ -649,7 +642,7 @@ def localize_mutable_globals_phase1(
 
             if not found_call:
                 raise ValueError(
-                    f"  WARNING: Could not find call to {callee_func} from {caller_func} at {i_file_path}:{line}:{col}"
+                    f"  WARNING: Could not find call from {caller_func} at {i_file_path}:{line}:{col}"
                 )
 
         if True:
@@ -1570,7 +1563,7 @@ def get_call_sites_from_json(
     j: dict,
     nonmain_tissue_functions: set[str],
     escd_global_names: set[str],
-) -> list[CallSiteInfo]:
+) -> list[TissueCallSiteInfo]:
     def un_uf(uf: str) -> str:
         v = j["unique_filenames"][uf]
         return v["directory"] + "/" + v["filename"]
@@ -1694,41 +1687,63 @@ code we'd be generating would almost certainly have type mismatches.
               """)
         raise ValueError("please look ABOVE traceback for error info")
 
-    call_sites: list[CallSiteInfo] = []
+    call_sites: list[TissueCallSiteInfo] = []
 
     # Get call sites from JSON (more reliable than libclang semantic_parent)
     for component in j.get("call_graph_components", []):
         if not component.get("all_mutable", False):
             continue
+        component_call_sites: list[TissueCallSiteInfo] = []
         call_targets = component.get("call_targets", [])
-        for target in call_targets:
-            # Target format: "<llvm-link>:function_name"
-            if ":" in target:
-                callee_func = target.split(":")[-1]
-                if callee_func in nonmain_tissue_functions:
-                    # Record all call sites for this target
-                    for site in component.get("call_sites", []):
-                        caller_func = site.get("p")
-                        line = site.get("line")
-                        col = site.get("col")
+        call_target_fn_names = [target.split(":")[-1] for target in call_targets]
+        if any(fn in nonmain_tissue_functions for fn in call_target_fn_names):
+            for site in component.get("call_sites", []):
+                caller_func = site.get("p")
+                line = site.get("line")
+                col = site.get("col")
 
-                        # Get the actual file path - need to adjust for current directory
-                        # The JSON has paths from c_03 but we're working in c_04
-                        file_path_old = un_uf(site.get("uf"))
-                        assert file_path_old.startswith(prev.as_posix())
-                        i_file_path = file_path_old.replace(
-                            prev.as_posix(), current_codebase.as_posix()
-                        )
+                # Get the actual file path - need to adjust for current directory
+                # The JSON has paths from c_03 but we're working in c_04
+                file_path_old = un_uf(site.get("uf"))
+                assert file_path_old.startswith(prev.as_posix())
+                i_file_path = file_path_old.replace(prev.as_posix(), current_codebase.as_posix())
 
-                        call_sites.append(
-                            CallSiteInfo(
-                                caller_func=caller_func,
-                                callee_func=callee_func,
-                                i_file_path=i_file_path,
-                                line=line,
-                                col=col,
-                            )
-                        )
+                component_call_sites.append(
+                    TissueCallSiteInfo(
+                        caller_func=caller_func,
+                        callee_funcs=call_target_fn_names,
+                        i_file_path=i_file_path,
+                        line=line,
+                        col=col,
+                    )
+                )
+            call_sites.extend(component_call_sites)
+
+        # Mixed-usage call sites, which call both tissue and non-tissue functions,
+        # would lead to undefined behavior if unaddressed. In FindFnPtrDecls.cpp
+        # we detect when a non-tissue function pointer is assigned to a location
+        # with a modified signature, and generate a wrapper for it. This should
+        # ensure correct operation, but does not get reflected in the call target
+        # info at hand, which reflects the pre-wrapper-insertion code. Just in case
+        # our analysis is incomplete, here's some code to help identify mixed-usage
+        # call sites for debugging.
+        if False:
+            ctfn = set(call_target_fn_names)
+            ctfn_tissue = ctfn.intersection(nonmain_tissue_functions)
+            ctfn_nontissue = ctfn - ctfn_tissue
+            if ctfn_tissue and ctfn_nontissue:
+                print("WARNING: found mixed-usage call sites, which appear to call a mix")
+                print("         of global-accessing functions (which need modified signatures)")
+                print("         and non-global-accessing functions (which do not).")
+                print(
+                    "         This risks undefined behavior due to conflicting function signatures."
+                )
+                for idx, site in enumerate(component_call_sites):
+                    andq = "and" if idx > 0 else "   "
+                    print(f"{andq} Call site at {site.i_file_path}:{site.line}:{site.col}")
+
+                print("May call global-accessing functions: " + ", ".join(ctfn_tissue))
+                print("  or non-global-accessing functions: " + ", ".join(ctfn_nontissue))
 
     return call_sites
 
