@@ -423,6 +423,30 @@ def compute_globals_and_statics_for_translation_unit(
     return results
 
 
+def loc_key(c: Cursor) -> tuple[int, int, str]:
+    file_path = c.location.file.name if c.location.file else "<unknown>"
+    return (c.location.line, c.location.column, file_path)
+
+
+def collect_cursors_by_loc(
+    tus: dict[str, TranslationUnit],
+    cursor_kind_filter: list[CursorKind] = [],
+) -> dict[tuple[int, int, str], list[Cursor]]:
+    """Group cursors by the (line, col, file) they are located in."""
+    by_loc: dict[tuple[int, int, str], list[Cursor]] = {}
+    for tu in tus.values():
+        for c in tu.cursor.walk_preorder():
+            # When looking for CALL_EXPR nodes in github.com/Old-Man-Programmer/tree
+            # the filter reduces time taken from 1.2s to 0.3s
+            if cursor_kind_filter and c.kind not in cursor_kind_filter:
+                continue
+            key = loc_key(c)
+            if key not in by_loc:
+                by_loc[key] = []
+            by_loc[key].append(c)
+    return by_loc
+
+
 @dataclass
 class LocalizeMutableGlobalsPhase1Results:
     ineligible_for_lifting: set[str]
@@ -498,6 +522,11 @@ def localize_mutable_globals_phase1(
         escd_global_names=escd_global_names,
         ineligible_for_lifting=ineligible_for_lifting,
     )
+
+    cbl_start = time.time()
+    call_expr_cursors_by_loc = collect_cursors_by_loc(tus, [CursorKind.CALL_EXPR])
+    cbl_elapsed = time.time() - cbl_start
+    print(f"  collect_cursors_by_loc took {cbl_elapsed:.3f} seconds")
 
     with batching_rewriter.BatchingRewriter() as rewriter:
         # In each translation unit,
@@ -598,45 +627,36 @@ def localize_mutable_globals_phase1(
             # Find the call expression at the given location
             # We need to use libclang to find the exact offset
             found_call = False
-            tu = tus[i_file_path]
-            for cursor in tu.cursor.walk_preorder():
-                if cursor.kind != CursorKind.CALL_EXPR:
-                    continue
+            for cursor in call_expr_cursors_by_loc.get((line, col, i_file_path), []):
+                # Found the call
+                call_start_offset = cursor.extent.start.offset
 
-                loc = cursor.location
-                if line != loc.line or col != loc.column:
-                    continue
+                # Read file to find parenthesis
+                content = rewriter.get_content(i_file_path)
 
-                if loc.line == line and loc.column == col and str(loc.file) == i_file_path:
-                    # Found the call
-                    call_start_offset = cursor.extent.start.offset
-
-                    # Read file to find parenthesis
-                    content = rewriter.get_content(i_file_path)
-
-                    paren_pos = content.find(b"(", call_start_offset)
-                    if paren_pos == -1:
-                        break
-
-                    # Check if there are existing arguments
-                    closing_paren_pos = content.find(b")", paren_pos)
-                    if closing_paren_pos == -1:
-                        break
-
-                    args_section = content[paren_pos + 1 : closing_paren_pos].strip()
-
-                    if args_section == b"":
-                        # No arguments
-                        insert_offset = paren_pos + 1
-                        insert_text = param_to_pass
-                    else:
-                        # Has arguments, add as first argument with comma
-                        insert_offset = paren_pos + 1
-                        insert_text = param_to_pass + ", "
-
-                    rewriter.add_rewrite(i_file_path, insert_offset, 0, insert_text)
-                    found_call = True
+                paren_pos = content.find(b"(", call_start_offset)
+                if paren_pos == -1:
                     break
+
+                # Check if there are existing arguments
+                closing_paren_pos = content.find(b")", paren_pos)
+                if closing_paren_pos == -1:
+                    break
+
+                args_section = content[paren_pos + 1 : closing_paren_pos].strip()
+
+                if args_section == b"":
+                    # No arguments
+                    insert_offset = paren_pos + 1
+                    insert_text = param_to_pass
+                else:
+                    # Has arguments, add as first argument with comma
+                    insert_offset = paren_pos + 1
+                    insert_text = param_to_pass + ", "
+
+                rewriter.add_rewrite(i_file_path, insert_offset, 0, insert_text)
+                found_call = True
+                break
 
             if not found_call:
                 raise ValueError(
