@@ -505,6 +505,7 @@ def localize_mutable_globals_phase1(
         #       modify it to add 'struct XjGlobals *' as first parameter.
         # This may require removing 'void' if it's the only parameter.
         # In non-empty parameter lists, we must add a trailing comma.
+        print("phase1, adding rewrites for modified_fn_ptr_type_locs")
         for filepath_str, ranges in fpd_output["modified_fn_ptr_type_locs"].items():
             content = rewriter.get_content(filepath_str)
 
@@ -526,6 +527,7 @@ def localize_mutable_globals_phase1(
                     f"struct XjGlobals *{', ' if add_trailing_comma else ''}",
                 )
 
+        print("phase1, adding rewrites for unmod_fn_occ_wrappers")
         for filepath_str, wrappers in fpd_output["unmod_fn_occ_wrappers"].items():
             for combined_wrapper in wrappers:
                 # Add the wrapper function definition to the file
@@ -544,6 +546,7 @@ def localize_mutable_globals_phase1(
                     rewriter.add_rewrite(filepath_str, name_end, 0, combined_wrapper["suffix"])
 
         # For each non-main tissue function, add 'struct XjGlobals *xjg' as first parameter
+        print("phase1, adding rewrites for  nonmain_tissue_function_cursors")
         for func_cursors in nonmain_tissue_function_cursors.values():
             for func_info in func_cursors:
                 # Find the position after the opening parenthesis
@@ -577,6 +580,7 @@ def localize_mutable_globals_phase1(
                 rewriter.add_rewrite(func_info.file, insert_offset, overwrite_len, insert_text)
 
         # Step 6: Modify call sites to pass placeholder-for-xjg (using JSON call site info)
+        print("phase1, adding rewrites for placeholder-for-xjg")
         for call_info in call_sites_from_json:
             caller_func = call_info.caller_func
             i_file_path = call_info.i_file_path
@@ -639,6 +643,7 @@ def localize_mutable_globals_phase1(
                     f"  WARNING: Could not find call from {caller_func} at {i_file_path}:{line}:{col}"
                 )
 
+        print("phase1, finding main()")
         if True:
             # Find the file containing main() and its main function cursor
             main_file = None
@@ -669,10 +674,13 @@ def localize_mutable_globals_phase1(
         pprint.pprint(
             equiv_classes, indent=2, stream=open("xj-type_equiv_classes.txt", "w", encoding="utf-8")
         )
+        print("phase1, replicating type modifications across TUs")
         ext_rewrites = c_refact_type_mod_replicator.replicate_type_modifications(
             rewriter.get_rewrites(), equiv_classes
         )
         rewriter.replace_rewrites(ext_rewrites)
+
+        print("phase1, appplying rewrites")
     return results
 
 
@@ -947,7 +955,7 @@ def localize_mutable_globals(
         compdb, j, current_codebase, prev, nonmain_tissue_functions
     )
     time_elapsed = time.time() - time_start
-    print("... localize_mutable_globals_phase1() done, elapsed: ", time_elapsed)
+    print(f"... localize_mutable_globals_phase1() done, elapsed: {time_elapsed:.1f}")
 
     index = create_xj_clang_index()
     tus = parse_project(index, compdb)
