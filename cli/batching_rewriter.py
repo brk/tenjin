@@ -58,3 +58,17 @@ class BatchingRewriter:
             # Write back to file
             with open(filepath, "wb") as f:
                 f.write(content)
+
+    def capture_snapshot(self) -> dict[str, bytes]:
+        """Capture a snapshot of the current contents of all files involved in rewrites
+        (without any pending rewrites applied)."""
+        snapshot = {}
+        for filepath in self.rewrites.keys():
+            snapshot[filepath] = self.get_content(filepath)
+        return snapshot
+
+    def restore_snapshot(self, snapshot: dict[str, bytes]):
+        """Restore the contents of files from a previously captured snapshot."""
+        for filepath, content in snapshot.items():
+            with open(filepath, "wb") as f:
+                f.write(content)
