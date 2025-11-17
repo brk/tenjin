@@ -108,6 +108,37 @@ public:
       handle_assign_to_decl(D, Result);
       return;
     }
+
+    if (auto *CE = Result.Nodes.getNodeAs<CallExpr>("called_fn_ptr_expr")) {
+        if (auto* CFE = Result.Nodes.getNodeAs<Expr>("called_fn_expr")) {
+          if (auto *CED = CFE->getReferencedDeclOfCallee()) {
+              // we're looking for callees that don't have obvious decls
+              return;
+          }
+
+          if (auto* CECE = dyn_cast<CallExpr>(CFE->IgnoreParenImpCasts())) {
+              if (auto *CED = CECE->getCallee()->getReferencedDeclOfCallee()) {
+                  if (auto* CEDD = dyn_cast<DeclaratorDecl>(CED)) {
+                      if (auto *TSI = CEDD->getTypeSourceInfo()) {
+                          TypeLoc TL = TSI->getTypeLoc();
+                            FunctionTypeLoc FTL;
+                            if (!try_find_fn_ptr_TL(TL, FTL)) {
+                                return;
+                            }
+
+                            FunctionTypeLoc RetFTL;
+                            if (!try_find_fn_ptr_TL(FTL.getReturnLoc(), RetFTL)) {
+                                return;
+                            }
+                            FnPtrTypeOpenParens_PotentiallyMod[RetFTL.getLParenLoc()] =
+                                RetFTL.getRParenLoc();
+                      }
+                  }
+              }
+          }
+        }
+        return;
+    }
   }
 
   void handle_assign_to_decl(const Stmt *D,
@@ -135,10 +166,10 @@ public:
             if (PointerTypeLoc PTL = TSI->getTypeLoc().getAs<PointerTypeLoc>()) {
               TypeLoc FuncTL = PTL.getPointeeLoc();
 
-              SourceLocation LParen, RParen;
-              if (try_find_fn_ptr_lparen_loc(FuncTL, LParen, RParen)) {
+              FunctionTypeLoc FTL;
+              if (try_find_fn_ptr_TL(FuncTL, FTL)) {
                 if (was_mod_fn) {
-                    FnPtrTypeOpenParens[LParen] = RParen;
+                    FnPtrTypeOpenParens[FTL.getLParenLoc()] = FTL.getRParenLoc();
                     ModifyingDeclIDs.insert(lhs_dd);
                 } else {
                     // found a non-modified function occurrence; record its location
@@ -180,10 +211,10 @@ public:
         }
         FieldDecl *TargetField = *FieldIt;
         if (auto TSI = TargetField->getTypeSourceInfo()) {
-          SourceLocation LParen, RParen;
-          if (try_find_fn_ptr_lparen_loc(TSI->getTypeLoc(), LParen, RParen)) {
+          FunctionTypeLoc FTL;
+          if (try_find_fn_ptr_TL(TSI->getTypeLoc(), FTL)) {
               if (field_nums[i].dre_fn_was_mod) {
-                FnPtrTypeOpenParens[LParen] = RParen;
+                FnPtrTypeOpenParens[FTL.getLParenLoc()] = FTL.getRParenLoc();
                 ModifyingDeclIDs.insert(TargetField);
               } else {
                 // found a non-modified function occurrence; record its location
@@ -203,6 +234,16 @@ public:
 
   bool try_find_fn_ptr_TL(TypeLoc TL, FunctionTypeLoc& FTL) {
     while (1) {
+      if (auto TDTL = TL.getAs<TypedefTypeLoc>()) {
+          if (auto* D = TDTL.getTypedefNameDecl()) {
+              if (TypeSourceInfo *TSI = D->getTypeSourceInfo()) {
+                  TL = TSI->getTypeLoc();
+                  continue;
+              }
+          }
+          break;
+      }
+
       // FunctionProtoTypeLoc is the one that has parameter parens
       if (auto FPTL = TL.getAs<FunctionProtoTypeLoc>()) {
           FTL = TL.getAs<FunctionTypeLoc>();
@@ -210,28 +251,6 @@ public:
       }
       if (auto FNPL = TL.getAs<FunctionNoProtoTypeLoc>()) {
           FTL = TL.getAs<FunctionTypeLoc>();
-          return true;
-      }
-
-      // walk "inward" one TypeLoc
-      TL = TL.getNextTypeLoc();
-      if (TL.isNull())
-        break; // defensive
-    }
-    return false;
-  }
-
-  bool try_find_fn_ptr_lparen_loc(TypeLoc TL, SourceLocation& LParen, SourceLocation& RParen) {
-    while (1) {
-      // FunctionProtoTypeLoc is the one that has parameter parens
-      if (auto FPTL = TL.getAs<FunctionProtoTypeLoc>()) {
-          LParen = FPTL.getLParenLoc();
-          RParen = FPTL.getRParenLoc();
-          return true;
-      }
-      if (auto FNPL = TL.getAs<FunctionNoProtoTypeLoc>()) {
-          LParen = FNPL.getLParenLoc();
-          RParen = FNPL.getRParenLoc();
           return true;
       }
 
@@ -259,7 +278,22 @@ public:
       return;
     }
 
-    for (auto &[Loc, RLoc] : FnPtrTypeOpenParens) {
+    collectMappedRangesByFile(byFile_fnptr_args, FnPtrTypeOpenParens);
+    collectMappedRangesByFile(byFile_ho_fnptr_args, FnPtrTypeOpenParens_PotentiallyMod);
+
+    for (auto &dre_dd : UnmodFnOccurrences) {
+        if (ModifyingDeclIDs.count(dre_dd.second) > 0) {
+            auto F = SM->getFilename(dre_dd.first->getLocation());
+            byFile_wrappers[F].push_back(
+                    fmtJSONDictForUnmodFnOccWrapper(dre_dd));
+        }
+    }
+  }
+
+  void collectMappedRangesByFile(
+            StringMap<SmallVector<std::pair<int, int>>> &byFile,
+            const DenseMap<SourceLocation, SourceLocation> &rangeMap) {
+    for (auto &[Loc, RLoc] : rangeMap) {
         auto F = SM->getFilename(Loc);
         if (F.empty()) {
             llvm::errs() << "WARNING: empty filename for loc "
@@ -279,14 +313,6 @@ public:
             std::make_pair(SM->getFileOffset(Loc), SM->getFileOffset(RLoc)));
     }
 
-
-    for (auto &dre_dd : UnmodFnOccurrences) {
-        if (ModifyingDeclIDs.count(dre_dd.second) > 0) {
-            auto F = SM->getFilename(dre_dd.first->getLocation());
-            byFile_wrappers[F].push_back(
-                    fmtJSONDictForUnmodFnOccWrapper(dre_dd));
-        }
-    }
   }
 
   std::string fmtUnmodFnWrapper(const DeclaratorDecl* d, const std::string& suffix) {
@@ -430,10 +456,12 @@ public:
  //     { "<FILEPATH_1>":[ [o1,c1], [o2,c2], ...],
  //       "<FILEPATH_2>":[...], ... }
  // ```
- void emitJSONDictForModifiedFnPtrTypeLocs() {
+ void emitJSONDictForSourceRangesByFile(
+  StringMap<SmallVector<std::pair<int, int>>> &ranges_byFile
+) {
       llvm::outs() << "{" << "\n";
       bool firstfile = true;
-      for (auto &[F, Offsets] : byFile) {
+      for (auto &[F, Offsets] : ranges_byFile) {
         if (!firstfile) {
           llvm::outs() << ",\n";
         } else {
@@ -458,12 +486,23 @@ public:
       llvm::outs() << "}" << "\n";
   }
 
+  void emitJSONDictForModifiedFnPtrTypeLocs() {
+      emitJSONDictForSourceRangesByFile(byFile_fnptr_args);
+  }
+
+  void emitJSONDictForHigherOrderPotentiallyModifiedFnPtrTypeLocs() {
+      emitJSONDictForSourceRangesByFile(byFile_ho_fnptr_args);
+  }
+
 private:
   ExecutionContext &Context;
   SourceManager *SM;
   ASTContext *Ctx;
   std::string CurrentTUPath;
 
+  // We track which Decls are getting modified via FnPtrTypeOpenParens
+  // and, when we see an assignment of an unmodified function to that Decl,
+  // we know we need to generate a wrapper for that function.
   DenseSet<const DeclaratorDecl*>
      ModifyingDeclIDs;
 
@@ -473,8 +512,18 @@ private:
   DenseMap<SourceLocation, SourceLocation>
       FnPtrTypeOpenParens; // maps left paren to right paren
 
+  DenseMap<SourceLocation, SourceLocation>
+      FnPtrTypeOpenParens_PotentiallyMod;
+
   StringMap<SmallVector<std::pair<int, int>>>
-      byFile; // file -> list[pair[offset]]
+      byFile_fnptr_args; // file -> list[pair[offset]]
+
+  // Since these are higher-order usages, it's rather harder
+  // to be sure that they really need modification (or that
+  // they have only modified functions flow to them). So we
+  // track them separately, so they can be modified speculatively.
+  StringMap<SmallVector<std::pair<int, int>>>
+      byFile_ho_fnptr_args; // file -> list[pair[offset]]
 
   StringMap<SmallVector<std::string>>
       byFile_wrappers;
@@ -589,6 +638,18 @@ int main(int argc, const char **argv) {
           .bind("assign_to_member"),
       &Callback);
 
+  Finder.addMatcher(
+      callExpr(callee(expr(hasType(hasCanonicalType(
+                                      pointerType(
+                                          pointee(
+                                              functionType()
+                                          )
+                                      )))
+                                  ).bind("called_fn_expr"))
+              ).bind("called_fn_ptr_expr"),
+      &Callback
+  );
+
   Finder.addMatcher(initListExpr(has(expr(ignoringImpCasts(declRefExpr()))))
                         .bind("init_list_expr"),
                     &Callback);
@@ -609,5 +670,8 @@ int main(int argc, const char **argv) {
   llvm::outs() << ",";
   llvm::outs() << "\"unmod_fn_occ_wrappers\": ";
   Callback.emitJSONDictForUnmodFnOccWrappers();
+  llvm::outs() << ",";
+  llvm::outs() << "\"higher_order_potentially_modified_fn_ptr_type_locs\": ";
+  Callback.emitJSONDictForHigherOrderPotentiallyModifiedFnPtrTypeLocs();
   llvm::outs() << "}";
 }
