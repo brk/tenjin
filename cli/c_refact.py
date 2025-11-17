@@ -544,7 +544,7 @@ def localize_mutable_globals_phase1(
                     rewriter.add_rewrite(filepath_str, name_end, 0, combined_wrapper["suffix"])
 
         # For each non-main tissue function, add 'struct XjGlobals *xjg' as first parameter
-        for func_name, func_cursors in nonmain_tissue_function_cursors.items():
+        for func_cursors in nonmain_tissue_function_cursors.values():
             for func_info in func_cursors:
                 # Find the position after the opening parenthesis
                 content = rewriter.get_content(func_info.file)
@@ -563,22 +563,16 @@ def localize_mutable_globals_phase1(
                 # Check if there are parameters already
                 param_section = content[paren_pos + 1 : closing_paren_pos].strip()
 
-                decl_type = "definition" if func_info.is_definition else "declaration"
-
                 overwrite_len = 0
                 if param_section == b"" or param_section == b"void":
                     # No parameters, just add our parameter
                     insert_offset = paren_pos + 1
                     insert_text = "struct XjGlobals *xjg"
                     overwrite_len = len(b"void") if param_section == b"void" else 0
-                    print(f"  Adding xjg parameter to {func_name} {decl_type} (no existing params)")
                 else:
                     # Has parameters, add as first parameter with comma
                     insert_offset = paren_pos + 1
                     insert_text = "struct XjGlobals *xjg, "
-                    print(
-                        f"  Adding xjg parameter to {func_name} {decl_type} (with existing params)"
-                    )
 
                 rewriter.add_rewrite(func_info.file, insert_offset, overwrite_len, insert_text)
 
