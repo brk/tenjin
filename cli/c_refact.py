@@ -628,11 +628,16 @@ def localize_mutable_globals_phase1(
             # We need to use libclang to find the exact offset
             found_call = False
             for cursor in call_expr_cursors_by_loc.get((line, col, i_file_path), []):
-                # Found the call
-                call_start_offset = cursor.extent.start.offset
-
                 # Read file to find parenthesis
                 content = rewriter.get_content(i_file_path)
+
+                callee_expr = next(cursor.get_children(), None)
+                if callee_expr:
+                    # Ensure we skip past the callee when we look for
+                    # the opening parenthesis.
+                    call_start_offset = callee_expr.extent.end.offset
+                else:
+                    call_start_offset = cursor.extent.start.offset
 
                 paren_pos = content.find(b"(", call_start_offset)
                 if paren_pos == -1:
