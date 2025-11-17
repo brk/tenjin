@@ -546,18 +546,12 @@ def localize_mutable_globals_phase1(
         # For each non-main tissue function, add 'struct XjGlobals *xjg' as first parameter
         for func_name, func_cursors in nonmain_tissue_function_cursors.items():
             for func_info in func_cursors:
-                cursor = func_info.cursor
-                file_path = func_info.file
-                is_def = func_info.is_definition
-
                 # Find the position after the opening parenthesis
-                content = rewriter.get_content(file_path)
-
-                # Get the function start location
-                func_start_offset = cursor.extent.start.offset
+                content = rewriter.get_content(func_info.file)
 
                 # Find the opening parenthesis
-                paren_pos = content.find(b"(", func_start_offset)
+                range_start = func_info.cursor.extent.start.offset
+                paren_pos = content.find(b"(", range_start)
                 if paren_pos == -1:
                     continue
 
@@ -569,7 +563,7 @@ def localize_mutable_globals_phase1(
                 # Check if there are parameters already
                 param_section = content[paren_pos + 1 : closing_paren_pos].strip()
 
-                decl_type = "definition" if is_def else "declaration"
+                decl_type = "definition" if func_info.is_definition else "declaration"
 
                 overwrite_len = 0
                 if param_section == b"" or param_section == b"void":
@@ -586,7 +580,7 @@ def localize_mutable_globals_phase1(
                         f"  Adding xjg parameter to {func_name} {decl_type} (with existing params)"
                     )
 
-                rewriter.add_rewrite(file_path, insert_offset, overwrite_len, insert_text)
+                rewriter.add_rewrite(func_info.file, insert_offset, overwrite_len, insert_text)
 
         # Step 6: Modify call sites to pass placeholder-for-xjg (using JSON call site info)
         for call_info in call_sites_from_json:
