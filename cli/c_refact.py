@@ -1229,8 +1229,6 @@ def localize_mutable_globals(
     print("=" * 80)
     print(f"\nFound {len(liftable_mutated_globals_and_statics)} mutated global definitions:")
 
-    return
-
     for cursor in liftable_mutated_globals_and_statics:
         print(
             f"  - {cursor.spelling}: {cursor.type.spelling} at {cursor.location.file}:{cursor.location.line}"
@@ -1271,9 +1269,8 @@ def localize_mutable_globals(
 
     print(f"\nTissue functions to modify: {nonmain_tissue_functions}")
 
-    # Apply all rewrites using a single BatchingRewriter
-    # This ensures offsets are calculated correctly
     with batching_rewriter.BatchingRewriter() as rewriter:
+        paths_needing_xjglobals_decl = set()
         # Step 8: Replace uses of mutable globals with xjg->WHATEVER
         print("\n  --- Step 8: Replacing global variable accesses ---")
         for abs_path, tu in tus.items():
@@ -1282,7 +1279,7 @@ def localize_mutable_globals(
                 #     for child in cursor.walk_preorder():
                 if (
                     child.kind == CursorKind.DECL_REF_EXPR
-                    and child.spelling in phase1results.mutd_or_escd_global_names
+                    and child.spelling in phase1results.mutd_global_names
                     and child.spelling not in phase1results.all_function_names
                 ):
                     # Get the extent of the variable reference
@@ -1310,6 +1307,7 @@ def localize_mutable_globals(
                     print(f"    Replacing {var_name} with {replacement}")
 
                     rewriter.add_rewrite(abs_path, start_offset, length, replacement)
+                    paths_needing_xjglobals_decl.add(abs_path)
 
         # Step 3: Create xj_globals.h header file
         print("\n  --- Step 3: Creating xj_globals.h ---")
@@ -1344,6 +1342,7 @@ def localize_mutable_globals(
             list(needed_typedefs.items()), key=lambda item: item[1][0].location.line
         )
         if typedefs_sorted_by_line:
+            header_lines.append("// typedefs_sorted_by_line")
             for name, (decl_cursor, _u_t_canonical_spelling) in typedefs_sorted_by_line:
                 # Get the full definition text
                 start_offset = decl_cursor.extent.start.offset
@@ -1360,6 +1359,7 @@ def localize_mutable_globals(
 
         # Add full struct/union definitions from step 2b
         if needed_struct_defs:
+            header_lines.append("// needed_struct_defs")
             for type_name, decl_cursor in needed_struct_defs.items():
                 # Get the full definition text
                 # We need to extract the source text for this struct/union
@@ -1377,11 +1377,9 @@ def localize_mutable_globals(
 
         # Add the XjGlobals struct definition
         mutated_globals_cursors_by_name = {
-            c.spelling: c for c in phase1results.liftable_mutated_globals_and_statics
+            c.spelling: c for c in liftable_mutated_globals_and_statics
         }
-        assert len(mutated_globals_cursors_by_name) == len(
-            phase1results.liftable_mutated_globals_and_statics
-        ), (
+        assert len(mutated_globals_cursors_by_name) == len(liftable_mutated_globals_and_statics), (
             "Expected all (liftable) mutated global names to be unique, "
             + f"but got duplicates within: {mutated_globals_cursors_by_name.keys()}"
         )
@@ -1412,14 +1410,14 @@ def localize_mutable_globals(
 
         global_dependencies: dict[str, set[str]] = {}  # global_name -> set of referenced globals
 
-        for var_cursor in phase1results.liftable_mutated_globals_and_statics:
+        for var_cursor in liftable_mutated_globals_and_statics:
             dependencies = set()
 
             # Walk through the initializer expression to find DECL_REF_EXPR nodes
             for child in var_cursor.walk_preorder():
                 if (
                     child.kind == CursorKind.DECL_REF_EXPR
-                    and child.spelling not in phase1results.mutd_or_escd_global_names
+                    and child.spelling not in phase1results.mutd_global_names
                 ):
                     dependencies.add(child.spelling)
                     print(f"    {var_cursor.spelling} references {child.spelling}")
@@ -1438,7 +1436,7 @@ def localize_mutable_globals(
                 globals_to_copy_to_main.add(dep)
                 collect_transitive_deps(dep, visited)
 
-        for global_name in phase1results.mutd_or_escd_global_names:
+        for global_name in phase1results.mutd_global_names:
             collect_transitive_deps(global_name, set())
 
         print(f"\n  Globals to copy into main before xjgv: {globals_to_copy_to_main}")
@@ -1453,9 +1451,7 @@ def localize_mutable_globals(
                 ):
                     print(f"  Found main() at {abs_path}:{cursor.location.line}")
 
-                    globals_and_statics_by_name = {
-                        c.spelling: c for c in phase1results.globals_and_statics
-                    }
+                    globals_and_statics_by_name = {c.spelling: c for c in globals_and_statics}
 
                     # Find the opening brace of main's body
                     # The compound statement is a child of the function
