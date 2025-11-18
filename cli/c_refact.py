@@ -1276,7 +1276,7 @@ def localize_mutable_globals(
 
         # Step 8: Replace uses of mutable globals with xjg->WHATEVER
         print("\n  --- Step 8: Replacing global variable accesses ---")
-        for abs_path, tu in tus.items():
+        for tu_path, tu in tus.items():
             current_fn_start = None
             for child in tu.cursor.walk_preorder():
                 if child.kind == CursorKind.FUNCTION_DECL:
@@ -1295,7 +1295,7 @@ def localize_mutable_globals(
 
                     replacement = f"xjg->{var_name}"
                     print(
-                        f"    Found DECL_REF_EXPR for {var_name} at {abs_path}:{child.location.line}:{child.location.column}"
+                        f"    Found DECL_REF_EXPR for {var_name} at {tu_path}:{child.location.line}:{child.location.column}"
                     )
 
                     # Check the parent - if it's a VAR_DECL, skip it
@@ -1311,13 +1311,13 @@ def localize_mutable_globals(
 
                     print(f"    Replacing {var_name} with {replacement}")
 
-                    rewriter.add_rewrite(abs_path, start_offset, length, replacement)
+                    rewriter.add_rewrite(tu_path, start_offset, length, replacement)
                     assert current_fn_start is not None
-                    if abs_path not in lowest_mutable_accessing_fn_starts:
-                        lowest_mutable_accessing_fn_starts[abs_path] = current_fn_start
+                    if tu_path not in lowest_mutable_accessing_fn_starts:
+                        lowest_mutable_accessing_fn_starts[tu_path] = current_fn_start
                     else:
-                        lowest_mutable_accessing_fn_starts[abs_path] = min(
-                            lowest_mutable_accessing_fn_starts[abs_path], current_fn_start
+                        lowest_mutable_accessing_fn_starts[tu_path] = min(
+                            lowest_mutable_accessing_fn_starts[tu_path], current_fn_start
                         )
 
         # Step 3: Create xj_globals.h header file
@@ -1349,42 +1349,42 @@ def localize_mutable_globals(
             header_lines.append("")
 
         # Add typedefs
-        typedefs_sorted_by_line = sorted(
-            list(needed_typedefs.items()), key=lambda item: item[1][0].location.line
-        )
-        if typedefs_sorted_by_line:
-            header_lines.append("// typedefs_sorted_by_line")
-            for name, (decl_cursor, _u_t_canonical_spelling) in typedefs_sorted_by_line:
-                # Get the full definition text
-                start_offset = decl_cursor.extent.start.offset
-                end_offset = decl_cursor.extent.end.offset
-                # Find the file containing this definition
-                for abs_path, tu in tus.items():
-                    if str(abs_path) == decl_cursor.location.file.name:
-                        content = rewriter.get_content(abs_path)
-                        typedef_text = content[start_offset:end_offset].decode("utf-8")
-                        header_lines.append(typedef_text + ";")
-                        break
+        # typedefs_sorted_by_line = sorted(
+        #     list(needed_typedefs.items()), key=lambda item: item[1][0].location.line
+        # )
+        # if typedefs_sorted_by_line:
+        #     header_lines.append("// typedefs_sorted_by_line")
+        #     for name, (decl_cursor, _u_t_canonical_spelling) in typedefs_sorted_by_line:
+        #         # Get the full definition text
+        #         start_offset = decl_cursor.extent.start.offset
+        #         end_offset = decl_cursor.extent.end.offset
+        #         # Find the file containing this definition
+        #         for tu_path, tu in tus.items():
+        #             if str(tu_path) == decl_cursor.location.file.name:
+        #                 content = rewriter.get_content(tu_path)
+        #                 typedef_text = content[start_offset:end_offset].decode("utf-8")
+        #                 header_lines.append(typedef_text + ";")
+        #                 break
 
-            header_lines.append("")
+        #     header_lines.append("")
 
-        # Add full struct/union definitions from step 2b
-        if needed_struct_defs:
-            header_lines.append("// needed_struct_defs")
-            for type_name, decl_cursor in needed_struct_defs.items():
-                # Get the full definition text
-                # We need to extract the source text for this struct/union
-                start_offset = decl_cursor.extent.start.offset
-                end_offset = decl_cursor.extent.end.offset
+        # # Add full struct/union definitions from step 2b
+        # if needed_struct_defs:
+        #     header_lines.append("// needed_struct_defs")
+        #     for type_name, decl_cursor in needed_struct_defs.items():
+        #         # Get the full definition text
+        #         # We need to extract the source text for this struct/union
+        #         start_offset = decl_cursor.extent.start.offset
+        #         end_offset = decl_cursor.extent.end.offset
 
-                # Find the file containing this definition
-                for abs_path, tu in tus.items():
-                    if str(abs_path) == decl_cursor.location.file.name:
-                        content = rewriter.get_content(abs_path)
-                        struct_text = content[start_offset:end_offset].decode("utf-8")
-                        header_lines.append(struct_text + ";")
-                        header_lines.append("")
-                        break
+        #         # Find the file containing this definition
+        #         for tu_path, tu in tus.items():
+        #             if str(tu_path) == decl_cursor.location.file.name:
+        #                 content = rewriter.get_content(tu_path)
+        #                 struct_text = content[start_offset:end_offset].decode("utf-8")
+        #                 header_lines.append(struct_text + ";")
+        #                 header_lines.append("")
+        #                 break
 
         # Add the XjGlobals struct definition
         mutated_globals_cursors_by_name = {
@@ -1411,11 +1411,6 @@ def localize_mutable_globals(
         # Write the header file
         with open(header_path, "w", encoding="utf-8") as fh:
             fh.write("\n".join(header_lines))
-
-        # Phase 1 only inserted forward declarations, we'll also add the header as needed.
-        # (not much point in replacing the forward declarations).
-        for tu_path, offset in lowest_mutable_accessing_fn_starts.items():
-            rewriter.add_rewrite(tu_path, offset, 0, '#include "xj_globals.h"\n')
 
         # Step 4: Initialize xjgv in main()
         print("\n  --- Step 4: Initializing xjgv in main() ---")
@@ -1458,14 +1453,14 @@ def localize_mutable_globals(
         print(f"\n  Globals to copy into main before xjgv: {globals_to_copy_to_main}")
 
         # Find main() function and insert initialization at the beginning
-        for abs_path, tu in tus.items():
+        for tu_path, tu in tus.items():
             for cursor in tu.cursor.walk_preorder():
                 if (
                     cursor.kind == CursorKind.FUNCTION_DECL
                     and cursor.spelling == "main"
                     and cursor.is_definition()
                 ):
-                    print(f"  Found main() at {abs_path}:{cursor.location.line}")
+                    print(f"  Found main() at {tu_path}:{cursor.location.line}")
 
                     globals_and_statics_by_name = {c.spelling: c for c in globals_and_statics}
 
@@ -1572,7 +1567,7 @@ def localize_mutable_globals(
                             init_lines.append("struct XjGlobals *xjg = &xjgv;\n")
 
                             init_text = "\n".join(init_lines)
-                            rewriter.add_rewrite(abs_path, insert_offset, 0, init_text)
+                            rewriter.add_rewrite(tu_path, insert_offset, 0, init_text)
                             print("  Added xjgv initialization in main()")
                             break
                     break
@@ -1580,31 +1575,17 @@ def localize_mutable_globals(
         # Step 9: Add includes and type definitions to files that use mutable globals
         print("\n  --- Step 9: Adding includes and type definitions ---")
 
-        # Find the file containing main() and its main function cursor
-        main_file = None
-        main_cursor = None
-        for abs_path, tu in tus.items():
-            for cursor in tu.cursor.walk_preorder():
-                if cursor.kind == CursorKind.FUNCTION_DECL and cursor.spelling == "main":
-                    main_file = abs_path
-                    main_cursor = cursor
-                    break
-            if main_file:
-                break
+        # Phase 1 only inserted forward declarations, we'll also add the header as needed.
+        # (not much point in replacing the forward declarations).
+        for tu_path, offset in lowest_mutable_accessing_fn_starts.items():
+            tu = tus[tu_path]
 
-        # For the main file, collect types already in scope
-        if main_file and main_cursor:
-            # Add a forward declaration for XjGlobals in case there are functions
-            # preceding main() which get modified to take an XjGlobals* parameter.
-            rewriter.add_rewrite(main_file, 0, 0, "struct XjGlobals;\n")
-
-            print(f"\n  Analyzing types in scope in main TU: {main_file}")
+            print(f"\n  Analyzing types in scope in TU: {tu_path}")
 
             types_in_scope = set()  # Set of type names (struct/union/typedef)
 
-            # Walk the main TU to find all struct/union/typedef declarations
-            main_tu = tus[main_file]
-            for cursor in main_tu.cursor.walk_preorder():
+            # Find all struct/union/typedef declarations
+            for cursor in tu.cursor.walk_preorder():
                 if cursor.kind == CursorKind.STRUCT_DECL and cursor.spelling:
                     types_in_scope.add(cursor.spelling)
                     print(f"    Found struct in scope: {cursor.spelling}")
@@ -1615,7 +1596,7 @@ def localize_mutable_globals(
                     types_in_scope.add(cursor.spelling)
                     print(f"    Found typedef in scope: {cursor.spelling}")
 
-            print(f"\n  Found {len(types_in_scope)} types already in scope in main TU")
+            print(f"\n  Found {len(types_in_scope)} types already in scope in TU: {tu_path}")
 
             # Determine which types need to be emitted
             types_to_emit_structs = {}  # name -> decl_cursor
@@ -1653,9 +1634,9 @@ def localize_mutable_globals(
                 for name, decl_cursor in typedefs_sorted:
                     start_offset = decl_cursor.extent.start.offset
                     end_offset = decl_cursor.extent.end.offset
-                    for abs_path, tu in tus.items():
-                        if str(abs_path) == decl_cursor.location.file.name:
-                            content = rewriter.get_content(abs_path)
+                    for tu_path, tu in tus.items():
+                        if str(tu_path) == decl_cursor.location.file.name:
+                            content = rewriter.get_content(tu_path)
                             typedef_text = content[start_offset:end_offset].decode("utf-8")
                             type_defs_lines.append(typedef_text + ";")
                             break
@@ -1665,29 +1646,17 @@ def localize_mutable_globals(
                 for type_name, decl_cursor in types_to_emit_structs.items():
                     start_offset = decl_cursor.extent.start.offset
                     end_offset = decl_cursor.extent.end.offset
-                    for abs_path, tu in tus.items():
-                        if str(abs_path) == decl_cursor.location.file.name:
-                            content = rewriter.get_content(abs_path)
+                    for tu_path, tu in tus.items():
+                        if str(tu_path) == decl_cursor.location.file.name:
+                            content = rewriter.get_content(tu_path)
                             struct_text = content[start_offset:end_offset].decode("utf-8")
                             type_defs_lines.append(struct_text + ";")
                             break
 
-            # Add XjGlobals struct definition
-            type_defs_lines.append("\nstruct XjGlobals {")
-            for global_name in sorted(mutated_globals_cursors_by_name.keys()):
-                var_cursor = mutated_globals_cursors_by_name[global_name]
-                type_defs_lines.append(
-                    render_declaration_sans_qualifiers(var_cursor.type, var_cursor.spelling) + ";"
-                )
+            type_defs_lines.append('#include "xj_globals.h"')
 
-            type_defs_lines.append("};")
-            type_defs_lines.append("")
-
-            # Insert before main() function
-            insert_offset = main_cursor.extent.start.offset
             type_defs_text = "\n".join(type_defs_lines) + "\n"
-            rewriter.add_rewrite(main_file, insert_offset, 0, type_defs_text)
-            print(f"\n  Added type definitions before main() in {main_file}")
+            rewriter.add_rewrite(tu_path, offset, 0, type_defs_text)
 
     print("=" * 80)
 
