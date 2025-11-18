@@ -13,6 +13,7 @@ from clang.cindex import (
     CursorKind,
     Config,
     Diagnostic,
+    LinkageKind,
     StorageClass,
     TranslationUnit,
     CompilationDatabase,
@@ -1307,6 +1308,15 @@ def localize_mutable_globals(
                     ):
                         print("      Skipping: this is part of the declaration")
                         print(child.extent)
+                        continue
+
+                    referenced_decl = child.referenced
+                    if (
+                        referenced_decl
+                        and referenced_decl.storage_class == StorageClass.NONE
+                        and referenced_decl.linkage == LinkageKind.NO_LINKAGE
+                    ):
+                        # This is a local variable with the same name as a global; skip it
                         continue
 
                     print(f"    Replacing {var_name} with {replacement}")
