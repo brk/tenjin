@@ -4,6 +4,7 @@ from clang.cindex import (
     Index,
     CursorKind,
     Config,
+    Diagnostic,
     StorageClass,
     TranslationUnit,
     CompilationDatabase,
@@ -453,6 +454,8 @@ class LocalizeMutableGlobalsPhase1Results:
     all_function_names: set[str]
     mutd_global_names: set[str]
     escd_global_names: set[str]
+    higher_order_potentially_modified_fn_ptr_type_locs: dict[str, list[tuple[int, int]]]
+    applied_rewrites: dict[str, list[tuple[int, int, str]]]
 
 
 def localize_mutable_globals_phase1(
@@ -521,6 +524,10 @@ def localize_mutable_globals_phase1(
         mutd_global_names=mutd_global_names,
         escd_global_names=escd_global_names,
         ineligible_for_lifting=ineligible_for_lifting,
+        higher_order_potentially_modified_fn_ptr_type_locs=fpd_output[
+            "higher_order_potentially_modified_fn_ptr_type_locs"
+        ],
+        applied_rewrites={},
     )
 
     cbl_start = time.time()
@@ -706,6 +713,7 @@ def localize_mutable_globals_phase1(
         rewriter.replace_rewrites(ext_rewrites)
 
         print("phase1, appplying rewrites")
+        results.applied_rewrites = rewriter.get_rewrites(reverse=False)
     return results
 
 
@@ -793,14 +801,17 @@ def combine_unmod_fn_occ_wrappers(
 type ModifiedFnPtrTypeLoc = tuple[int, int]  # start offsets for fn ty param parens
 
 
-class RawXjFindPtrDeclsOutput(TypedDict):
+class BaseXjFindPtrDeclsOutput(TypedDict):
+    modified_fn_ptr_type_locs: dict[str, list[ModifiedFnPtrTypeLoc]]
+    higher_order_potentially_modified_fn_ptr_type_locs: dict[str, list[ModifiedFnPtrTypeLoc]]
+
+
+class RawXjFindPtrDeclsOutput(BaseXjFindPtrDeclsOutput):
     unmod_fn_occ_wrappers: dict[str, list[SingleUnmodFnOccWrapper]]
-    modified_fn_ptr_type_locs: dict[str, list[ModifiedFnPtrTypeLoc]]
 
 
-class XjFindPtrDeclsOutput(TypedDict):
+class XjFindPtrDeclsOutput(BaseXjFindPtrDeclsOutput):
     unmod_fn_occ_wrappers: dict[str, list[CombinedUnmodFnOccWrapper]]
-    modified_fn_ptr_type_locs: dict[str, list[ModifiedFnPtrTypeLoc]]
 
 
 def run_xj_prepare_findfnptrdecls(
@@ -856,20 +867,135 @@ def run_xj_prepare_findfnptrdecls(
     print(cp.stdout.decode("utf-8"))
     print("==========================")
     try:
+
+        def process(k: str, v):
+            if k == "unmod_fn_occ_wrappers":
+                return {f: combine_unmod_fn_occ_wrappers(occs) for f, occs in v.items()}
+            else:
+                return v
+
         raw: RawXjFindPtrDeclsOutput = json.loads(cp.stdout.decode("utf-8"))
-        processed: XjFindPtrDeclsOutput = {
-            "unmod_fn_occ_wrappers": {
-                f: combine_unmod_fn_occ_wrappers(occs)
-                for f, occs in raw["unmod_fn_occ_wrappers"].items()
-            },
-            "modified_fn_ptr_type_locs": raw["modified_fn_ptr_type_locs"],
-        }
+        processed: XjFindPtrDeclsOutput = {k: process(k, v) for (k, v) in raw.items()}  # type: ignore
     except:
         print("Failed to parse xj-find-fn-ptr-decls output as JSON:")
         print(cp.stdout.decode("utf-8"))
         raise
 
     return processed
+
+
+def translate_offset_thru_rewrites(
+    original_offset: int, rewrites: list[tuple[int, int, str]]
+) -> int:
+    new_offset = original_offset
+    for rw_start, rw_len, rw_text in rewrites:
+        if rw_start >= original_offset:
+            break
+        if rw_start + rw_len <= original_offset:
+            new_offset += len(rw_text) - rw_len
+        elif rw_start <= original_offset:
+            # Overlap case
+            raise ValueError("Cannot translate offset that overlaps with a rewrite")
+    return new_offset
+
+
+def speculatively_fix_higher_order_fn_ptr_types(
+    compdb: compilation_database.CompileCommands,
+    phase1results: LocalizeMutableGlobalsPhase1Results,
+):
+    """
+    At the end of phase 1, we have inserted placeholders at call sites and
+    have modified some but possibly not all function pointer types. Rather
+    than implement ad-hoc type inference to identify the function pointer
+    types needing modification, we'll use Clang as an oracle. In particular,
+    we'll (1) collect diagnostics; (2) assuming we see some "too many arguments"
+    errors, from having inserted placeholders without updating the corresponding
+    function pointer type, we'll add additional parameters to some pre-identified
+    function pointer types that might need them; (3) check again.
+    If step 3 still has errors we'll roll back to step 1 and print a warning.
+    If step 3 has no errors, we proceed directly to phase 2.
+    """
+    with batching_rewriter.BatchingRewriter() as rewriter:
+        index = create_xj_clang_index()
+
+        def count_possibly_fixable_errors(index: Index) -> tuple[int, int]:
+            tus = parse_project(index, compdb)
+            tu_possibly_fixable_errors = 0
+            total_errors = 0
+            for tu in tus.values():
+                for x in tu.diagnostics:
+                    if x.severity >= Diagnostic.Error:
+                        total_errors += 1
+
+                    if x.spelling.startswith("too many arguments to function call"):
+                        tu_possibly_fixable_errors += 1
+                    elif x.option == "-Wincompatible-function-pointer-types":
+                        tu_possibly_fixable_errors += 1
+
+                    print(f"Diagnostic in {tu.spelling}: {x.spelling}")
+            return tu_possibly_fixable_errors, total_errors
+
+        tu_possibly_fixable_errors, total_errors = count_possibly_fixable_errors(index)
+        if total_errors > tu_possibly_fixable_errors:
+            raise ValueError(
+                "Detected errors that are not possibly fixable; "
+                + "aborting localization of mutable globals."
+            )
+        if tu_possibly_fixable_errors > 0:
+            print(f"Detected {tu_possibly_fixable_errors} possibly fixable errors;")
+            for (
+                filepath_str,
+                ranges,
+            ) in phase1results.higher_order_potentially_modified_fn_ptr_type_locs.items():
+                content = rewriter.get_content(filepath_str)
+
+                for old_start_offset, old_end_offset in ranges:
+                    rewrites = phase1results.applied_rewrites.get(filepath_str, [])
+                    start_offset = translate_offset_thru_rewrites(old_start_offset, rewrites)
+                    end_offset = translate_offset_thru_rewrites(old_end_offset, rewrites)
+
+                    print(
+                        "~~~~~~~~~~~~~~~~ translating offsets:",
+                        old_start_offset,
+                        old_end_offset,
+                        "to",
+                        start_offset,
+                        end_offset,
+                    )
+
+                    original_text = content[start_offset:end_offset].decode("utf-8")
+                    between_parens = original_text[1:].strip()
+                    add_trailing_comma = False
+                    if between_parens == "void" or not between_parens:
+                        target_offset = end_offset  # replace void (and whitespace)
+                    else:
+                        add_trailing_comma = True
+                        target_offset = start_offset + 1
+
+                    after_opening_paren = start_offset + 1
+                    rewriter.add_rewrite(
+                        filepath_str,
+                        after_opening_paren,
+                        target_offset - after_opening_paren,
+                        f"struct XjGlobals *{', ' if add_trailing_comma else ''}",
+                    )
+
+            snapshot = rewriter.capture_snapshot()
+            rewriter.apply_rewrites()
+            rewriter.replace_rewrites({})  # clear rewrites
+
+            errors_after, total_errors_after = count_possibly_fixable_errors(index)
+            if total_errors_after > 0:
+                print(
+                    "After adding additional function pointer parameters, "
+                    + f"{errors_after} possibly fixable errors remain (of {total_errors_after} total); "
+                    + "rolling back these changes."
+                )
+                rewriter.restore_snapshot(snapshot)
+            else:
+                print(
+                    "After adding additional function pointer parameters, " + "all errors resolved."
+                )
 
 
 def localize_mutable_globals(
@@ -981,6 +1107,8 @@ def localize_mutable_globals(
     )
     time_elapsed = time.time() - time_start
     print(f"... localize_mutable_globals_phase1() done, elapsed: {time_elapsed:.1f}")
+
+    speculatively_fix_higher_order_fn_ptr_types(compdb, phase1results)
 
     index = create_xj_clang_index()
     tus = parse_project(index, compdb)
