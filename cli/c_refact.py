@@ -876,13 +876,13 @@ def speculatively_fix_higher_order_fn_ptr_types(
                 for x in tu.diagnostics:
                     if x.severity >= Diagnostic.Error:
                         total_errors += 1
+                        print(f"Diagnostic {x.location}: {x.spelling} [{x.severity}]")
 
                     if x.spelling.startswith("too many arguments to function call"):
                         tu_possibly_fixable_errors += 1
                     elif x.option == "-Wincompatible-function-pointer-types":
                         tu_possibly_fixable_errors += 1
 
-                    print(f"Diagnostic {x.location}: {x.spelling} [{x.severity}]")
             return tu_possibly_fixable_errors, total_errors
 
         tu_possibly_fixable_errors, total_errors = count_possibly_fixable_errors(index)
