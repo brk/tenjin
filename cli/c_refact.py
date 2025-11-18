@@ -1,5 +1,12 @@
 import json
 import time
+from dataclasses import dataclass
+import platform
+from pathlib import Path
+import subprocess
+import shutil
+from typing import TypedDict
+
 from clang.cindex import (
     Index,
     CursorKind,
@@ -11,12 +18,6 @@ from clang.cindex import (
     TypeKind,
     Cursor,
 )
-from dataclasses import dataclass
-import platform
-from pathlib import Path
-import subprocess
-import shutil
-from typing import TypedDict
 
 import hermetic
 import repo_root
