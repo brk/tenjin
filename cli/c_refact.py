@@ -467,6 +467,22 @@ def localize_mutable_globals_phase1(
     prev: Path,
     nonmain_tissue_functions: set[str],
 ) -> LocalizeMutableGlobalsPhase1Results:
+    """
+    The first phase modifies function (pointer) types and
+    inserts placeholder parameters for XjGlobals.
+
+    Some function pointer types, when used in higher-order ways,
+    cannot yet be reliably modified during phase 1, and currently
+    must be handled by a separate cleanup pass
+    (`speculatively_fix_higher_order_fn_ptr_types`).
+
+    Phase 1 does not:
+        * Replace occurrences of mutable global variables
+            to use the corresponding lifted struct field.
+        * Define the XjGlobals struct in the main TU.
+        * Add necessary typedefs for XjGlobals fields.
+    """
+
     phase1index = create_xj_clang_index()
     tus = parse_project(phase1index, compdb)
 
