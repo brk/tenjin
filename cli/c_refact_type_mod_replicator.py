@@ -103,11 +103,7 @@ During refolding, we'll:
 from dataclasses import dataclass
 import hashlib
 
-from clang.cindex import (
-    CursorKind,
-    TranslationUnit,
-    Cursor,
-)
+from clang.cindex import CursorKind, TranslationUnit, Cursor, Token, TypeKind
 
 import c_refact
 
@@ -189,8 +185,8 @@ def replicate_type_modifications(
     return new_rewrites
 
 
-def tokenhash(cursor: Cursor) -> str:
-    tokens_sp = [t.spelling for t in cursor.get_tokens()]
+def tokenhash(tokens: list[Token]) -> str:
+    tokens_sp = [t.spelling for t in tokens]
     hash_digest = hashlib.blake2b((" ".join(tokens_sp)).encode(), digest_size=8).hexdigest()
     return hash_digest
 
@@ -218,6 +214,7 @@ type VariableName = str
 
 def collect_type_definitions(
     translation_units: list[TranslationUnit],
+    var_decl_fn_ptr_arg_lparen_locs: dict[str, dict[str, int]],
 ) -> dict[QuasiUniformSymbolSpecifier | VariableName, list[TypeDefinition]]:
     """
     Collect type definitions from all translation units.
@@ -249,7 +246,9 @@ def collect_type_definitions(
     # the definition of g1 could have arbitrarily many names associated,
     # including or not including g3.)
     #
-    # The way we handle this is to have a map for anonymous types keyed by
+    # The way we handle this is to have a map for anonymous types (and
+    # direct function pointer types) associated with program variables,
+    # keyed by
     #    TU -> variable name -> TypeDefinition
     #
     # In the example above, g1 and g3 will map to the same TypeDefinition,
@@ -258,7 +257,7 @@ def collect_type_definitions(
     # grouped together. (Note we assume alpha-renaming has already been
     # done on static variables to ensure uniqueness within each TU.)
 
-    anonymous_type_definitions_by_tu_and_varname: dict[str, dict[VariableName, TypeDefinition]] = {}
+    type_definitions_by_tu_and_varname: dict[str, dict[VariableName, TypeDefinition]] = {}
     unique_type_definitions: dict[
         QuasiUniformSymbolSpecifier | VariableName, tuple[Cursor, Cursor | None]
     ] = {}
@@ -297,8 +296,8 @@ def collect_type_definitions(
                         return
 
                     # print(">>>>>> " + str(list(str(a.kind) for a in ancestors)))
-                    tokhash = tokenhash(node)
-                    anonymous_type_definitions_by_tu_and_varname.setdefault(current_tu_path, {})[
+                    tokhash = tokenhash(list(node.get_tokens()))
+                    type_definitions_by_tu_and_varname.setdefault(current_tu_path, {})[
                         ancestors[-1].spelling
                     ] = mk_TD(node, tokhash, quss(node, ancestors[-1]))
                 else:
@@ -316,7 +315,7 @@ def collect_type_definitions(
         visit(tu.cursor, [])
 
     for node, ancestor in unique_type_definitions.values():
-        tokhash = tokenhash(node)
+        tokhash = tokenhash(list(node.get_tokens()))
         type_name = quss(node, ancestor)
         file = node.location.file
         if file is not None:
@@ -324,10 +323,24 @@ def collect_type_definitions(
                 mk_TD(node, tokhash, type_name)
             )
 
+    for tu_path, d in var_decl_fn_ptr_arg_lparen_locs.items():
+        for varname, lparen_offset in d.items():
+            tu_varname_map = type_definitions_by_tu_and_varname.setdefault(tu_path, {})
+            if varname in tu_varname_map:
+                raise ValueError("already recorded via AST visit: " + varname)
+            q = f"var+{varname}"
+            tu_varname_map[q] = TypeDefinition(
+                filepath=tu_path,
+                quss_for_debugging=q,
+                tokenhash="<ignored>",
+                def_start=lparen_offset,
+                def_length=2,
+            )
+
     classes_by_varname: dict[VariableName, list[TypeDefinition]] = {}
     tokenhashes_by_varname: dict[VariableName, str] = {}
 
-    for varname_to_td in anonymous_type_definitions_by_tu_and_varname.values():
+    for varname_to_td in type_definitions_by_tu_and_varname.values():
         for varname, td in varname_to_td.items():
             classes_by_varname.setdefault(varname, []).append(td)
             if varname not in tokenhashes_by_varname:

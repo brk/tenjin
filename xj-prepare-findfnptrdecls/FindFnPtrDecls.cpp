@@ -139,6 +139,22 @@ public:
         }
         return;
     }
+
+    auto *VD = Result.Nodes.getNodeAs<VarDecl>("fn_ptr_var_decl");
+    if (VD && VD->getBeginLoc().isValid()) {
+      if (VD->getName().starts_with("__")) { return; }
+      auto *TSI = VD->getTypeSourceInfo();
+      if (TSI) {
+        FunctionTypeLoc FTL;
+        if (try_find_fn_ptr_TL(TSI->getTypeLoc(), FTL)) {
+          byFile_fnptr_vardecls_lparen
+              [SM->getFilename(VD->getLocation())]
+              [VD->getNameAsString()] =
+                  SM->getFileOffset(FTL.getLParenLoc());
+        }
+      }
+      return;
+    }
   }
 
   void handle_assign_to_decl(const Stmt *D,
@@ -268,6 +284,12 @@ public:
     FnPtrTypeOpenParens.clear();
     ModifyingDeclIDs.clear();
     UnmodFnOccurrences.clear();
+    FnPtrTypeOpenParens_PotentiallyMod.clear();
+    // The byFile maps are not cleared; they accumulate across TUs.
+    // They are indexed by strings, rather than SourceLocation, like
+    // the stuff cleared here.
+    // Indexing by SourceLocation across translation units does not
+    // work because FileIDs are reused for different paths.
   }
 
   void onEndOfTranslationUnit() override {
@@ -494,6 +516,34 @@ public:
       emitJSONDictForSourceRangesByFile(byFile_ho_fnptr_args);
   }
 
+  void emitJSONDictForVarDeclFnPtrArgLParenLocs() {
+      llvm::outs() << "{" << "\n";
+      bool firstfile = true;
+      for (auto &[F, VarOffsetMap] : byFile_fnptr_vardecls_lparen) {
+        if (!firstfile) {
+          llvm::outs() << ",\n";
+        } else {
+          firstfile = false;
+        }
+
+        llvm::outs() << "\"" << F << "\""
+                     << ":" << "\n"
+                     << "{";
+
+        bool first = true;
+        for (auto &[VarName, Offset] : VarOffsetMap) {
+          if (!first) {
+            llvm::outs() << ", ";
+          } else {
+            first = false;
+          }
+          llvm::outs() << "\"" << VarName << "\": " << Offset;
+        }
+        llvm::outs() << "}";
+      }
+      llvm::outs() << "}" << "\n";
+  }
+
 private:
   ExecutionContext &Context;
   SourceManager *SM;
@@ -524,6 +574,16 @@ private:
   // track them separately, so they can be modified speculatively.
   StringMap<SmallVector<std::pair<int, int>>>
       byFile_ho_fnptr_args; // file -> list[pair[offset]]
+
+  // For variables with function pointer types (of which the
+  // non-canonical version might be behind a typedef), for which
+  // we want to replicate edits across translation units, we can't
+  // track just the span of the function type's arguments, because
+  // the text of those can & will vary across TUs due to things like
+  // const qualifiers, use of typedefs, etc. So we track only the
+  // lparen location, and only support edits directly there.
+  StringMap<StringMap<int>>
+      byFile_fnptr_vardecls_lparen; // file -> varname -> offset of lparen
 
   StringMap<SmallVector<std::string>>
       byFile_wrappers;
@@ -650,6 +710,17 @@ int main(int argc, const char **argv) {
       &Callback
   );
 
+  Finder.addMatcher(
+      varDecl(hasType(hasCanonicalType(
+                                      pointerType(
+                                          pointee(
+                                              functionType()
+                                          )
+                                      )))
+              ).bind("fn_ptr_var_decl"),
+      &Callback
+  );
+
   Finder.addMatcher(initListExpr(has(expr(ignoringImpCasts(declRefExpr()))))
                         .bind("init_list_expr"),
                     &Callback);
@@ -664,14 +735,17 @@ int main(int argc, const char **argv) {
         llvm::errs() << "----" << key.str() << "\n" << value.str() << "\n";
       });
 
-  llvm::outs() << "{";
+  llvm::outs() << "{\n";
   llvm::outs() << "\"modified_fn_ptr_type_locs\": ";
   Callback.emitJSONDictForModifiedFnPtrTypeLocs();
-  llvm::outs() << ",";
+  llvm::outs() << ",\n";
   llvm::outs() << "\"unmod_fn_occ_wrappers\": ";
   Callback.emitJSONDictForUnmodFnOccWrappers();
-  llvm::outs() << ",";
+  llvm::outs() << ",\n";
   llvm::outs() << "\"higher_order_potentially_modified_fn_ptr_type_locs\": ";
   Callback.emitJSONDictForHigherOrderPotentiallyModifiedFnPtrTypeLocs();
+  llvm::outs() << ",\n";
+  llvm::outs() << "\"var_decl_fn_ptr_arg_lparen_locs\": ";
+  Callback.emitJSONDictForVarDeclFnPtrArgLParenLocs();
   llvm::outs() << "}";
 }

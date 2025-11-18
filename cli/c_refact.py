@@ -696,7 +696,9 @@ def localize_mutable_globals_phase1(
                 rewriter.add_rewrite(file_path_str, 0, 0, fwd_decl_text)
 
         # Replicate edits to type definitions across translation units
-        equiv_classes = c_refact_type_mod_replicator.collect_type_definitions(list(tus.values()))
+        equiv_classes = c_refact_type_mod_replicator.collect_type_definitions(
+            list(tus.values()), fpd_output["var_decl_fn_ptr_arg_lparen_locs"]
+        )
         pprint.pprint(
             equiv_classes, indent=2, stream=open("xj-type_equiv_classes.txt", "w", encoding="utf-8")
         )
@@ -754,6 +756,7 @@ type ModifiedFnPtrTypeLoc = tuple[int, int]  # start offsets for fn ty param par
 class BaseXjFindPtrDeclsOutput(TypedDict):
     modified_fn_ptr_type_locs: dict[str, list[ModifiedFnPtrTypeLoc]]
     higher_order_potentially_modified_fn_ptr_type_locs: dict[str, list[ModifiedFnPtrTypeLoc]]
+    var_decl_fn_ptr_arg_lparen_locs: dict[str, dict[str, int]]
 
 
 class RawXjFindPtrDeclsOutput(BaseXjFindPtrDeclsOutput):
