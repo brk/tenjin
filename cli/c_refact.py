@@ -451,6 +451,9 @@ def collect_cursors_by_loc(
     return by_loc
 
 
+XJG_PLACEHOLDER = "((struct XjGlobals*)0)"
+
+
 @dataclass
 class LocalizeMutableGlobalsPhase1Results:
     ineligible_for_lifting: set[str]
@@ -648,7 +651,7 @@ def localize_mutable_globals_phase1(
             assert i_file_path.endswith(".nolines.i")
             assert i_file_path in tus
 
-            param_to_pass = "((struct XjGlobals*)0)"
+            param_to_pass = XJG_PLACEHOLDER
 
             # Find the call expression at the given location
             # We need to use libclang to find the exact offset
@@ -1667,6 +1670,17 @@ def localize_mutable_globals(
 
             type_defs_text = "\n".join(type_defs_lines) + "\n"
             rewriter.add_rewrite(tu_path, offset, 0, type_defs_text)
+
+    # After all batched rewrites have been applied, replace the XJG_PLACEHOLDER
+    # in all files. (This is done afterwards to avoid changing offsets
+    # during the main rewrite phase.)
+    for tu_path in tus.keys():
+        with open(tu_path, "r", encoding="utf-8") as fh:
+            content = fh.read()
+        if XJG_PLACEHOLDER in content:
+            content = content.replace(XJG_PLACEHOLDER, "xjg")
+            with open(tu_path, "w", encoding="utf-8") as fh:
+                fh.write(content)
 
     print("=" * 80)
 
