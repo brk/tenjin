@@ -689,15 +689,9 @@ def localize_mutable_globals_phase1(
                 if main_file:
                     break
 
-            # Collect files that need includes
-            files_needing_include = set()
-
-            # Files with global definitions (including main file)
-            for cursor in liftable_mutated_globals_and_statics:
-                files_needing_include.add(cursor.location.file.name)
-
-            # Add forward declaration to all relevant files
-            for file_path_str in files_needing_include:
+        if True:
+            # Add forward declaration to every translation unit, just in case
+            for file_path_str in tus.keys():
                 fwd_decl_text = "struct XjGlobals;\n"
                 rewriter.add_rewrite(file_path_str, 0, 0, fwd_decl_text)
 
