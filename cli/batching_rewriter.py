@@ -45,10 +45,8 @@ class BatchingRewriter:
             # Read file contents
             with open(filepath, "rb") as f:
                 content = f.read()
-            unique_file_rewrites = set(file_rewrites)
-            # Sort rewrites by descending offset
-            sorted_rewrites = sorted(unique_file_rewrites, key=lambda r: r[0], reverse=True)
             # Apply rewrites
+            sorted_rewrites = sorted_file_rewrites(file_rewrites)
             for offset, length, replacement_text in sorted_rewrites:
                 if offset < 0 or offset + length > len(content):
                     raise ValueError(
@@ -72,3 +70,11 @@ class BatchingRewriter:
         for filepath, content in snapshot.items():
             with open(filepath, "wb") as f:
                 f.write(content)
+
+
+def sorted_file_rewrites(
+    file_rewrites: list[tuple[int, int, str]], reverse: bool = True
+) -> list[tuple[int, int, str]]:
+    unique_file_rewrites = set(file_rewrites)
+    # Sort rewrites by descending offset
+    return sorted(unique_file_rewrites, key=lambda r: r[0], reverse=reverse)
