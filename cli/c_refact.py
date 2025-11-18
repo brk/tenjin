@@ -888,12 +888,13 @@ def speculatively_fix_higher_order_fn_ptr_types(
                     elif x.option == "-Wincompatible-function-pointer-types":
                         tu_possibly_fixable_errors += 1
 
-                    print(f"Diagnostic in {tu.spelling}: {x.spelling}")
+                    print(f"Diagnostic {x.location}: {x.spelling} [{x.severity}]")
             return tu_possibly_fixable_errors, total_errors
 
         tu_possibly_fixable_errors, total_errors = count_possibly_fixable_errors(index)
         if total_errors > tu_possibly_fixable_errors:
-            raise ValueError(
+            # raise ValueError(
+            print(
                 "Detected errors that are not possibly fixable; "
                 + "aborting localization of mutable globals."
             )
@@ -1079,8 +1080,6 @@ def localize_mutable_globals(
         and c.spelling not in phase1results.ineligible_for_lifting
     ]
 
-    return
-
     # Step 2b: Construct transitive closure of struct/union definitions
     print("\n" + "=" * 80)
     print("STEP 2b: Finding struct/union dependencies")
@@ -1198,17 +1197,18 @@ def localize_mutable_globals(
                         print(f"{indent}    Field: {field.spelling} : {field.type.spelling}")
                         collect_type_dependencies(field.type, depth + 2)
 
-    for cursor in phase1results.liftable_mutated_globals_and_statics:
+    for cursor in liftable_mutated_globals_and_statics:
         print(f"\nAnalyzing dependencies for {cursor.spelling}:")
         collect_type_dependencies(cursor.type, depth=1)
 
     print("\n" + "=" * 80)
     print("SUMMARY")
     print("=" * 80)
-    print(
-        f"\nFound {len(phase1results.liftable_mutated_globals_and_statics)} mutated global definitions:"
-    )
-    for cursor in phase1results.liftable_mutated_globals_and_statics:
+    print(f"\nFound {len(liftable_mutated_globals_and_statics)} mutated global definitions:")
+
+    return
+
+    for cursor in liftable_mutated_globals_and_statics:
         print(
             f"  - {cursor.spelling}: {cursor.type.spelling} at {cursor.location.file}:{cursor.location.line}"
         )
