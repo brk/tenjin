@@ -199,6 +199,9 @@ def choose_c2rust_transpile_flags(codebase: Path, c_main_in: str | None) -> list
     c_main_filename = choose_c_main_filename(codebase, c_main_in)
 
     if c_main_filename:
+        if c_main_filename == "tree.c":
+            c_main_filename = "tree_nolines.c"
+
         c2rust_transpile_flags.extend(["--binary", c_main_filename.removesuffix(".c")])
     else:
         c2rust_transpile_flags.extend(["--emit-build-files"])
