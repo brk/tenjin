@@ -1063,6 +1063,7 @@ def localize_mutable_globals(
     # 8. Each syntatic use of a liftable mutable global named WHATEVER is replaced
     #    with `xjg->WHATEVER`.
     # 9. In each file that uses mutable globals, add `#include "xj_globals.h"`
+    #    before the first function definition which uses a mutable global.
     #
     # Use the `BatchingRewriter` to perform all of these rewrites in a single pass.
     #
@@ -1270,13 +1271,17 @@ def localize_mutable_globals(
     print(f"\nTissue functions to modify: {nonmain_tissue_functions}")
 
     with batching_rewriter.BatchingRewriter() as rewriter:
-        paths_needing_xjglobals_decl = set()
+        # TU -> offset of first fn using mutable globals
+        lowest_mutable_accessing_fn_starts: dict[str, int] = {}
+
         # Step 8: Replace uses of mutable globals with xjg->WHATEVER
         print("\n  --- Step 8: Replacing global variable accesses ---")
         for abs_path, tu in tus.items():
+            current_fn_start = None
             for child in tu.cursor.walk_preorder():
-                # if cursor.kind == CursorKind.FUNCTION_DECL:
-                #     for child in cursor.walk_preorder():
+                if child.kind == CursorKind.FUNCTION_DECL:
+                    if child.is_definition():
+                        current_fn_start = child.extent.start.offset
                 if (
                     child.kind == CursorKind.DECL_REF_EXPR
                     and child.spelling in phase1results.mutd_global_names
@@ -1307,7 +1312,13 @@ def localize_mutable_globals(
                     print(f"    Replacing {var_name} with {replacement}")
 
                     rewriter.add_rewrite(abs_path, start_offset, length, replacement)
-                    paths_needing_xjglobals_decl.add(abs_path)
+                    assert current_fn_start is not None
+                    if abs_path not in lowest_mutable_accessing_fn_starts:
+                        lowest_mutable_accessing_fn_starts[abs_path] = current_fn_start
+                    else:
+                        lowest_mutable_accessing_fn_starts[abs_path] = min(
+                            lowest_mutable_accessing_fn_starts[abs_path], current_fn_start
+                        )
 
         # Step 3: Create xj_globals.h header file
         print("\n  --- Step 3: Creating xj_globals.h ---")
@@ -1400,6 +1411,11 @@ def localize_mutable_globals(
         # Write the header file
         with open(header_path, "w", encoding="utf-8") as fh:
             fh.write("\n".join(header_lines))
+
+        # Phase 1 only inserted forward declarations, we'll also add the header as needed.
+        # (not much point in replacing the forward declarations).
+        for tu_path, offset in lowest_mutable_accessing_fn_starts.items():
+            rewriter.add_rewrite(tu_path, offset, 0, '#include "xj_globals.h"\n')
 
         # Step 4: Initialize xjgv in main()
         print("\n  --- Step 4: Initializing xjgv in main() ---")
