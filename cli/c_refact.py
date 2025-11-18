@@ -718,50 +718,6 @@ def localize_mutable_globals_phase1(
     return results
 
 
-# def update_function_pointer_types_for_function_pointers(
-#     tus: dict[str, TranslationUnit], phase1results: LocalizeMutableGlobalsPhase1Results
-# ):
-#     rhs_of_assignment = []
-#     for tu in tus.values():
-#         for cursor in tu.cursor.walk_preorder():
-#             if cursor.kind == CursorKind.BINARY_OPERATOR:
-#                 # Check if this is an assignment to a function pointer
-#                 children = list(cursor.get_children())
-#                 if len(children) != 2:
-#                     continue
-#                 lhs, rhs = children
-#                 if lhs.kind != CursorKind.DECL_REF_EXPR:
-#                     continue
-#                 lhs_type = lhs.type
-#                 if lhs_type.kind != TypeKind.POINTER:
-#                     continue
-#                 pointee_type = lhs_type.get_pointee()
-#                 if pointee_type.kind != TypeKind.FUNCTIONPROTO:
-#                     continue
-#             if cursor.kind == CursorKind.DECL_REF_EXPR:
-#                 sp = cursor.spelling
-#                 if (
-#                     sp in phase1results.mutd_or_escd_global_names
-#                     and sp in phase1results.all_function_names
-#                     and sp not in phase1results.ineligible_for_lifting
-#                 ):
-#                     # Update the pointer type as needed
-#                     print(cursor.spelling)
-#                     print(cursor.extent)
-#                     print(cursor.type.spelling)
-#                     print(cursor.type.get_declaration().extent)
-#                     if cursor.semantic_parent:
-#                         print("semantic parent location:")
-#                         print(cursor.semantic_parent.location)
-#                         print("semantic parent kind:", cursor.semantic_parent.kind)
-#                     if cursor.lexical_parent:
-#                         print("lexical_parent location:")
-#                         print(cursor.lexical_parent.location)
-#                         print("lexical_parent kind:", cursor.lexical_parent.kind)
-
-#                     print()
-
-
 class SingleUnmodFnOccWrapper(TypedDict):
     name: str
     suffix: str
@@ -1123,8 +1079,6 @@ def localize_mutable_globals(
         if c.spelling in phase1results.mutd_global_names
         and c.spelling not in phase1results.ineligible_for_lifting
     ]
-
-    # update_function_pointer_types_for_function_pointers(tus, phase1results)
 
     return
 
