@@ -6,6 +6,7 @@ from pathlib import Path
 import subprocess
 import shutil
 from typing import TypedDict
+import pprint
 
 from clang.cindex import (
     Index,
@@ -702,8 +703,6 @@ def localize_mutable_globals_phase1(
 
         # Replicate edits to type definitions across translation units
         equiv_classes = c_refact_type_mod_replicator.collect_type_definitions(list(tus.values()))
-        import pprint
-
         pprint.pprint(
             equiv_classes, indent=2, stream=open("xj-type_equiv_classes.txt", "w", encoding="utf-8")
         )
