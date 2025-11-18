@@ -206,6 +206,16 @@ def choose_c2rust_transpile_flags(codebase: Path, c_main_in: str | None) -> list
     return c2rust_transpile_flags
 
 
+def apply_behind_the_scenes_guidance_to(guidance: dict) -> dict:
+    # Some bits of guidance are internal to Tenjin and not exposed to users.
+
+    if "vars_of_type" not in guidance:
+        guidance["vars_of_type"] = {}
+
+    guidance["vars_of_type"]["&mut XjGlobals"] = ["*:xjg"]
+    return guidance
+
+
 def do_translate(
     root: Path,
     codebase: Path,
@@ -240,7 +250,7 @@ def do_translate(
         "--log-level",
         "INFO",
         "--guidance",
-        json.dumps(guidance),
+        json.dumps(apply_behind_the_scenes_guidance_to(guidance)),
     ]
 
     skip_remainder_of_translation = False
