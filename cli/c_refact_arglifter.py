@@ -12,7 +12,6 @@ inserted before the call, and replaces X->F with newvar in the call.
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Generator
 
 from clang.cindex import (  # type: ignore
     CursorKind,
@@ -23,7 +22,11 @@ from clang.cindex import (  # type: ignore
 import batching_rewriter
 import compilation_database
 import c_refact
-from cindex_helpers import render_declaration_sans_qualifiers
+from cindex_helpers import (
+    render_declaration_sans_qualifiers,
+    yield_matching_cursors,
+    AncestorChain,
+)
 
 
 @dataclass
@@ -48,9 +51,6 @@ class CallSiteRewrite:
     statement_start_offset: int  # Where to insert declarations
     member_accesses: list[MemberAccessInfo]  # Member accesses to lift
     base_expr_text: str  # The text of the base expression (e.g., "ptr")
-
-
-type AncestorChain = tuple[Cursor, AncestorChain | None]
 
 
 def get_source_text(cursor: Cursor, content: bytes) -> str:
@@ -270,22 +270,6 @@ def get_indentation(content: bytes, offset: int) -> str:
     return content[offset:indent_end].decode("utf-8")
 
 
-def yield_call_sites(
-    tu: c_refact.TranslationUnit,
-) -> Generator[tuple[Cursor, AncestorChain], None, None]:
-    """Yield all call expression cursors in the translation unit."""
-
-    worklist: list[AncestorChain] = [(tu.cursor, None)]
-    while worklist:
-        current, ancestors = worklist.pop()
-        if current.kind == CursorKind.CALL_EXPR:
-            assert ancestors is not None
-            yield (current, ancestors)
-
-        for child in current.get_children():
-            worklist.append((child, (current, ancestors)))  # type: ignore
-
-
 def lift_subfield_args(
     compdb: compilation_database.CompileCommands,
 ):
@@ -324,7 +308,7 @@ def lift_subfield_args(
 
     for tu_path, tu in tus.items():
         content = Path(tu_path).read_bytes()
-        for cursor, ancestors in yield_call_sites(tu):
+        for cursor, ancestors in yield_matching_cursors(tu.cursor, [CursorKind.CALL_EXPR]):
             rewrite = analyze_call_site(cursor, content, tu_path, ancestors)
             if rewrite:
                 rewrites_by_file.setdefault(tu_path, []).append(rewrite)

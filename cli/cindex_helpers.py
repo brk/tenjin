@@ -1,6 +1,28 @@
+from typing import Generator
+
 from clang.cindex import (  # type: ignore
     TypeKind,
+    Cursor,
+    CursorKind,
 )
+
+type AncestorChain = tuple[Cursor, AncestorChain | None]
+
+
+def yield_matching_cursors(
+    root_cursor: Cursor, cursor_kinds_of_interest: list[CursorKind]
+) -> Generator[tuple[Cursor, AncestorChain], None, None]:
+    """Yield all call expression cursors in the translation unit."""
+
+    worklist: list[AncestorChain] = [(root_cursor, None)]
+    while worklist:
+        current, ancestors = worklist.pop()
+        if current.kind in cursor_kinds_of_interest:
+            assert ancestors is not None
+            yield (current, ancestors)
+
+        for child in current.get_children():
+            worklist.append((child, (current, ancestors)))  # type: ignore
 
 
 def render_declaration_sans_qualifiers(type_obj, var_name):
