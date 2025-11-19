@@ -9,6 +9,7 @@ import hashlib
 
 import compilation_database
 import c_refact
+import c_refact_arglifter
 import hermetic
 import repo_root
 import ingest_tracking
@@ -153,6 +154,14 @@ def run_preparation_passes(
             compdb_path_in(current_codebase)
         )
         c_refact.localize_mutable_globals(
+            current_codebase / "xj-cclyzer.json", compdb, prev, current_codebase
+        )
+
+    def prep_lift_subfield_args(prev: Path, current_codebase: Path):
+        compdb = compilation_database.CompileCommands.from_json_file(
+            compdb_path_in(current_codebase)
+        )
+        c_refact_arglifter.lift_subfield_args(
             current_codebase / "xj-cclyzer.json", compdb, prev, current_codebase
         )
 
@@ -344,6 +353,7 @@ def run_preparation_passes(
         ("expand_preprocessor", prep_expand_preprocessor),
         ("run_cclzyerpp_analysis", prep_run_cclzyerpp_analysis),
         ("localize_mutable_globals", prep_localize_mutable_globals),
+        ("lift_subfield_args", prep_lift_subfield_args),
         # ("refold_preprocessor", prep_refold_preprocessor),
     ]
 
