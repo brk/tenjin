@@ -23,6 +23,7 @@ import vcs_helpers
 import static_measurements_rust
 from translation_preparation import run_preparation_passes
 from translation_improvement import run_improvement_passes
+from constants import XJ_GUIDANCE_FILENAME
 
 
 def stub_ingestion_record(codebase: Path, guidance: dict) -> ingest.TranslationRecord | None:
@@ -248,20 +249,23 @@ def do_translate(
 
     c2rust_transpile_flags = choose_c2rust_transpile_flags(codebase, c_main_in)
 
+    skip_remainder_of_translation = False
+    resultsdir.mkdir(parents=True, exist_ok=True)
+
+    # Preparation passes may modify the guidance stored in XJ_GUIDANCE_FILENAME
+    final_prepared_codebase = run_preparation_passes(
+        codebase, resultsdir, tracker, guidance, buildcmd
+    )
+    compdb = final_prepared_codebase / "compile_commands.json"
+
+    # Preparation passes can modify the guidance.
     xj_c2rust_transpile_flags = [
         *c2rust_transpile_flags,
         "--log-level",
         "INFO",
         "--guidance",
-        json.dumps(apply_behind_the_scenes_guidance_to(guidance)),
+        json.dumps(json.load((final_prepared_codebase / XJ_GUIDANCE_FILENAME).open())),
     ]
-
-    skip_remainder_of_translation = False
-    resultsdir.mkdir(parents=True, exist_ok=True)
-
-    # We might want to pass guidance to preparation passes.
-    final_prepared_codebase = run_preparation_passes(codebase, resultsdir, tracker, buildcmd)
-    compdb = final_prepared_codebase / "compile_commands.json"
 
     # The crate name that c2rust uses is based on the directory stem,
     # so we (temporarily) create a subdirectory with the desired crate name.
@@ -402,7 +406,7 @@ def run_upstream_c2rust(tracker, c2rust_transpile_flags, compdb, output):
         sys.exit(1)
 
 
-def load_and_parse_guidance(guidance_path_or_literal):
+def load_and_parse_guidance(guidance_path_or_literal: str) -> dict:
     try:
         if guidance_path_or_literal == "":
             guidance = {}

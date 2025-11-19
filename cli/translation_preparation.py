@@ -14,7 +14,7 @@ import hermetic
 import repo_root
 import ingest_tracking
 import llvm_bitcode_linking
-from constants import WANT
+from constants import WANT, XJ_GUIDANCE_FILENAME
 
 
 def elapsed_ms_of_ns(start_ns: int, end_ns: int) -> float:
@@ -119,6 +119,7 @@ def run_preparation_passes(
     original_codebase: Path,
     resultsdir: Path,
     tracker: ingest_tracking.TimingRepo,
+    guidance: dict,
     buildcmd: str | None = None,
 ) -> Path:
     """Returns the path to the final prepared codebase directory."""
@@ -147,6 +148,12 @@ def run_preparation_passes(
                 compdb_path_in(current_codebase),
                 current_codebase,
             ),
+        )
+
+        json.dump(
+            guidance,
+            open(current_codebase / XJ_GUIDANCE_FILENAME, "w", encoding="utf-8"),
+            indent=2,
         )
 
     def prep_localize_mutable_globals(prev: Path, current_codebase: Path):

@@ -20,6 +20,8 @@ WANT = {
     "10j-reference-c2rust-tag": "55e1c24d5f3cbe0f3ef29717eeed77ea4c51867a",
 }
 
+XJ_GUIDANCE_FILENAME = "xj-guidance.json"
+
 # Subdirectory of hermetic.xj_llvm_root()
 SYSROOT_NAME = "sysroot"
 

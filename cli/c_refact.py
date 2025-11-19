@@ -25,8 +25,9 @@ import hermetic
 import repo_root
 import compilation_database
 import batching_rewriter
-from cindex_helpers import render_declaration_sans_qualifiers
+from cindex_helpers import render_declaration_sans_qualifiers, yield_matching_cursors
 import c_refact_type_mod_replicator
+from constants import XJ_GUIDANCE_FILENAME
 
 
 def create_xj_clang_index() -> Index:
@@ -457,6 +458,7 @@ XJG_PLACEHOLDER = "((struct XjGlobals*)0)"
 @dataclass
 class LocalizeMutableGlobalsPhase1Results:
     ineligible_for_lifting: set[str]
+    nonmain_tissue_functions: set[str]
     all_function_names: set[str]
     mutd_global_names: set[str]
     escd_global_names: set[str]
@@ -543,6 +545,7 @@ def localize_mutable_globals_phase1(
 
     results = LocalizeMutableGlobalsPhase1Results(
         all_function_names=all_function_names,
+        nonmain_tissue_functions=nonmain_tissue_functions,
         mutd_global_names=mutd_global_names,
         escd_global_names=escd_global_names,
         ineligible_for_lifting=ineligible_for_lifting,
@@ -1682,7 +1685,52 @@ def localize_mutable_globals(
             with open(tu_path, "w", encoding="utf-8") as fh:
                 fh.write(content)
 
+    update_vars_of_type_guidance_for_xjg(current_codebase, phase1results, tus)
+
+    print(f"{phase1results.all_function_names=}")
+
     print("=" * 80)
+
+
+# Update the guidance to have the xjg parameter passed as &mut when possible.
+# Functions which are used in higher-order ways must remain as raw pointers.
+def update_vars_of_type_guidance_for_xjg(
+    current_codebase: Path,
+    phase1results: LocalizeMutableGlobalsPhase1Results,
+    tus: dict[str, TranslationUnit],
+):
+    higher_order_tissue_functions = set()
+    for _tu_path, tu in tus.items():
+        for v, ancestors in yield_matching_cursors(tu.cursor, [CursorKind.DECL_REF_EXPR]):
+            if v.spelling in phase1results.nonmain_tissue_functions:
+                # Found a use of a tissue function; was it in a call position?
+                parent = v
+                while ancestors:
+                    parent, rest = ancestors
+                    if rest is None:
+                        break
+                    if not parent.kind.is_unexposed():
+                        break
+                    ancestors = rest
+                if parent.kind != CursorKind.CALL_EXPR:
+                    higher_order_tissue_functions.add(v.spelling)
+                else:
+                    # might be a callee, or a call arg
+                    callee = next(parent.get_children(), None)
+                    if callee and callee.spelling == v.spelling:
+                        # direct call, all good
+                        pass
+                    else:
+                        # passed as an argument
+                        higher_order_tissue_functions.add(v.spelling)
+    guidance: dict = json.load(open(current_codebase / XJ_GUIDANCE_FILENAME, "r", encoding="utf-8"))
+    can_take_mut_xjg = phase1results.nonmain_tissue_functions - higher_order_tissue_functions
+    mut_specs = guidance.get("vars_of_type", {}).get("&mut XjGlobals", [])
+    for tissue_fn_name in can_take_mut_xjg:
+        mut_specs.append(f"{tissue_fn_name}:xjg")
+    guidance.setdefault("vars_of_type", {})["&mut XjGlobals"] = mut_specs
+    with open(current_codebase / XJ_GUIDANCE_FILENAME, "w", encoding="utf-8") as fh:
+        json.dump(guidance, fh, indent=2)
 
 
 def extract_function_info(
