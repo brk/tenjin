@@ -12,6 +12,7 @@ inserted before the call, and replaces X->F with newvar in the call.
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Generator
 
 from clang.cindex import (  # type: ignore
     CursorKind,
@@ -49,6 +50,9 @@ class CallSiteRewrite:
     base_expr_text: str  # The text of the base expression (e.g., "ptr")
 
 
+type AncestorChain = tuple[Cursor, AncestorChain | None]
+
+
 def get_source_text(cursor: Cursor, content: bytes) -> str:
     """Extract the source text for a cursor."""
     start = cursor.extent.start.offset
@@ -56,17 +60,20 @@ def get_source_text(cursor: Cursor, content: bytes) -> str:
     return content[start:end].decode("utf-8")
 
 
-def find_statement_start(cursor: Cursor, content: bytes, file_path: str) -> int:
+def find_statement_start(cursor: Cursor, content: bytes, ancestors: AncestorChain | None) -> int:
     """Find the start of the statement containing this cursor.
 
     Walks up the AST to find the enclosing statement, then returns its start offset.
     For statements within compound statements, we want to insert before the statement.
     """
     # Walk up to find a statement that's a direct child of a compound statement
+    print("Finding statement start for cursor at:", cursor.location)
+
     current = cursor
-    while current:
-        parent = current.semantic_parent
+    while ancestors is not None:
+        parent, ancestors = ancestors
         if not parent:
+            print("No parent found, started at", cursor.kind, "stopped at current:", current.kind)
             break
 
         # Check if parent is a compound statement or function body
@@ -82,6 +89,7 @@ def find_statement_start(cursor: Cursor, content: bytes, file_path: str) -> int:
             ):
                 start_offset -= 1
 
+            print("parent was compound stmt or fn decl, Walked back from:", cursor.extent.start)
             return start_offset
 
         current = parent
@@ -184,7 +192,7 @@ def find_matching_base_pointer(
 
 
 def analyze_call_site(
-    call_cursor: Cursor, content: bytes, file_path: str
+    call_cursor: Cursor, content: bytes, file_path: str, ancestors: AncestorChain
 ) -> CallSiteRewrite | None:
     """Analyze a call site to find member accesses that can be lifted.
 
@@ -236,7 +244,7 @@ def analyze_call_site(
     # Use the first base expression text (they should all be the same in our pattern)
     base_expr_text = next(iter(base_expr_text_set)) if base_expr_text_set else ""
 
-    statement_start = find_statement_start(call_cursor, content, file_path)
+    statement_start = find_statement_start(call_cursor, content, ancestors)
 
     return CallSiteRewrite(
         call_cursor=call_cursor,
@@ -260,6 +268,22 @@ def get_indentation(content: bytes, offset: int) -> str:
         indent_end += 1
 
     return content[offset:indent_end].decode("utf-8")
+
+
+def yield_call_sites(
+    tu: c_refact.TranslationUnit,
+) -> Generator[tuple[Cursor, AncestorChain], None, None]:
+    """Yield all call expression cursors in the translation unit."""
+
+    worklist: list[AncestorChain] = [(tu.cursor, None)]
+    while worklist:
+        current, ancestors = worklist.pop()
+        if current.kind == CursorKind.CALL_EXPR:
+            assert ancestors is not None
+            yield (current, ancestors)
+
+        for child in current.get_children():
+            worklist.append((child, (current, ancestors)))  # type: ignore
 
 
 def lift_subfield_args(
@@ -300,16 +324,10 @@ def lift_subfield_args(
 
     for tu_path, tu in tus.items():
         content = Path(tu_path).read_bytes()
-
-        for cursor in tu.cursor.walk_preorder():
-            if cursor.kind == CursorKind.CALL_EXPR:
-                # Only process calls in the current translation unit's main file
-                if cursor.location.file and cursor.location.file.name == tu_path:
-                    rewrite = analyze_call_site(cursor, content, tu_path)
-                    if rewrite:
-                        if tu_path not in rewrites_by_file:
-                            rewrites_by_file[tu_path] = []
-                        rewrites_by_file[tu_path].append(rewrite)
+        for cursor, ancestors in yield_call_sites(tu):
+            rewrite = analyze_call_site(cursor, content, tu_path, ancestors)
+            if rewrite:
+                rewrites_by_file.setdefault(tu_path, []).append(rewrite)
 
     print(f"\nFound {sum(len(v) for v in rewrites_by_file.values())} call sites to rewrite")
 
