@@ -90,7 +90,7 @@ def find_statement_start(cursor: Cursor, content: bytes, file_path: str) -> int:
     return cursor.extent.start.offset
 
 
-def analyze_call_arguments(call_cursor: Cursor, content: bytes) -> list[tuple[Cursor, int]]:
+def analyze_call_arguments(call_cursor: Cursor) -> list[tuple[Cursor, int]]:
     """Analyze arguments of a call expression.
 
     Returns a list of (argument_cursor, arg_index) tuples.
@@ -181,7 +181,7 @@ def analyze_call_site(
 
     Returns CallSiteRewrite if the pattern is found, None otherwise.
     """
-    args = analyze_call_arguments(call_cursor, content)
+    args = analyze_call_arguments(call_cursor)
     if len(args) < 2:
         # Need at least 2 arguments for the pattern
         return None
@@ -254,10 +254,7 @@ def get_indentation(content: bytes, offset: int) -> str:
 
 
 def lift_subfield_args(
-    json_path: Path,
     compdb: compilation_database.CompileCommands,
-    prev: Path,
-    current_codebase: Path,
 ):
     """Lift struct member accesses from function call arguments into local variables.
 

@@ -161,9 +161,7 @@ def run_preparation_passes(
         compdb = compilation_database.CompileCommands.from_json_file(
             compdb_path_in(current_codebase)
         )
-        c_refact_arglifter.lift_subfield_args(
-            current_codebase / "xj-cclyzer.json", compdb, prev, current_codebase
-        )
+        c_refact_arglifter.lift_subfield_args(compdb)
 
     def run_cc2json_or_cached(bitcode_module_path: Path, current_codebase: Path) -> None:
         assert bitcode_module_path.exists()
