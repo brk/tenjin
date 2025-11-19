@@ -5654,6 +5654,18 @@ impl<'c> Translation<'c> {
                 if target_guided_type.is_exclusive_borrow() && !expr_guided_type.is_borrow() {
                     return mk().mutbl().addr_of_expr(expr);
                 }
+            } else {
+                // Have target guided type, but no expr guided type.
+                // If target is a borrow, we assume expr was a pointer.
+                if target_guided_type.is_shared_borrow() {
+                    // Coerce to `.as_ref().unwrap()`
+                    let opt = mk().method_call_expr(expr, "as_ref", Vec::<Box<Expr>>::new());
+                    return mk().method_call_expr(opt, "unwrap", Vec::<Box<Expr>>::new());
+                } else if target_guided_type.is_exclusive_borrow() {
+                    // Coerce to `.as_mut().unwrap()`
+                    let opt = mk().method_call_expr(expr, "as_mut", Vec::<Box<Expr>>::new());
+                    return mk().method_call_expr(opt, "unwrap", Vec::<Box<Expr>>::new());
+                }
             }
         }
         expr
