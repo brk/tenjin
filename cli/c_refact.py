@@ -528,14 +528,14 @@ def localize_mutable_globals_phase1(
     )
     print("escaped_globals:", list(escd_global_names))
 
-    globals_and_statics = compute_globals_and_statics_for_translation_units(
-        list(tus.values()), elide_functions=True
-    )
-    liftable_mutated_globals_and_statics = [
-        c
-        for c in globals_and_statics
-        if c.spelling in mutd_global_names and c.spelling not in ineligible_for_lifting
-    ]
+    # globals_and_statics = compute_globals_and_statics_for_translation_units(
+    #     list(tus.values()), elide_functions=True
+    # )
+    # liftable_mutated_globals_and_statics = [
+    #     c
+    #     for c in globals_and_statics
+    #     if c.spelling in mutd_global_names and c.spelling not in ineligible_for_lifting
+    # ]
 
     call_sites_from_json = get_call_sites_from_json(
         prev, current_codebase, j, nonmain_tissue_functions, escd_global_names

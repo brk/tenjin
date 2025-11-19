@@ -1,12 +1,5 @@
 from clang.cindex import (  # type: ignore
-    Index,
-    CursorKind,
-    Config,
-    StorageClass,
-    TranslationUnit,
-    CompilationDatabase,
     TypeKind,
-    Cursor,
 )
 
 
