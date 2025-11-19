@@ -103,7 +103,7 @@ During refolding, we'll:
 from dataclasses import dataclass
 import hashlib
 
-from clang.cindex import CursorKind, TranslationUnit, Cursor, Token
+from clang.cindex import CursorKind, TranslationUnit, Cursor, Token  # type: ignore
 
 type QuasiUniformSymbolSpecifier = str
 

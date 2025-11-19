@@ -13,7 +13,7 @@ inserted before the call, and replaces X->F with newvar in the call.
 from dataclasses import dataclass
 from pathlib import Path
 
-from clang.cindex import (
+from clang.cindex import (  # type: ignore
     CursorKind,
     TypeKind,
     Cursor,

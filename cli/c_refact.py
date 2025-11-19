@@ -8,7 +8,7 @@ import shutil
 from typing import TypedDict
 import pprint
 
-from clang.cindex import (
+from clang.cindex import (  # type: ignore
     Index,
     CursorKind,
     Config,
