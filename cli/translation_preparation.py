@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Callable
 from subprocess import CompletedProcess
 import hashlib
+from dataclasses import dataclass
 
 import compilation_database
 import c_refact
@@ -115,6 +116,16 @@ def copy_codebase(
         # print(compdb_path_in(dst).read_text())
 
 
+type FilePathStr = str
+type QUSS = str
+type FileContentsStr = str
+
+
+@dataclass
+class PrepPassResultStore:
+    decls_defined_by_headers: dict[FilePathStr, dict[QUSS, tuple[int, int, FileContentsStr]]]
+
+
 def run_preparation_passes(
     original_codebase: Path,
     resultsdir: Path,
@@ -124,14 +135,14 @@ def run_preparation_passes(
 ) -> Path:
     """Returns the path to the final prepared codebase directory."""
 
-    def prep_00_copy_pristine_codebase(pristine: Path, newdir: Path):
+    def prep_00_copy_pristine_codebase(pristine: Path, newdir: Path, store: PrepPassResultStore):
         if pristine.is_file():
             newdir.mkdir()
             shutil.copy2(pristine, newdir / pristine.name)
         else:
             copy_codebase(pristine, newdir)
 
-    def prep_01_materialize_compdb(prev: Path, current_codebase: Path):
+    def prep_01_materialize_compdb(prev: Path, current_codebase: Path, store: PrepPassResultStore):
         with tempfile.TemporaryDirectory() as builddirname:
             builddir = Path(builddirname)
             materialize_compilation_database_in(builddir, current_codebase, buildcmd, tracker)
@@ -156,7 +167,9 @@ def run_preparation_passes(
             indent=2,
         )
 
-    def prep_localize_mutable_globals(prev: Path, current_codebase: Path):
+    def prep_localize_mutable_globals(
+        prev: Path, current_codebase: Path, store: PrepPassResultStore
+    ):
         compdb = compilation_database.CompileCommands.from_json_file(
             compdb_path_in(current_codebase)
         )
@@ -164,7 +177,7 @@ def run_preparation_passes(
             current_codebase / "xj-cclyzer.json", compdb, prev, current_codebase
         )
 
-    def prep_lift_subfield_args(prev: Path, current_codebase: Path):
+    def prep_lift_subfield_args(prev: Path, current_codebase: Path, store: PrepPassResultStore):
         compdb = compilation_database.CompileCommands.from_json_file(
             compdb_path_in(current_codebase)
         )
@@ -236,7 +249,7 @@ def run_preparation_passes(
             indent=2,
         )
 
-    def prep_run_cclzyerpp_analysis(prev: Path, current_codebase: Path):
+    def prep_run_cclzyerpp_analysis(prev: Path, current_codebase: Path, store: PrepPassResultStore):
         # Compile and link LLVM bitcode module
         bitcode_module_path = current_codebase / "linked_module.bc"
 
@@ -246,7 +259,7 @@ def run_preparation_passes(
 
         run_cc2json_or_cached(bitcode_module_path, current_codebase)
 
-    def prep_uniquify_statics(prev: Path, current_codebase: Path):
+    def prep_uniquify_statics(prev: Path, current_codebase: Path, store: PrepPassResultStore):
         compdb = compilation_database.CompileCommands.from_json_file(
             compdb_path_in(current_codebase)
         )
@@ -326,7 +339,109 @@ def run_preparation_passes(
                 check=True,
             )
 
-    def prep_expand_preprocessor(prev: Path, current_codebase: Path):
+    def prep_collect_decls_from_headers(
+        prev: Path, current_codebase: Path, store: PrepPassResultStore
+    ):
+        local_header_paths = set(p.as_posix() for p in current_codebase.glob("**/*.h"))
+        compdb = compilation_database.CompileCommands.from_json_file(
+            compdb_path_in(current_codebase)
+        )
+
+        from c_refact_type_mod_replicator import quss
+
+        header_contents = {p: Path(p).read_text(encoding="utf-8") for p in local_header_paths}
+
+        decls_by_tu: dict[
+            FilePathStr, dict[QUSS, tuple[FilePathStr, int, int, FileContentsStr]]
+        ] = {}
+
+        index = c_refact.create_xj_clang_index()
+        tus = c_refact.parse_project(index, compdb)
+        for tu_path, tu in tus.items():
+            for cursor in tu.cursor.get_children():
+                # We are careful to run this pass before expanding the preprocessor,
+                # so cursor.location can reflect header file locations.
+                if (
+                    cursor.kind.is_declaration()
+                    and cursor.location.file
+                    and cursor.location.file.name in local_header_paths
+                ):
+                    q = quss(cursor, None)
+                    # print("Recording declaration:", cursor.spelling)
+                    # print("   Kind:", cursor.kind)
+                    # print("   QUSS:", q)
+                    # print("   From local header:", cursor.location.file.name)
+                    # print("   found in TU:", tu_path)
+                    # c_refact.record_declaration_in_cclyzer_json(cursor, current_codebase)
+                    decls_by_tu.setdefault(tu_path, {})[q] = (
+                        cursor.location.file.name,
+                        cursor.extent.start.offset,
+                        cursor.extent.end.offset,
+                        header_contents[cursor.location.file.name][
+                            cursor.extent.start.offset : cursor.extent.end.offset
+                        ],
+                    )
+
+        quss_in_every_tu = set()
+        for tu_decls in decls_by_tu.values():
+            tu_quss = set(tu_decls.keys())
+            if not quss_in_every_tu:
+                quss_in_every_tu = tu_quss
+            else:
+                quss_in_every_tu = quss_in_every_tu.intersection(tu_quss)
+
+        tu_paths = list(decls_by_tu.keys())
+        assert len(tu_paths) > 0, "If there are no TUs, there can't be any common decls"
+
+        decls_by_header: dict[str, dict[str, tuple[int, int, str]]] = {}
+        for q in quss_in_every_tu:
+            entries_dups = [decls_by_tu[tu_path][q] for tu_path in tu_paths]
+            entries_set = set(entries_dups)
+            if len(entries_set) > 1:
+                print("Declaration differs between TUs for QUSS:", q)
+                for tu_path in tu_paths:
+                    entry = decls_by_tu[tu_path][q]
+                    print(f"  In TU {tu_path}: {entry}")
+                print()
+                continue  # skip inconsistent declarations
+            entry = entries_set.pop()
+            header_path = entry[0]
+            decls_by_header.setdefault(header_path, {})[q] = entry[1:]
+
+        store.decls_defined_by_headers = decls_by_header
+
+    def prep_pre_refold_consolidation(
+        prev: Path, current_codebase: Path, store: PrepPassResultStore
+    ):
+        # store.decls_defined_by_headers has, for each header, a collection of
+        # (quss-ident, (start_offset, end_offset, source_text)) entries.
+        # For each translation unit, we'll find the corresonding range for the
+        # same quss-ident, and compare it with the header's version.
+        # If the header's version is different, we'll record that this TU
+        # modified the definition.
+        # If every TU modifies the same header-defined declaration in the same way,
+        # we will replace each TU's version with the header's version,
+        # and replace the header's version with the modified version.
+        # (The former allows refolding to work better, the latter preserves
+        # the intended semantics of the program.)
+        #
+        # Since we run this pass before refolding, locations refer to .i files,
+        # not .c or .h files.
+        compdb = compilation_database.CompileCommands.from_json_file(
+            compdb_path_in(current_codebase)
+        )
+
+        from c_refact_type_mod_replicator import quss
+
+        decls_src_by_tu: dict[FilePathStr, dict[QUSS, FileContentsStr]] = {}
+        tus_modifying_decls: dict[QUSS, set[FilePathStr]] = {}
+
+        index = c_refact.create_xj_clang_index()
+        tus = c_refact.parse_project(index, compdb)
+        all_tu_paths = set(tus.keys())
+        pass
+
+    def prep_expand_preprocessor(prev: Path, current_codebase: Path, store: PrepPassResultStore):
         compdb = compilation_database.CompileCommands.from_json_file(
             compdb_path_in(current_codebase)
         )
@@ -340,7 +455,7 @@ def run_preparation_passes(
         for cmd in new_compdb.commands:
             assert cmd.file_path.suffix == ".i", "Expected preprocessed .i files"
 
-    def prep_refold_preprocessor(prev: Path, current_codebase: Path):
+    def prep_refold_preprocessor(prev: Path, current_codebase: Path, store: PrepPassResultStore):
         compdb = compilation_database.CompileCommands.from_json_file(
             compdb_path_in(current_codebase)
         )
@@ -351,19 +466,25 @@ def run_preparation_passes(
         for cmd in new_compdb.commands:
             assert cmd.file_path.suffix == ".c", "Expected un-preprocessed .c files"
 
-    preparation_passes: list[tuple[str, Callable[[Path, Path], CompletedProcess | None]]] = [
+    preparation_passes: list[
+        tuple[str, Callable[[Path, Path, PrepPassResultStore], CompletedProcess | None]]
+    ] = [
         ("copy_pristine_codebase", prep_00_copy_pristine_codebase),
         ("materialize_compdb", prep_01_materialize_compdb),
         ("uniquify_statics", prep_uniquify_statics),
+        ("collect_decls_from_headers", prep_collect_decls_from_headers),
         ("expand_preprocessor", prep_expand_preprocessor),
         ("run_cclzyerpp_analysis", prep_run_cclzyerpp_analysis),
         ("localize_mutable_globals", prep_localize_mutable_globals),
         ("lift_subfield_args", prep_lift_subfield_args),
+        ("pre_refold_consolidation", prep_pre_refold_consolidation),
         # ("refold_preprocessor", prep_refold_preprocessor),
     ]
 
     prev = original_codebase.absolute()
     resultsdir_abs = resultsdir.absolute()
+
+    store = PrepPassResultStore(decls_defined_by_headers={})
 
     # Note: the original codebase may be a file or directory,
     # but after the first round, `prev` always refers to a directory.
@@ -373,7 +494,7 @@ def run_preparation_passes(
             start_ns = time.perf_counter_ns()
             if counter > 0:
                 copy_codebase(prev, newdir)
-            cp_or_None: CompletedProcess | None = func(prev, newdir)
+            cp_or_None: CompletedProcess | None = func(prev, newdir, store)
             if cp_or_None is not None:
                 step.update_sub(cp_or_None)
             end_ns = time.perf_counter_ns()
