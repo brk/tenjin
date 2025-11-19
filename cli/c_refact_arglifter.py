@@ -111,18 +111,31 @@ def analyze_call_arguments(call_cursor: Cursor) -> list[tuple[Cursor, int]]:
     return args
 
 
-def is_member_access_expr(cursor: Cursor) -> bool:
+def strip_unexposed(cursor: Cursor) -> Cursor:
+    """Strip unexposed nodes to get to the underlying expression.
+    May return an unexposed cursor if no exposed child is found."""
+    while cursor.kind.is_unexposed():
+        n = next(cursor.get_children(), None)
+        if n is None:
+            break
+        cursor = n
+    return cursor
+
+
+def get_member_access_expr(cursor: Cursor) -> Cursor | None:
     """Check if cursor is a member access expression (-> or .)."""
-    return cursor.kind in (CursorKind.MEMBER_REF_EXPR, CursorKind.MEMBER_REF)
+    c = strip_unexposed(cursor)
+    return c if c and c.kind in (CursorKind.MEMBER_REF_EXPR, CursorKind.MEMBER_REF) else None
 
 
 def get_member_access_base(cursor: Cursor) -> Cursor | None:
     """Get the base expression of a member access (the part before -> or .)."""
-    if not is_member_access_expr(cursor):
+    mae = get_member_access_expr(cursor)
+    if not mae:
         return None
 
     # The first child of MEMBER_REF_EXPR is the base expression
-    children = list(cursor.get_children())
+    children = list(mae.get_children())
     if children:
         return children[0]
     return None
@@ -130,10 +143,6 @@ def get_member_access_base(cursor: Cursor) -> Cursor | None:
 
 def is_pointer_dereference(cursor: Cursor) -> bool:
     """Check if this member access uses -> (pointer dereference)."""
-    if not is_member_access_expr(cursor):
-        return False
-
-    # Check if the base expression type is a pointer
     base = get_member_access_base(cursor)
     if base:
         return base.type.kind == TypeKind.POINTER
@@ -191,7 +200,7 @@ def analyze_call_site(
 
     for arg_cursor, arg_idx in args:
         # Check if this argument is a member access using ->
-        if is_member_access_expr(arg_cursor) and is_pointer_dereference(arg_cursor):
+        if get_member_access_expr(arg_cursor) and is_pointer_dereference(arg_cursor):
             # Check if the base pointer appears as another argument
             match = find_matching_base_pointer(arg_cursor, args, content)
             if match:
