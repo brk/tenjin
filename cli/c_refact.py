@@ -462,6 +462,7 @@ class LocalizeMutableGlobalsPhase1Results:
     all_function_names: set[str]
     mutd_global_names: set[str]
     escd_global_names: set[str]
+    globals_without_initializers: set[str]
     higher_order_potentially_modified_fn_ptr_type_locs: dict[str, list[tuple[int, int]]]
     applied_rewrites: dict[str, list[tuple[int, int, str]]]
 
@@ -552,6 +553,7 @@ def localize_mutable_globals_phase1(
         higher_order_potentially_modified_fn_ptr_type_locs=fpd_output[
             "higher_order_potentially_modified_fn_ptr_type_locs"
         ],
+        globals_without_initializers=set(fpd_output["globals_without_initializers"]),
         applied_rewrites={},
     )
 
@@ -780,6 +782,7 @@ class BaseXjFindPtrDeclsOutput(TypedDict):
     modified_fn_ptr_type_locs: dict[str, list[ModifiedFnPtrTypeLoc]]
     higher_order_potentially_modified_fn_ptr_type_locs: dict[str, list[ModifiedFnPtrTypeLoc]]
     var_decl_fn_ptr_arg_lparen_locs: dict[str, dict[str, int]]
+    globals_without_initializers: list[str]
 
 
 class RawXjFindPtrDeclsOutput(BaseXjFindPtrDeclsOutput):
@@ -1562,7 +1565,9 @@ def localize_mutable_globals(
                                         )
                                         print()
 
-                                if var_cursor.is_definition():
+                                if global_name in phase1results.globals_without_initializers:
+                                    initializer = "{0}"
+                                elif var_cursor.is_definition():
                                     child_node = list(var_cursor.get_children())[-1]
                                     if child_node.kind == CursorKind.TYPE_REF:
                                         # No initializer

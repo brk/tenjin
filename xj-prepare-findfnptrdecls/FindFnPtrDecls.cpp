@@ -155,6 +155,13 @@ public:
       }
       return;
     }
+
+    VD = Result.Nodes.getNodeAs<VarDecl>("global_var_decl");
+    if (VD && VD->getBeginLoc().isValid()) {
+      if (!VD->hasInit()) {
+          globals_without_initializers.insert(VD->getNameAsString());
+      }
+    }
   }
 
   void handle_assign_to_decl(const Stmt *D,
@@ -544,6 +551,20 @@ public:
       llvm::outs() << "}" << "\n";
   }
 
+  void emitJSONListOfGlobalsWithoutInitializers() {
+      llvm::outs() << "[";
+      bool first = true;
+      for (auto &Entry : globals_without_initializers) {
+          if (!first) {
+              llvm::outs() << ", ";
+          } else {
+              first = false;
+          }
+          llvm::outs() << "\"" << Entry.getKey() << "\"";
+      }
+      llvm::outs() << "]";
+  }
+
 private:
   ExecutionContext &Context;
   SourceManager *SM;
@@ -587,6 +608,8 @@ private:
 
   StringMap<SmallVector<std::string>>
       byFile_wrappers;
+
+  StringSet<> globals_without_initializers;
 };
 
 
@@ -721,6 +744,11 @@ int main(int argc, const char **argv) {
       &Callback
   );
 
+  Finder.addMatcher(
+      varDecl(hasGlobalStorage()).bind("global_var_decl"),
+      &Callback
+  );
+
   Finder.addMatcher(initListExpr(has(expr(ignoringImpCasts(declRefExpr()))))
                         .bind("init_list_expr"),
                     &Callback);
@@ -747,5 +775,8 @@ int main(int argc, const char **argv) {
   llvm::outs() << ",\n";
   llvm::outs() << "\"var_decl_fn_ptr_arg_lparen_locs\": ";
   Callback.emitJSONDictForVarDeclFnPtrArgLParenLocs();
+  llvm::outs() << ",\n";
+  llvm::outs() << "\"globals_without_initializers\": ";
+  Callback.emitJSONListOfGlobalsWithoutInitializers();
   llvm::outs() << "}";
 }
