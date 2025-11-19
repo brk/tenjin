@@ -298,7 +298,7 @@ def run_preparation_passes(
                         if chr(nextbyte).encode() in separators:
                             name_byte_offset = decl_start_byte_offset
                 assert name_byte_offset != -1, (
-                    f"Could not find bytes for '{old_name}' in source file range: {contents[decl_start_byte_offset:decl_end_byte_offset]}"
+                    f"Could not find bytes for '{old_name}' in source file range: {contents[decl_start_byte_offset:decl_end_byte_offset]!r}"
                 )
                 edits.extend(["--offset", str(name_byte_offset), "--new-name", new_name])
             hermetic.run(
