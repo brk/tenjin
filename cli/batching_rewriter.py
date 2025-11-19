@@ -6,7 +6,7 @@ class BatchingRewriter:
     Overlapping rewrites are handled by applying the later rewrite only to the non-overlapping region.
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.rewrites: dict[str, list[tuple[int, int, str]]] = {}  # type: ignore
         self.contents_cache: dict[str, bytes] = {}
 
