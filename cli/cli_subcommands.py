@@ -116,6 +116,7 @@ def do_test_unit_rs():
 
 def do_build_star():
     do_build_xj_prepare_findfnptrdecls()
+    do_build_xj_prepare_locatejoineddecls()
     do_build_rs(repo_root.find_repo_root_dir_Path())
 
 
@@ -143,4 +144,31 @@ def do_build_xj_prepare_findfnptrdecls(capture_output: bool = False):
         cwd=root,
         capture_output=capture_output,
         check=True,
+    )
+
+
+def do_build_xj_prepare_locatejoineddecls(capture_output: bool = False):
+    root = repo_root.find_repo_root_dir_Path()
+    builddir = hermetic.xj_prepare_locatejoineddecls_build_dir(repo_root.localdir())
+
+    if not builddir.exists():
+        hermetic.run(
+            [
+                "cmake",
+                "-GNinja",
+                "-S",
+                (root / "xj-prepare-printdecllocs").as_posix(),
+                "-B",
+                builddir.as_posix(),
+            ],
+            cwd=root,
+            check=True,
+            capture_output=capture_output,
+        )
+
+    hermetic.run(
+        ["cmake", "--build", builddir.as_posix()],
+        cwd=root,
+        check=True,
+        capture_output=capture_output,
     )

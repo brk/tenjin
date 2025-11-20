@@ -13,6 +13,7 @@ from clang.cindex import CursorKind
 import compilation_database
 import c_refact
 import c_refact_arglifter
+import c_refact_decl_splitter
 import c_refact_type_mod_replicator
 import hermetic
 import repo_root
@@ -567,6 +568,10 @@ def run_preparation_passes(
                 check=True,
             )
 
+    def prep_split_joined_decls(prev: Path, current_codebase: Path, store: PrepPassResultStore):
+        j = c_refact.run_xj_locate_joined_decls(current_codebase)
+        c_refact_decl_splitter.apply_decl_splitting_rewrites(current_codebase, j)
+
     def prep_pre_refold_consolidation(
         prev: Path, current_codebase: Path, store: PrepPassResultStore
     ):
@@ -761,6 +766,7 @@ def run_preparation_passes(
         ("copy_pristine_codebase", prep_00_copy_pristine_codebase),
         ("materialize_compdb", prep_01_materialize_compdb),
         ("uniquify_statics", prep_uniquify_statics),
+        ("split_joined_decls", prep_split_joined_decls),
         ("expand_preprocessor", prep_expand_preprocessor),
         ("run_cclzyerpp_analysis", prep_run_cclzyerpp_analysis),
         ("localize_mutable_globals", prep_localize_mutable_globals),

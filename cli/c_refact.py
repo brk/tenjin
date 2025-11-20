@@ -878,6 +878,85 @@ def run_xj_prepare_findfnptrdecls(
     return processed
 
 
+class XjLocateJoinedDeclsLoc(TypedDict):
+    f: str
+    b: int
+    e: int
+
+
+class XjLocateJoinedDeclsEdit(TypedDict):
+    r: XjLocateJoinedDeclsLoc | None
+    cat: str
+    prefix: str
+    declarators: list[str]
+
+
+class XjLocateJoinedDeclsOutput(TypedDict):
+    edits: list[XjLocateJoinedDeclsEdit]
+
+
+def run_xj_locate_joined_decls(
+    current_codebase: Path,
+) -> XjLocateJoinedDeclsOutput:
+    builddir = hermetic.xj_prepare_locatejoineddecls_build_dir(repo_root.localdir())
+    assert builddir.exists(), (
+        f"Build directory {builddir} does not exist, should have been built already"
+    )
+
+    # By default, clang tools use the location of the binary as the seed for
+    # the resource directory. We need to override that to point to the
+    # hermetic clang resource dir. If we don't, we'll encounter errors due to
+    # missing `stddef.h` and other headers.
+    # findptrdecls does not need to do this because it runs after expansion.
+    xj_clang_resource_dir = (
+        hermetic.run("clang -print-resource-dir", shell=True, capture_output=True)
+        .stdout.decode("utf-8")
+        .strip()
+    )
+
+    # Keep in sync with `xj-prepare-printdecllocs/CMakeLists.txt`
+    binary_path = builddir / "xj-print-decl-locs"
+    xj_find_start = time.time()
+    cp = hermetic.run(
+        [
+            binary_path.as_posix(),
+            "--extra-arg=-Wno-zero-length-array",
+            "--extra-arg=-Wno-implicit-int-conversion",
+            "--extra-arg=-Wno-unused-function",
+            "--executor=all-TUs",
+            "--execute-concurrency=1",  # avoid race conditions, etc.
+            "--json-output-path=xj-joined-decls.json",
+            f"--extra-arg=-resource-dir={xj_clang_resource_dir}",
+            (current_codebase / "compile_commands.json").as_posix(),
+        ],
+        cwd=current_codebase,
+        check=True,
+        capture_output=True,
+    )
+    xj_find_elapsed = time.time() - xj_find_start
+    print(f"xj-locate-joined-decls completed in {xj_find_elapsed:.1f} seconds")
+
+    print("xj-locate-joined-decls stderr:")
+    print("==========================")
+    print(cp.stderr.decode("utf-8"))
+    print("==========================")
+
+    print("xj-locate-joined-decls stdout:")
+    print("==========================")
+    print(cp.stdout.decode("utf-8"))
+    print("==========================")
+    try:
+        raw: XjLocateJoinedDeclsOutput = json.load(
+            (current_codebase / "xj-joined-decls.json").open()
+        )
+    except:
+        print("Failed to parse xj-locate-joined-decls output as JSON:")
+        print(cp.stdout.decode("utf-8"))
+        raise
+
+    return raw
+
+
 def translate_offset_thru_rewrites(
     original_offset: int, rewrites: list[tuple[int, int, str]]
 ) -> int:

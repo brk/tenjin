@@ -63,6 +63,10 @@ def xj_prepare_findfnptrdecls_build_dir(localdir: Path) -> Path:
     return localdir / "_build_findfnptrdecls"
 
 
+def xj_prepare_locatejoineddecls_build_dir(localdir: Path) -> Path:
+    return localdir / "_build_locatejoineddecls"
+
+
 def mk_env_for(localdir: Path, with_tenjin_deps=True, env_ext=None, **kwargs) -> dict[str, str]:
     if isinstance(env_ext, dict) and env_ext.get("XJ_USE_LLVM14", "") == "1":
         llvm_root = xj_llvm14_root(localdir)

@@ -104,8 +104,7 @@ def cli():
 )
 def translate(codebase, resultsdir, cratename, c_main_in, guidance, buildcmd, reset_resultsdir):
     root = repo_root.find_repo_root_dir_Path()
-    cli_subcommands.do_build_rs(root)
-    cli_subcommands.do_build_xj_prepare_findfnptrdecls()
+    cli_subcommands.do_build_star()
 
     if Path(codebase).is_dir() and list(Path(codebase).glob("*.*")) == []:
         click.echo(
