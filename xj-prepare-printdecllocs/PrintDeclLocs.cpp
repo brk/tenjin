@@ -384,7 +384,9 @@ public:
     StringMap<std::vector<SourceLocation>> curiousDecls;
 
     for (auto &[Loc, Decls] : SrcRangeExpStartLocToDeclMap) {
+      NumDeclLocsVisitedOrRevisited++;
       if (Decls.size() < 2) {
+        SingleDeclLocs.insert(Loc);
         continue;
       }
       if (ProcessedDeclLocs.contains(Loc)) {
@@ -403,6 +405,8 @@ public:
         // silently skip decls from system headers
         continue;
       }
+
+      NumMultiDeclaratorsAtUserScope++;
 
       // llvm::outs() << "\n=== Decls at " << Loc.printToString(*SM) << "\n";
       // llvm::outs() << "          SP " << SM->getSpellingLoc(Loc).printToString(*SM) << "\n";
@@ -475,6 +479,12 @@ public:
 
       SourceLocation leftmostSrcLoc = leftmostDecl->getLocation();
       SourceLocation declEndLoc = rightmostDecl->getSourceRange().getEnd();
+
+      if (auto VarD = dyn_cast<VarDecl>(leftmostDecl)) {
+        if (VarD->hasGlobalStorage()) {
+          NumMultiDeclaratorsGlobalStorage++;
+        }
+      }
 
 
       // PREFIX is everything from the SRSL to the Location of the leftmost Decl,
@@ -590,10 +600,12 @@ public:
         declaratorCommas += std::count(declaratorText.begin(), declaratorText.end(), ',');
       }
 
+      unsigned prefixCommas = prefixText.count(',');
+
       CharSourceRange cr = CharSourceRange::getCharRange(Loc, declEndLoc);
       StringRef overallSpanText = Lexer::getSourceText(cr, *SM, Ctx->getLangOpts());
       unsigned sawCommas = overallSpanText.count(',');
-      if (sawCommas != (splittingCommaLocs.size() + declaratorCommas)) {
+      if (sawCommas != (splittingCommaLocs.size() + prefixCommas + declaratorCommas)) {
         curiousDecls["comma_count_mismatch"].push_back(Loc);
       }
 
@@ -642,11 +654,7 @@ public:
     }
     
 
-
     
-    for (auto &[Loc, Decls] : SrcRangeExpStartLocToDeclMap) {
-      ProcessedDeclLocs.insert(Loc);
-    }
     SrcRangeExpStartLocToDeclMap.clear();
   }
 
@@ -677,13 +685,17 @@ public:
   return std::nullopt;
 }
 
-private:
+public:
   //ExecutionContext &Context;
   SourceManager *SM;
   ASTContext *Ctx;
   
+  unsigned NumDeclLocsVisitedOrRevisited = 0;
+  unsigned NumMultiDeclaratorsGlobalStorage = 0;
+  unsigned NumMultiDeclaratorsAtUserScope = 0;
   DenseMap<SourceLocation, std::vector<const NamedDecl*>> SrcRangeExpStartLocToDeclMap;
   DenseSet<SourceLocation> ProcessedDeclLocs;
+  DenseSet<SourceLocation> SingleDeclLocs;
 };
 
 
@@ -720,6 +732,19 @@ int main(int argc, const char **argv) {
   if (Err) {
     llvm::errs() << llvm::toString(std::move(Err)) << "\n";
   }
+
+  llvm::outs() << "\n=== Tool Results: ===\n";
+  llvm::outs() << "Number of decl locations visited/revisited: "
+               << Callback.NumDeclLocsVisitedOrRevisited << "\n";
+  llvm::outs() << "Number of multi-declarator decl locs at user scope: "
+               << Callback.NumMultiDeclaratorsAtUserScope << "\n";
+  llvm::outs() << "Number of multi-declarator decl locations processed: "
+               << Callback.ProcessedDeclLocs.size() << "\n";
+  llvm::outs() << "Number of single-declarator decl locations processed: "
+               << Callback.SingleDeclLocs.size() << "\n";
+  llvm::outs() << "Number of multi-declarator decl locations with global storage: "
+               << Callback.NumMultiDeclaratorsGlobalStorage << "\n";
+
   Executor->get()->getToolResults()->forEachResult(
       [](llvm::StringRef key, llvm::StringRef value) {
         llvm::errs() << "----" << key.str() << "\n" << value.str() << "\n";
