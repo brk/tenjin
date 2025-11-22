@@ -65,9 +65,13 @@ def parse_translation_unit_with_args(
             args_matching_path.append(arg)
         elif in_dir and path == str(Path(in_dir) / arg):
             args_matching_path.append(arg)
+        elif in_dir and arg == str(Path(path).relative_to(Path(in_dir), walk_up=True)):
+            args_matching_path.append(arg)
 
     if len(args_matching_path) == 0:
-        raise ValueError(f"Could not find source file path '{path}' in args: {args}")
+        raise ValueError(
+            f"Could not find source file path '{path}' in args: {args}\nwith {in_dir=}"
+        )
 
     if len(args_matching_path) > 1:
         raise ValueError(f"Multiple matching source file paths for '{path}' in args: {args}")
