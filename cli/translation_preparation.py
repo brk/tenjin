@@ -195,20 +195,21 @@ def organize_decls_by_headers(
     # We want to construct a mapping indexed by header file path,
     # containing entries for declarations that are consistent across all TUs
     # (in which those decls appear, at least).
-    quss_in_every_tu = set()
-    for tu_decls in decls_by_tu.values():
+    every_quss = set()
+    for tu_path, tu_decls in decls_by_tu.items():
         tu_quss = set(tu_decls.keys())
-        if not quss_in_every_tu:
-            quss_in_every_tu = tu_quss
-        else:
-            quss_in_every_tu = quss_in_every_tu.intersection(tu_quss)
+        every_quss = every_quss.union(tu_quss)
 
     tu_paths = list(decls_by_tu.keys())
     assert len(tu_paths) > 0, "If there are no TUs, there can't be any common decls"
 
     decls_by_header: dict[FilePathStr, dict[QUSS, tuple[int, int, FileContentsStr]]] = {}
-    for q in quss_in_every_tu:
-        entries_dups = [decls_by_tu[tu_path][q] for tu_path in tu_paths]
+    for q in every_quss:
+        entries_dups = []
+        for tu_path in tu_paths:
+            tu_decls = decls_by_tu[tu_path]
+            if q in tu_decls:
+                entries_dups.append(tu_decls[q])
         entries_set = set(entries_dups)
         if len(entries_set) > 1:
             if len(set(e[0] for e in entries_dups)) > 1:
