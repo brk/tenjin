@@ -164,6 +164,29 @@ impl GraphExtractionVisitor<'_> {
                     .update_edge(GNode::VirtualRoot, GNode::Def(item_def), GEdge::Mentions);
             }
         }
+
+        // In either crate type, items marked `#[used]` must be considered live.
+        if let Ok(line_info) = src_map.lookup_line(item_span.lo())
+            && line_info.line > 0
+        {
+            let mut check_line = line_info.line - 1;
+            while check_line > 0
+                && let Some(preceding_line) = line_info.sf.get_line(check_line)
+            {
+                let trimmed = preceding_line.trim_start();
+                if !trimmed.starts_with("#[") {
+                    break;
+                }
+                if trimmed.starts_with("#[used]") {
+                    self.graf.update_edge(
+                        GNode::VirtualRoot,
+                        GNode::Def(item_def),
+                        GEdge::Mentions,
+                    );
+                }
+                check_line -= 1;
+            }
+        }
     }
 }
 
