@@ -36,7 +36,11 @@ def materialize_compilation_database_in(
 
     The build directory may or may not end up with a copy of the input codebase,
     and in-place build artifacts,
-    depending on whether a build was required to produce the compilation database."""
+    depending on whether a build was required to produce the compilation database.
+    To account for builds that generate files in the source tree, such as `Vim`,
+    any newly created files ending in `.h`, `.c`, or `.inc` will be copied back
+    to the original codebase. Otherwise, builds would fail due to missing files.
+    """
     provided_compdb = codebase / "compile_commands.json"
     provided_cmakelists = codebase / "CMakeLists.txt"
 
@@ -67,6 +71,7 @@ def materialize_compilation_database_in(
         # input codebase.
         shutil.copytree(codebase, builddir, dirs_exist_ok=True)
         hermetic.run(f"intercept-build {buildcmd}", cwd=builddir, shell=True, check=True)
+        copy_new_source_files_back(codebase, builddir)
         # intercept-build will have generated this file, if all went well
         extracted_compdb = builddir / "compile_commands.json"
         extracted_compdb_bytes = extracted_compdb.read_bytes()
@@ -100,6 +105,21 @@ def materialize_compilation_database_in(
 
 def compdb_path_in(dir: Path) -> Path:
     return dir / "compile_commands.json"
+
+
+def copy_new_source_files_back(
+    codebase: Path,
+    builddir: Path,
+):
+    """Copy newly created source files from the build directory back to the original codebase."""
+    for new_file in builddir.rglob("*.*"):
+        if new_file.suffix not in {".h", ".c", ".inc"}:
+            continue
+        relative_path = new_file.relative_to(builddir)
+        dest_file = codebase / relative_path
+        if not dest_file.exists():
+            dest_file.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(new_file, dest_file)
 
 
 def copy_codebase(
