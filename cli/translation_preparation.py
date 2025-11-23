@@ -8,6 +8,8 @@ from subprocess import CompletedProcess
 import hashlib
 from dataclasses import dataclass
 
+from clang.cindex import CursorKind
+
 import compilation_database
 import c_refact
 import c_refact_arglifter
@@ -175,12 +177,43 @@ def collect_decls_by_tu(
                 # print("   QUSS:", q)
                 # print("   From location:", cursor.location.file.name)
                 # print("   found in TU:", tu_path)
+                cursor_end = cursor.extent.end
+                if cursor.kind == CursorKind.FUNCTION_DECL and cursor.is_definition():
+                    # Do not include the function body in the recorded declaration.
+                    prev_tok = None
+                    print(" +++++++++  Searching for function body start for", q)
+                    print("     at location:", cursor.location.file.name, cursor.location.offset)
+                    for t in cursor.get_tokens():
+                        print(
+                            "         Token:", t.spelling, "at", t.location.file, t.location.offset
+                        )
+                        if t.location.offset >= cursor.location.offset:
+                            if t.spelling == "{":
+                                if prev_tok:
+                                    assert prev_tok.spelling == ")"
+                                    cursor_end = prev_tok.extent.end
+                                else:
+                                    cursor_end = t.extent.start
+                                print(" +++++++++  Found function body start at", t.location.offset)
+                                break
+                            prev_tok = t
+                        else:
+                            print("         Skipping token before ident start")
+                    print(
+                        "COMPUTED function decl extent for ",
+                        q,
+                        "to:",
+                        cursor_end.offset,
+                        "rather than",
+                        cursor.extent.end.offset,
+                    )
+
                 decls_by_tu.setdefault(tu_path, {})[q] = (
                     cursor.location.file.name,
                     cursor.extent.start.offset,
-                    cursor.extent.end.offset,
+                    cursor_end.offset,
                     header_contents.get_bytes(cursor.location.file.name)[
-                        cursor.extent.start.offset : cursor.extent.end.offset
+                        cursor.extent.start.offset : cursor_end.offset
                     ].decode("utf-8"),
                 )
     return decls_by_tu
@@ -210,23 +243,95 @@ def organize_decls_by_headers(
             tu_decls = decls_by_tu[tu_path]
             if q in tu_decls:
                 entries_dups.append(tu_decls[q])
-        entries_set = set(entries_dups)
-        if len(entries_set) > 1:
-            if len(set(e[0] for e in entries_dups)) > 1:
-                print("Declaration locations differ between TUs for QUSS:", q)
-            else:
-                print("Declaration sources differ between TUs for QUSS:", q)
-            for tu_path in tu_paths:
-                entry = decls_by_tu[tu_path][q]
-                print(f"  In TU {tu_path}: {entry}")
-            print()
-            continue  # skip inconsistent declarations
-        # All declaration have same contents and location
-        for entry in entries_set:
+        expanded_entries_set = expand_overlapping_decl_header_entries(set(entries_dups))
+        if len(expanded_entries_set) > 1:
+            if len(set(e[3] for e in expanded_entries_set)) > 1:
+                print("ERROR: Declaration contents differ between TUs for QUSS:", q)
+                for tu_path in tu_paths:
+                    if q in decls_by_tu[tu_path]:
+                        entry = decls_by_tu[tu_path][q]
+                        print(f"  In TU {tu_path}: {entry}")
+                print()
+                # continue  # skip inconsistent declarations
+                raise ValueError("ERROR: Declaration contents differ between TUs for QUSS:" + q)
+        # All declarations have same contents
+        for entry in expanded_entries_set:
             header_path = entry[0]
             decls_by_header.setdefault(header_path, {})[q] = entry[1:]
 
     return decls_by_header
+
+
+def expand_overlapping_decl_header_entries(
+    entries_set: set[tuple[FilePathStr, int, int, FileContentsStr]],
+) -> set[tuple[FilePathStr, int, int, FileContentsStr]]:
+    """
+    Suppose we have a bunch of declarations collected from headers, e.g.:
+        "src/spell.c"  => ('<VIM_9_1>/src/globals.h', 37789, 37826, 'EXTERN tabpage_T    *lastused_tabpage')
+        "src/window.c" => ('<VIM_9_1>/src/globals.h', 37789, 37826, 'EXTERN tabpage_T    *lastused_tabpage')
+        "src/main.c"   => ('<VIM_9_1>/src/globals.h', 37796, 37826,        'tabpage_T    *lastused_tabpage')
+    Due to macro usage, main.c sees a declaration whose extent is subsumed by the others.
+    We want to expand what we consider to be its declaration to match the others.
+    More generally, when two declarations overlap, we want to expand them to the largest
+    declaration that subsumes them both.
+
+    The input `entries_set` is the set of the tuples as shown (of size 2 in this example).
+    """
+    if len(entries_set) <= 1:
+        return entries_set
+
+    by_header = {h: [] for h in set(e[0] for e in entries_set)}
+    for entry in entries_set:
+        by_header[entry[0]].append(entry)
+
+    expanded_entries = set()
+
+    for header_path, header_entries in by_header.items():
+        # Sort entries within each header by start offset, so that overlaps will be adjacent.
+        header_entries.sort(key=lambda e: (e[1], e[2]))
+
+        overlap_buckets = [[header_entries[0]]]
+        for entry in header_entries[1:]:
+            last_bucket = overlap_buckets[-1]
+            last_entry = last_bucket[-1]
+            if entry[1] < last_entry[2]:
+                # Overlaps with last entry, add to current bucket
+                last_bucket.append(entry)
+            else:
+                # No overlap, start a new bucket
+                overlap_buckets.append([entry])
+
+        for bucket_list in overlap_buckets:
+            if len(bucket_list) <= 1:
+                continue  # no overlaps to expand
+
+            # Find the min start and max end offsets. We can get away with this simple
+            # approach because everything in the bucket pairwise overlaps.
+            min_start = min(entry[1] for entry in bucket_list)
+            max_end = max(entry[2] for entry in bucket_list)
+
+            # In general, no single entry will have the complete text contents, so we
+            # may need to reconstruct it character-by-character.
+            full_text = ""
+            for entry in bucket_list:
+                if entry[1] == min_start and entry[2] == max_end:
+                    full_text = entry[3]
+                    break
+            if not full_text:
+                full_text_chars = {}
+                for entry in bucket_list:
+                    entry_start = entry[1]
+                    entry_end = entry[2]
+                    entry_text = entry[3]
+                    for i in range(entry_start, entry_end):
+                        char = entry_text[i - entry_start]
+                        full_text_chars[i] = char
+                full_text = "".join(full_text_chars[i] for i in range(min_start, max_end))
+
+            # Now all the entries in this bucket collapse to a single full range entry.
+            expanded_entries.add((header_path, min_start, max_end, full_text))
+
+    return expanded_entries
 
 
 @dataclass
@@ -480,7 +585,6 @@ def run_preparation_passes(
         )
 
         from c_refact_type_mod_replicator import quss
-        from clang.cindex import CursorKind
 
         decls_src_by_tu: dict[FilePathStr, dict[QUSS, FileContentsStr]] = {}
         tus_modifying_decls: dict[QUSS, set[FilePathStr]] = {}
