@@ -119,7 +119,19 @@ def parse_project(
         cmds = compdb.get_commands_for_path(srcfile)
         if not srcfile.is_absolute():
             srcfile = (cmds[0].directory_path / srcfile).resolve()
-        assert len(cmds) == 1, f"Expected exactly one compile command for {srcfile}, got {cmds}"
+
+        # Some build systems in practice do end up compiling the same
+        # source file with different command lines, putting results
+        # in different output files. We don't really know here if it
+        # is significant (i.e. preprocessor defines differ so the ASTs
+        # might differ) or if the build is just doing some redundant
+        # work, in which case we can safely ignore the extra commands.
+        if srcfile.name.startswith("antlr3"):
+            pass
+        else:
+            assert len(cmds) == 1, (
+                f"Expected exactly one compile command for {srcfile}, got {pprint.pformat(cmds)}"
+            )
         parts = cmds[0].get_command_parts()[1:]  # Skip compiler executable
         tu = parse_translation_unit_with_args(
             index,
