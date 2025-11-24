@@ -486,6 +486,30 @@ public:
         }
       }
 
+      // We cannot split a declaration if it involves an anonymous tagged type,
+      // either directly or indirectly via a typedef, because the split declarations
+      // would end up declaring distinct (incompatible) anonymous types.
+      //
+      if (auto ValD = dyn_cast<ValueDecl>(leftmostDecl)) {
+        if (auto TagD = ValD->getType().getTypePtr()->getAsTagDecl()) {
+          if (TagD->getTypedefNameForAnonDecl()) {
+            failedDecls["anonymous_tagged_type"].push_back(Loc);
+            continue;
+          } else if (TagD->isEmbeddedInDeclarator() && TagD->isThisDeclarationADefinition()) {
+            ++NumDeclLocsNotYetHandled;
+          }
+        }
+      } else if (auto TdD = dyn_cast<TypedefDecl>(leftmostDecl)) {
+        if (auto TagD = TdD->getUnderlyingType().getTypePtr()->getAsTagDecl()) {
+          if (TagD->getTypedefNameForAnonDecl()) {
+            failedDecls["anonymous_tagged_type"].push_back(Loc);
+            continue;
+          } else if (TagD->isEmbeddedInDeclarator() && TagD->isThisDeclarationADefinition()) {
+            ++NumDeclLocsNotYetHandled;
+          }
+        }
+      }
+
 
       // PREFIX is everything from the SRSL to the Location of the leftmost Decl,
       // minus any preceding star characters,
@@ -693,6 +717,7 @@ public:
   unsigned NumDeclLocsVisitedOrRevisited = 0;
   unsigned NumMultiDeclaratorsGlobalStorage = 0;
   unsigned NumMultiDeclaratorsAtUserScope = 0;
+  unsigned NumDeclLocsNotYetHandled = 0;
   DenseMap<SourceLocation, std::vector<const NamedDecl*>> SrcRangeExpStartLocToDeclMap;
   DenseSet<SourceLocation> ProcessedDeclLocs;
   DenseSet<SourceLocation> SingleDeclLocs;
@@ -744,6 +769,8 @@ int main(int argc, const char **argv) {
                << Callback.SingleDeclLocs.size() << "\n";
   llvm::outs() << "Number of multi-declarator decl locations with global storage: "
                << Callback.NumMultiDeclaratorsGlobalStorage << "\n";
+  llvm::outs() << "Number of decl locations not yet handled: "
+               << Callback.NumDeclLocsNotYetHandled << "\n";
 
   Executor->get()->getToolResults()->forEachResult(
       [](llvm::StringRef key, llvm::StringRef value) {
