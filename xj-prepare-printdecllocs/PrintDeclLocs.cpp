@@ -585,7 +585,8 @@ public:
         continue;
       }
 
-      if (prefixText[prefixText.size()-1] != ' ') {
+      char prefix_end_char = prefixText[prefixText.size()-1];
+      if (!isspace(prefix_end_char)) {
         curiousDecls["prefix_ends_with_nonspace"].push_back(Loc);
       }
 
