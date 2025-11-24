@@ -222,6 +222,9 @@ def collect_decls_by_tu(
 def organize_decls_by_headers(
     decls_by_tu: dict[FilePathStr, dict[QUSS, tuple[FilePathStr, int, int, FileContentsStr]]],
 ) -> dict[FilePathStr, dict[QUSS, tuple[int, int, FileContentsStr]]]:
+    if not decls_by_tu:
+        return {}
+
     # decls_by_tu is indexed by TU path, and can contain entry[0] values that are not TU paths,
     # e.g. header file paths.
     #
@@ -234,7 +237,6 @@ def organize_decls_by_headers(
         every_quss = every_quss.union(tu_quss)
 
     tu_paths = list(decls_by_tu.keys())
-    assert len(tu_paths) > 0, "If there are no TUs, there can't be any common decls"
 
     decls_by_header: dict[FilePathStr, dict[QUSS, tuple[int, int, FileContentsStr]]] = {}
     for q in every_quss:
@@ -337,7 +339,9 @@ def expand_overlapping_decl_header_entries(
 @dataclass
 class PrepPassResultStore:
     decls_defined_by_headers: dict[FilePathStr, dict[QUSS, tuple[int, int, FileContentsStr]]]
-    decls_defined_after_pp: dict[FilePathStr, dict[QUSS, tuple[int, int, FileContentsStr]]]
+    decls_defined_after_pp: dict[
+        FilePathStr, dict[QUSS, tuple[FilePathStr, int, int, FileContentsStr]]
+    ]
 
 
 def run_preparation_passes(
