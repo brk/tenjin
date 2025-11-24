@@ -148,14 +148,13 @@ def preprocess_and_create_new_compdb(
     target_dir_path = Path(target_dir)
     target_dir_path.mkdir(parents=True, exist_ok=True)
 
-    repo_root_path = repo_root.find_repo_root_dir_Path()
     clang_path = hermetic.xj_llvm_root(repo_root.localdir()) / "bin" / "clang"
 
     for cmd in compdb.commands:
         # 1. Determine paths
         abs_src_path = cmd.absolute_file_path
         try:
-            rel_src_path = abs_src_path.relative_to(repo_root_path)
+            rel_src_path = abs_src_path.relative_to(target_dir_path)
         except ValueError:
             rel_src_path = Path(abs_src_path.name)
 
