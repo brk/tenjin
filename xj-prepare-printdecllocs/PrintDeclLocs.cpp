@@ -134,6 +134,8 @@ public:
           return;
       }
       processDeclLocations("VarDecl", VD);
+    } else if (auto *FnD = Result.Nodes.getNodeAs<FunctionDecl>("functionDecl")) {
+      processDeclLocations("FunctionDecl", FnD);
     }
   }
 
@@ -512,6 +514,8 @@ public:
         cat = "typedef";
       } else if (leftmostDecl->getKind() == Decl::Field) {
         cat = "field";
+      } else if (leftmostDecl->getKind() == Decl::Function) {
+        cat = "global";
       }
 
       if (firstEditWritten) {
@@ -691,6 +695,7 @@ int main(int argc, const char **argv) {
   // Add matchers for FieldDecl, TypedefDecl, and VarDecl
   Finder.addMatcher(fieldDecl().bind("fieldDecl"), &Callback);
   Finder.addMatcher(typedefDecl().bind("typedefDecl"), &Callback);
+  Finder.addMatcher(functionDecl().bind("functionDecl"), &Callback);
   Finder.addMatcher(varDecl().bind("varDecl"), &Callback);
 
   JO.os() << "{" << "\n";
