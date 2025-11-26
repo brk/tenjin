@@ -9,6 +9,7 @@ dependencies = [
     "dataclasses-json>=0.6.7",
     "mypy==1.15.0",
     "packaging==24.2",
+    "pycparser==2.23",
     "requests>=2.32.0",
     "ruff==0.11.7",
     "types-requests>=2.32.4.20250611",
