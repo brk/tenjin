@@ -182,12 +182,7 @@ def collect_decls_by_tu(
                 if cursor.kind == CursorKind.FUNCTION_DECL and cursor.is_definition():
                     # Do not include the function body in the recorded declaration.
                     prev_tok = None
-                    print(" +++++++++  Searching for function body start for", q)
-                    print("     at location:", cursor.location.file.name, cursor.location.offset)
                     for t in cursor.get_tokens():
-                        print(
-                            "         Token:", t.spelling, "at", t.location.file, t.location.offset
-                        )
                         if t.location.offset >= cursor.location.offset:
                             if t.spelling == "{":
                                 if prev_tok:
@@ -195,19 +190,8 @@ def collect_decls_by_tu(
                                     cursor_end = prev_tok.extent.end
                                 else:
                                     cursor_end = t.extent.start
-                                print(" +++++++++  Found function body start at", t.location.offset)
                                 break
                             prev_tok = t
-                        else:
-                            print("         Skipping token before ident start")
-                    print(
-                        "COMPUTED function decl extent for ",
-                        q,
-                        "to:",
-                        cursor_end.offset,
-                        "rather than",
-                        cursor.extent.end.offset,
-                    )
 
                 decls_by_tu.setdefault(tu_path, {})[q] = (
                     cursor.location.file.name,
@@ -593,8 +577,6 @@ def run_preparation_passes(
             compdb_path_in(current_codebase)
         )
 
-        from c_refact_type_mod_replicator import quss
-
         decls_src_by_tu: dict[FilePathStr, dict[QUSS, FileContentsStr]] = {}
         tus_modifying_decls: dict[QUSS, set[FilePathStr]] = {}
 
@@ -606,6 +588,21 @@ def run_preparation_passes(
         for header_decls in store.decls_defined_by_headers.values():
             for q, (start_offset, end_offset, source_text) in header_decls.items():
                 quss_to_header_src[q] = source_text
+
+        import pprint
+
+        print("PPRC: QUSS to header source mapping:")
+        pprint.pprint(quss_to_header_src)
+
+        print("PPRC: store.decls_defined_by_headers:")
+        pprint.pprint(store.decls_defined_by_headers)
+
+        print("PPRC: store.decls_defined_after_pp:")
+        for k, v in store.decls_defined_after_pp.items():
+            print(f"  TU: {k}")
+            print(f"  TU contains 'alnumsort': {'alnumsort' in v}")
+            pprint.pprint(list(v.keys()))
+        # pprint.pprint(store.decls_defined_after_pp)
 
         # For each TU, collect the actual source text for each QUSS
         for tu_path, tu in tus.items():
@@ -636,7 +633,7 @@ def run_preparation_passes(
                         # Skip forward declarations
                         continue
 
-                    q = quss(cursor, None)
+                    q = c_refact_type_mod_replicator.quss(cursor, None)
                     if q in quss_to_header_src:
                         start_offset = cursor.extent.start.offset
                         end_offset = cursor.extent.end.offset
@@ -647,9 +644,11 @@ def run_preparation_passes(
                             q, (None, None, None)
                         )[2]
                         # Check if TU's version differs from header's expanded version
-                        if q in quss_to_header_src and not expanded_tu_src:
+                        if not expanded_tu_src:
                             print(
-                                f"PPRC: WARNING: No expanded header source recorded for QUSS: {q}"
+                                f"PPRC: WARNING: No expanded header source recorded for QUSS: {q} in TU:",
+                                (tu_path in store.decls_defined_after_pp),
+                                tu_path,
                             )
                         elif newest_tu_src != expanded_tu_src:
                             print(
