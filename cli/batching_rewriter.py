@@ -1,3 +1,6 @@
+from caching_file_contents import FilePathStr, CachingFileContents
+
+
 class BatchingRewriter:
     """
     Context manager for batching multiple rewrites to multiple files.
@@ -7,21 +10,18 @@ class BatchingRewriter:
     """
 
     def __init__(self) -> None:
-        self.rewrites: dict[str, list[tuple[int, int, str]]] = {}  # type: ignore
-        self.contents_cache: dict[str, bytes] = {}
+        self.rewrites: dict[FilePathStr, list[tuple[int, int, str]]] = {}  # type: ignore
+        self.contents_cache = CachingFileContents()
 
-    def add_rewrite(self, filepath: str, offset: int, length: int, replacement_text: str):
+    def add_rewrite(self, filepath: FilePathStr, offset: int, length: int, replacement_text: str):
         """Add a rewrite operation for a specific file."""
         if filepath not in self.rewrites:
             self.rewrites[filepath] = []
         self.rewrites[filepath].append((offset, length, replacement_text))
 
-    def get_content(self, filepath: str) -> bytes:
-        """Get the current content of a file, using cache if available."""
-        if filepath not in self.contents_cache:
-            with open(filepath, "rb") as f:
-                self.contents_cache[filepath] = f.read()
-        return self.contents_cache[filepath]
+    def get_content(self, filepath: FilePathStr) -> bytes:
+        """Get the current content of a file."""
+        return self.contents_cache.get_bytes(filepath)
 
     def get_rewrites(self, reverse: bool = True) -> dict[str, list[tuple[int, int, str]]]:
         return {k: sorted_file_rewrites(v, reverse=reverse) for k, v in self.rewrites.items()}
