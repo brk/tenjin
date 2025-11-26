@@ -5,6 +5,7 @@ from clang.cindex import (  # type: ignore
     TypeKind,
     Cursor,
     CursorKind,
+    TranslationUnit,
 )
 
 type AncestorChain = tuple[Cursor, AncestorChain | None]
@@ -54,13 +55,14 @@ def render_declaration_sans_qualifiers(type_obj, var_name) -> str:
             element_type = ty.get_array_element_type()
             return render_inner(element_type, f"{inner_text}[]")
 
-        elif kind == TypeKind.FUNCTIONPROTO or kind == TypeKind.FUNCTIONNOPROTO:
+        elif kind == TypeKind.FUNCTIONPROTO:
             result_type = ty.get_result()
-            # Get parameter types
             args_str = ", ".join(arg.spelling for arg in ty.argument_types())
-            if not args_str and kind == TypeKind.FUNCTIONNOPROTO:
-                args_str = "void"
             return render_inner(result_type, f"{inner_text}({args_str})")
+
+        elif kind == TypeKind.FUNCTIONNOPROTO:
+            result_type = ty.get_result()
+            return render_inner(result_type, f"{inner_text}()")
 
         elif kind == TypeKind.ELABORATED:
             # Unwrap elaborated types
@@ -74,40 +76,30 @@ def render_declaration_sans_qualifiers(type_obj, var_name) -> str:
     return render_inner(type_obj, var_name).strip()
 
 
-def render_normalized_declaration(decl_sans_semicolon: str) -> tuple[str, set[str]]:
+def render_normalized_declaration_with_type_names(
+    decl_sans_semicolon: str, type_names: set[str]
+) -> str:
     """Render a normalized declaration string for comparison purposes."""
+    # Without knowing the typedef names, clang may misinterpret
+    # a declaration like `void foo(size_t)` as giving an untyped parameter
+    # named `size_t`, which is then given the implicit default type `int`.
+    # To avoid this, the caller can pass in an overapproximation of the
+    # needed type names.
+    prefix_lines = [f"typedef struct {{}} {tn};" for tn in type_names]
+    parsed_text = "\n".join(prefix_lines) + "\n" + decl_sans_semicolon + ";"
+
     tu = TranslationUnit.from_source(
         "example.c",
-        args=None,
-        unsaved_files=[("example.c", decl_sans_semicolon + ";")],
+        args=["-std=c11"],
+        unsaved_files=[("example.c", parsed_text)],
     )
-    prefix_lines = []
-    typedef_names = set()
-    for diag in tu.diagnostics:
-        if diag.severity >= diag.Error:
-            sp = diag.spelling
-            if sp.startswith("unknown type name"):
-                type_name = sp.split("'")[1]
-                typedef_names.add(type_name)
-                prefix_lines.append(f"typedef int {type_name};")
-    if prefix_lines:
-        tu = TranslationUnit.from_source(
-            "example.c",
-            args=None,
-            unsaved_files=[
-                ("example.c", "\n".join(prefix_lines) + "\n" + decl_sans_semicolon + ";")
-            ],
-        )
-
-    def annotated(s: str) -> tuple[str, set[str]]:
-        return s, typedef_names
 
     # Get the last declaration in the TU.
     cursor = list(tu.cursor.get_children())[-1]
 
     # print(cursor.kind, cursor.spelling)
     if cursor.kind == CursorKind.FUNCTION_DECL:
-        return annotated(render_declaration_sans_qualifiers(cursor.type, cursor.spelling))
+        return render_declaration_sans_qualifiers(cursor.type, cursor.spelling)
 
     elif cursor.kind == CursorKind.VAR_DECL:
         ty = cursor.type
@@ -119,23 +111,38 @@ def render_normalized_declaration(decl_sans_semicolon: str) -> tuple[str, set[st
                 TypeKind.FUNCTIONPROTO,
                 TypeKind.FUNCTIONNOPROTO,
             ):
-                return annotated(render_declaration_sans_qualifiers(cursor.type, cursor.spelling))
+                return render_declaration_sans_qualifiers(cursor.type, cursor.spelling)
 
     else:
         decl_str = render_declaration_sans_qualifiers(
             cursor.underlying_typedef_type, cursor.spelling
         )
-        return annotated("typedef " + decl_str)
+        return "typedef " + decl_str
     raise ValueError(f"Unexpected cursor kind: {cursor.kind}")
 
 
-def lex_preprocessed_c(sourcetext: str, typedef_names: set[str]) -> list[str]:
+def lex_preprocessed_c_and_estimate_typenames(sourcetext: str) -> tuple[list[str], set[str]]:
     """Lex preprocessed C source text into tokens using pycparser."""
+    dummy_lexer = c_lexer.CLexer(None, None, None, None)
+    possible_typenames = set()
+
+    def type_lookup_func(name: str) -> bool:
+        if not name:
+            return False
+        if name.isidentifier():
+            if (
+                name.upper() not in dummy_lexer.keywords
+                and name.upper() not in dummy_lexer.keywords_new
+            ):
+                possible_typenames.add(name)
+                return True
+        return False
+
     lexer = c_lexer.CLexer(
         error_func=lambda msg, line, column: print(f"Lexer error at {line}:{column}: {msg}"),
         on_lbrace_func=lambda: None,
         on_rbrace_func=lambda: None,
-        type_lookup_func=lambda name: name in typedef_names,
+        type_lookup_func=type_lookup_func,
     )
     lexer.build()
     lexer.input(sourcetext)
@@ -146,40 +153,46 @@ def lex_preprocessed_c(sourcetext: str, typedef_names: set[str]) -> list[str]:
         if not tok:
             break
         tokens.append(tok.value)
-    return tokens
+    return tokens, possible_typenames
+
+
+def render_normalized_declaration(decl_sans_semicolon: str) -> str:
+    """Render a normalized declaration string for comparison purposes."""
+    # Step 1: lex all tokens to collect an overapproximation of needed typedef names.
+    _, type_names = lex_preprocessed_c_and_estimate_typenames(decl_sans_semicolon)
+    # Step 2: use clang to parse the declaration in a suitably extended type context.
+    return render_normalized_declaration_with_type_names(decl_sans_semicolon, type_names)
 
 
 if __name__ == "__main__":
-    from clang.cindex import TranslationUnit
-
     sourcetexts = [
         (
             "int mtimesort(struct _info **a, struct _info **b)",
-            "int mtimesort ( struct _info * * , struct _info * * )",
+            "int mtimesort(struct _info **, struct _info **)",
         ),
         (
             "extern int mtimesort(struct _info **a, struct _info **b)",
-            "int mtimesort ( struct _info * * , struct _info * * )",
+            "int mtimesort(struct _info **, struct _info **)",
         ),
         (
             "extern int mtimesort(struct _info **a,   struct   _info * * b)",
-            "int mtimesort ( struct _info * * , struct _info * * )",
+            "int mtimesort(struct _info **, struct _info **)",
         ),
-        ("char const *prot(mode_t m)", "const char * prot ( mode_t )"),
+        ("char const *prot(mode_t m)", "const char *prot(mode_t)"),
         (
             "extern int (*topsort)(const struct _info **, const struct _info **)",
-            "int ( * topsort ) ( const struct _info * * , const struct _info * * )",
+            "int (*topsort)(const struct _info **, const struct _info **)",
         ),
-        ("void *xrealloc (void *ptr, size_t size)", "void * xrealloc ( void * , size_t )"),
-        ("void printit(const char *s)", "void printit ( const char * )"),
+        ("void *xrealloc (void *ptr, size_t size)", "void *xrealloc(void *, size_t)"),
+        ("void *xrealloc (void *   , size_t     )", "void *xrealloc(void *, size_t)"),
+        ("void printit(char const *s)", "void printit(const char *)"),
         (
             "typedef int (*compfunc_t)(const void *, const void *)",
-            "typedef int ( * compfunc_t ) ( const void * , const void * )",
+            "typedef int (*compfunc_t)(const void *, const void *)",
         ),
     ]
     for sourcetext in sourcetexts:
-        txt, typedef_names = render_normalized_declaration(sourcetext[0])
-        result = " ".join(lex_preprocessed_c(txt, typedef_names))
+        result = render_normalized_declaration(sourcetext[0])
         expected = sourcetext[1]
         status = "✓" if result == expected else "✗"
         print(f"{status} {result}")
