@@ -143,12 +143,13 @@ def copy_codebase(
 
 type QUSS = str
 type FileContentsStr = str
+type RelativeFilePathStr = str
 
 
-def collect_decls_by_tu(
+def collect_decls_by_rel_tu(
     current_codebase: Path,
     restricted_to_files: set[FilePathStr] | None = None,
-) -> dict[FilePathStr, dict[QUSS, tuple[FilePathStr, int, int, FileContentsStr]]]:
+) -> dict[RelativeFilePathStr, dict[QUSS, tuple[FilePathStr, int, int, FileContentsStr]]]:
     def path_of_interest(p: FilePathStr) -> bool:
         return restricted_to_files is None or p in restricted_to_files
 
@@ -156,7 +157,9 @@ def collect_decls_by_tu(
 
     header_contents = CachingFileContents()
 
-    decls_by_tu: dict[FilePathStr, dict[QUSS, tuple[FilePathStr, int, int, FileContentsStr]]] = {}
+    decls_by_rel_tu: dict[
+        RelativeFilePathStr, dict[QUSS, tuple[FilePathStr, int, int, FileContentsStr]]
+    ] = {}
 
     # Note that the two FilePathStrs here can be different,
     # e.g. the declaration can be in a header file included by the TU file.
@@ -164,6 +167,8 @@ def collect_decls_by_tu(
     index = c_refact.create_xj_clang_index()
     tus = c_refact.parse_project(index, compdb)
     for tu_path, tu in tus.items():
+        assert Path(tu_path).is_relative_to(current_codebase)
+        rel_tu_path = Path(tu_path).relative_to(current_codebase).as_posix()
         for cursor in tu.cursor.get_children():
             # When we run this pass before expanding the preprocessor,
             # cursor.location can reflect header file locations.
@@ -193,7 +198,7 @@ def collect_decls_by_tu(
                                 break
                             prev_tok = t
 
-                decls_by_tu.setdefault(tu_path, {})[q] = (
+                decls_by_rel_tu.setdefault(rel_tu_path, {})[q] = (
                     cursor.location.file.name,
                     cursor.extent.start.offset,
                     cursor_end.offset,
@@ -201,13 +206,15 @@ def collect_decls_by_tu(
                         cursor.extent.start.offset : cursor_end.offset
                     ].decode("utf-8"),
                 )
-    return decls_by_tu
+    return decls_by_rel_tu
 
 
 def organize_decls_by_headers(
-    decls_by_tu: dict[FilePathStr, dict[QUSS, tuple[FilePathStr, int, int, FileContentsStr]]],
+    decls_by_rel_tu: dict[
+        RelativeFilePathStr, dict[QUSS, tuple[FilePathStr, int, int, FileContentsStr]]
+    ],
 ) -> dict[FilePathStr, dict[QUSS, tuple[int, int, FileContentsStr]]]:
-    if not decls_by_tu:
+    if not decls_by_rel_tu:
         return {}
 
     # decls_by_tu is indexed by TU path, and can contain entry[0] values that are not TU paths,
@@ -217,27 +224,26 @@ def organize_decls_by_headers(
     # containing entries for declarations that are consistent across all TUs
     # (in which those decls appear, at least).
     every_quss = set()
-    for tu_path, tu_decls in decls_by_tu.items():
+    for rel_tu_path, tu_decls in decls_by_rel_tu.items():
         tu_quss = set(tu_decls.keys())
         every_quss = every_quss.union(tu_quss)
 
-    tu_paths = list(decls_by_tu.keys())
-
+    rel_tu_paths = list(decls_by_rel_tu.keys())
     decls_by_header: dict[FilePathStr, dict[QUSS, tuple[int, int, FileContentsStr]]] = {}
     for q in every_quss:
         entries_dups = []
-        for tu_path in tu_paths:
-            tu_decls = decls_by_tu[tu_path]
+        for rel_tu_path in rel_tu_paths:
+            tu_decls = decls_by_rel_tu[rel_tu_path]
             if q in tu_decls:
                 entries_dups.append(tu_decls[q])
         expanded_entries_set = expand_overlapping_decl_header_entries(set(entries_dups))
         if len(expanded_entries_set) > 1:
             if len(set(e[3] for e in expanded_entries_set)) > 1:
                 print("ERROR: Declaration contents differ between TUs for QUSS:", q)
-                for tu_path in tu_paths:
-                    if q in decls_by_tu[tu_path]:
-                        entry = decls_by_tu[tu_path][q]
-                        print(f"  In TU {tu_path}: {entry}")
+                for rel_tu_path in rel_tu_paths:
+                    if q in decls_by_rel_tu[rel_tu_path]:
+                        entry = decls_by_rel_tu[rel_tu_path][q]
+                        print(f"  In TU {rel_tu_path}: {entry}")
                 print()
                 # continue  # skip inconsistent declarations
                 raise ValueError("ERROR: Declaration contents differ between TUs for QUSS:" + q)
@@ -323,9 +329,11 @@ def expand_overlapping_decl_header_entries(
 
 @dataclass
 class PrepPassResultStore:
-    decls_defined_by_headers: dict[FilePathStr, dict[QUSS, tuple[int, int, FileContentsStr]]]
+    decls_defined_by_headers: dict[
+        RelativeFilePathStr, dict[QUSS, tuple[int, int, FileContentsStr]]
+    ]
     decls_defined_after_pp: dict[
-        FilePathStr, dict[QUSS, tuple[FilePathStr, int, int, FileContentsStr]]
+        RelativeFilePathStr, dict[QUSS, tuple[FilePathStr, int, int, FileContentsStr]]
     ]
 
 
@@ -368,7 +376,7 @@ def run_preparation_passes(
         local_header_paths = set(p.as_posix() for p in current_codebase.glob("**/*.h"))
 
         store.decls_defined_by_headers = organize_decls_by_headers(
-            collect_decls_by_tu(current_codebase, restricted_to_files=local_header_paths)
+            collect_decls_by_rel_tu(current_codebase, restricted_to_files=local_header_paths)
         )
 
         print(
@@ -589,23 +597,63 @@ def run_preparation_passes(
             for q, (start_offset, end_offset, source_text) in header_decls.items():
                 quss_to_header_src[q] = source_text
 
-        import pprint
+        def combine_source_texts_for_header(t1: str, t2: str) -> str | None:
+            if t1 == t2:
+                return t1
+            # If one of them ends with an initializer, strip it off.
+            t1 = t1.split("=")[0].rstrip()
+            t2 = t2.split("=")[0].rstrip()
+            # If one is a substring of the other, return the longer one,
+            # which probably starts with 'extern'. (Note that, at least in
+            # theory, 'extern' can appear anywhere in the declaration specifier
+            # list, e.g. after 'const' or 'int').
+            if t1 in t2:
+                return t2
+            if t2 in t1:
+                return t1
+            return None
+
+        remove_expanded_src_for: set[QUSS] = set()
+        quss_to_expanded_src: dict[QUSS, FileContentsStr] = {}
+        for expanded_decls in store.decls_defined_after_pp.values():
+            for q, (rel_path, start_offset, end_offset, source_text) in expanded_decls.items():
+                if q in quss_to_expanded_src and q not in remove_expanded_src_for:
+                    # Already recorded from another TU
+                    combined = combine_source_texts_for_header(quss_to_expanded_src[q], source_text)
+                    if combined is None:
+                        print(
+                            "PPRC: WARNING: Expanded header source differs between TUs for QUSS:",
+                            q,
+                        )
+                        print("  Previous source:", quss_to_expanded_src[q])
+                        print("  New source:     ", source_text)
+                        print("    from:", rel_path)
+                        remove_expanded_src_for.add(q)
+                    else:
+                        quss_to_expanded_src[q] = combined
+                    continue
+                quss_to_expanded_src[q] = source_text
+
+        for q in remove_expanded_src_for:
+            del quss_to_expanded_src[q]
 
         print("PPRC: QUSS to header source mapping:")
-        pprint.pprint(quss_to_header_src)
+        pprint(quss_to_header_src)
 
         print("PPRC: store.decls_defined_by_headers:")
-        pprint.pprint(store.decls_defined_by_headers)
+        pprint(store.decls_defined_by_headers)
 
         print("PPRC: store.decls_defined_after_pp:")
         for k, v in store.decls_defined_after_pp.items():
             print(f"  TU: {k}")
             print(f"  TU contains 'alnumsort': {'alnumsort' in v}")
-            pprint.pprint(list(v.keys()))
+            print(list(v.keys()))
         # pprint.pprint(store.decls_defined_after_pp)
 
         # For each TU, collect the actual source text for each QUSS
         for tu_path, tu in tus.items():
+            assert Path(tu_path).is_relative_to(current_codebase)
+            rel_tu_path = Path(tu_path).relative_to(current_codebase).as_posix()
             # quss_to_expanded_src: dict[QUSS, FileContentsStr] = {}
             # print(f"PPRC: Analyzing TU for modified declarations: {tu_path}")
             # print(f"PPRC: decls_defined_after_pp has len ({len(store.decls_defined_after_pp)})")
@@ -640,20 +688,20 @@ def run_preparation_passes(
                         newest_tu_src = tu_file_contents[start_offset:end_offset]
                         decls_src_by_tu.setdefault(tu_path, {})[q] = newest_tu_src
 
-                        expanded_tu_src = store.decls_defined_after_pp.get(tu_path, {}).get(
+                        expanded_tu_src = store.decls_defined_after_pp.get(rel_tu_path, {}).get(
                             q, (None, None, None)
                         )[2]
                         # Check if TU's version differs from header's expanded version
                         if not expanded_tu_src:
                             print(
                                 f"PPRC: WARNING: No expanded header source recorded for QUSS: {q} in TU:",
-                                (tu_path in store.decls_defined_after_pp),
-                                tu_path,
+                                (rel_tu_path in store.decls_defined_after_pp),
+                                rel_tu_path,
                             )
                         elif newest_tu_src != expanded_tu_src:
                             print(
                                 f"PPRC: Found MODIFIED {q} declaration in TU:",
-                                tu_path,
+                                rel_tu_path,
                             )
                             print("PPRC: Source text:", newest_tu_src)
                             print("PPRC: extent offsets:", start_offset, end_offset)
@@ -663,11 +711,6 @@ def run_preparation_passes(
 
         # Find declarations that are modified identically in all TUs
         for q, modifying_tus in tus_modifying_decls.items():
-            # # Check if all TUs modify this declaration
-            # if modifying_tus != all_tu_paths:
-            #     print("PPRC: Declaration not modified by all TUs for QUSS:", q)
-            #     continue  # Not all TUs modify this declaration
-
             # Check if all TUs modify it in the same way
             modified_versions = set()
             for tu_path in modifying_tus:
@@ -683,15 +726,7 @@ def run_preparation_passes(
             # and update header with the modified version
             modified_version = modified_versions.pop()
             original_header_version = quss_to_header_src[q]
-            expanded_header_version = quss_to_expanded_src[q]
-
-            if expanded_header_version != original_header_version:
-                print("WARNING: Detected a modified declaration in .i file:", q)
-                print(
-                    "        for which the header declaration involved detectable preprocessor expansion."
-                )
-                print("PPRC:   This makes it non-obvious how to map edits back to the header.")
-                continue
+            # expanded_header_version = quss_to_expanded_src[q]
 
             print(f"PPRC: Consolidating declaration {q}:")
             print(f"  Original (header):\n{original_header_version}")
@@ -699,7 +734,7 @@ def run_preparation_passes(
             print(f"  Modified (TUs):\n{modified_version}")
             print("----------------------------")
 
-            # Replace in each TU: modified_version -> original_header_version
+            # Replace in each TU: modified_version -> original_expanded_version
             for tu_path in modifying_tus:
                 if q in decls_src_by_tu[tu_path]:
                     tu_file_path = Path(tu_path)
@@ -739,7 +774,7 @@ def run_preparation_passes(
         for cmd in new_compdb.commands:
             assert cmd.file_path.suffix == ".i", "Expected preprocessed .i files"
 
-        store.decls_defined_after_pp = collect_decls_by_tu(current_codebase)
+        store.decls_defined_after_pp = collect_decls_by_rel_tu(current_codebase)
 
         print(
             f"PPRC: Collected {sum(len(v) for v in store.decls_defined_after_pp.values())} declarations defined after preprocessing."

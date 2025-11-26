@@ -166,7 +166,6 @@ public:
         continue;
       }
 
-      bool decl_editable = true;
       const NamedDecl* leftmostDecl = nullptr;
       const NamedDecl* rightmostDecl = nullptr;
 
@@ -177,17 +176,33 @@ public:
         if (!rightmostDecl || SM->isBeforeInTranslationUnit(rightmostDecl->getLocation(), D->getLocation())) {
           rightmostDecl = D;
         }
+      }
 
-        // We don't use D->getLocation() here in case the identifier was formed by token pasting
-        auto FC = SM->getFileCharacteristic(SM->getSpellingLoc(D->getSourceRange().getBegin()));
-        if (FC != SrcMgr::C_User) {
-          // silently skip decls from system headers
-          decl_editable = false;
-          break;
+      // We established earlier that this declaration was ultimately expanded in
+      // a user file, which we consider to be editable. But we don't yet know
+      // whether the spelling of the declaration is editable.
+      bool decl_editable = true;
+      if (SM->getFileCharacteristic(SM->getSpellingLoc(
+                        leftmostDecl->getSourceRange().getBegin()))
+            != SrcMgr::C_User) {
+        // This will trigger on code that uses a type defined via macro in a system header,
+        // usually `bool`. To distinguish the case of decls defined in system headers vs
+        // decls which are merely using such types, we inspect the spelling locations of
+        // each decl name location. If any are either in a scratch space or a non-user file,
+        // we'll silently skip the entire set of decls at this location.
+        for (const NamedDecl* D : Decls) {
+          SourceLocation nameSpellLoc = SM->getSpellingLoc(D->getLocation());
+          if (SM->isWrittenInScratchSpace(nameSpellLoc)
+              || SM->getFileCharacteristic(nameSpellLoc) != SrcMgr::C_User) {
+            decl_editable = false;
+            break;
+          }
         }
       }
 
       if (!decl_editable) {
+        llvm::outs() << "  skipping non-editable decls at loc: "
+                     << Loc.printToString(*SM) << "\n";
         continue;
       }
 
@@ -337,7 +352,7 @@ public:
         std::optional< Token > opt_prev = Lexer_findPreviousToken(
             SM->getExpansionLoc(leftmostSrcLoc), *SM, Ctx->getLangOpts());
         if (!opt_prev.has_value()) { 
-          //llvm::outs() << "       no previous token\n";
+          llvm::outs() << "       no previous token\n";
           break; }
         Token prev = opt_prev.value();
         if (prev.is(tok::star) || prev.is(tok::l_paren)) {
@@ -347,7 +362,7 @@ public:
           std::optional<Token> opt_next = Lexer::findNextToken(
               prev.getLocation(), *SM, Ctx->getLangOpts());
           if (!opt_next.has_value()) { 
-            //llvm::outs() << "no token after previous token!!!!\n";
+            llvm::outs() << "no token after previous token!!!!\n";
             break;
           }
           leftmostSrcLoc = opt_next.value().getLocation();
