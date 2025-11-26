@@ -376,6 +376,18 @@ def check_e2e_smoke_tests(testnames):
         fn()
 
 
+@cli.command(hidden=True)
+def synthesize_compilation_database_for(file: Path):
+    """Emit a trivial compilation database JSON for the given C file to stdout."""
+    import compilation_database  # noqa: PLC0415
+
+    compilation_database.write_synthetic_compile_commands_to(
+        compdb_path=Path("/dev/stdout"),
+        c_file=file,
+        builddir=file.parent,
+    )
+
+
 if __name__ == "__main__":
     # Per its own documentation, Click does not support losslessly forwarding
     # command line arguments. So when we want to do that, we bypass Click.
