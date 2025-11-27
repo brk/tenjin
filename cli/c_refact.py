@@ -1695,7 +1695,7 @@ def localize_mutable_globals(
         for tu_path, offset in lowest_mutable_accessing_fn_starts.items():
             tu = tus[tu_path]
 
-            print(f"\n  Analyzing types in scope in TU: {tu_path}")
+            # print(f"\n  Analyzing types in scope in TU: {tu_path}")
 
             types_in_scope = set()  # Set of type names (struct/union/typedef)
 
@@ -1703,15 +1703,15 @@ def localize_mutable_globals(
             for cursor in tu.cursor.walk_preorder():
                 if cursor.kind == CursorKind.STRUCT_DECL and cursor.spelling:
                     types_in_scope.add(cursor.spelling)
-                    print(f"    Found struct in scope: {cursor.spelling}")
+                    # print(f"    Found struct in scope: {cursor.spelling}")
                 elif cursor.kind == CursorKind.UNION_DECL and cursor.spelling:
                     types_in_scope.add(cursor.spelling)
-                    print(f"    Found union in scope: {cursor.spelling}")
+                    # print(f"    Found union in scope: {cursor.spelling}")
                 elif cursor.kind == CursorKind.TYPEDEF_DECL and cursor.spelling:
                     types_in_scope.add(cursor.spelling)
-                    print(f"    Found typedef in scope: {cursor.spelling}")
+                    # print(f"    Found typedef in scope: {cursor.spelling}")
 
-            print(f"\n  Found {len(types_in_scope)} types already in scope in TU: {tu_path}")
+            # print(f"\n  Found {len(types_in_scope)} types already in scope in TU: {tu_path}")
 
             # Determine which types need to be emitted
             types_to_emit_structs = {}  # name -> decl_cursor
@@ -1720,16 +1720,16 @@ def localize_mutable_globals(
             for type_name, decl_cursor in needed_struct_defs.items():
                 if type_name not in types_in_scope:
                     types_to_emit_structs[type_name] = decl_cursor
-                    print(f"    Will emit struct definition: {type_name}")
-                else:
-                    print(f"    Skipping struct (already in scope): {type_name}")
+                #     print(f"    Will emit struct definition: {type_name}")
+                # else:
+                #     print(f"    Skipping struct (already in scope): {type_name}")
 
             for type_name, decl_cursor in needed_typedefs.items():
                 if type_name not in types_in_scope:
                     types_to_emit_typedefs[type_name] = decl_cursor
-                    print(f"    Will emit typedef: {type_name}")
-                else:
-                    print(f"    Skipping typedef (already in scope): {type_name}")
+                #     print(f"    Will emit typedef: {type_name}")
+                # else:
+                #     print(f"    Skipping typedef (already in scope): {type_name}")
 
             # Build type definitions to insert before main()
             type_defs_lines = []

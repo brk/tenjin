@@ -67,13 +67,13 @@ def find_statement_start(cursor: Cursor, content: bytes, ancestors: AncestorChai
     For statements within compound statements, we want to insert before the statement.
     """
     # Walk up to find a statement that's a direct child of a compound statement
-    print("Finding statement start for cursor at:", cursor.location)
+    # print("Finding statement start for cursor at:", cursor.location)
 
     current = cursor
     while ancestors is not None:
         parent, ancestors = ancestors
         if not parent:
-            print("No parent found, started at", cursor.kind, "stopped at current:", current.kind)
+            # print("No parent found, started at", cursor.kind, "stopped at current:", current.kind)
             break
 
         # Check if parent is a compound statement or function body
@@ -89,7 +89,7 @@ def find_statement_start(cursor: Cursor, content: bytes, ancestors: AncestorChai
             ):
                 start_offset -= 1
 
-            print("parent was compound stmt or fn decl, Walked back from:", cursor.extent.start)
+            # print("parent was compound stmt or fn decl, Walked back from:", cursor.extent.start)
             return start_offset
 
         current = parent
@@ -368,8 +368,8 @@ def lift_subfield_args(
                 for start_offset, length, new_text in replacements:
                     rewriter.add_rewrite(file_path, start_offset, length, new_text)
 
-                print(f"  Rewriting call at {file_path}:{rewrite.call_cursor.location.line}")
-                print(f"    Lifting {len(rewrite.member_accesses)} member access(es)")
+                # print(f"  Rewriting call at {file_path}:{rewrite.call_cursor.location.line}")
+                # print(f"    Lifting {len(rewrite.member_accesses)} member access(es)")
 
     print("\n" + "=" * 80)
     print("STRUCT MEMBER LIFTING COMPLETE")
