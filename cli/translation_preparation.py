@@ -217,11 +217,6 @@ def collect_decls_by_rel_tu(
                                     break
                                 prev_tok = t
 
-                print("Collecting declaration:", q, "from location:", cursor.location.file.name)
-                print("   found in TU:", tu_path)
-                print("   range:", cursor.extent.start, "---", cursor_end)
-                print("   offset range:", cursor.extent.start.offset, "---", cursor_end.offset)
-
                 relative = Path(cursor.location.file.name).relative_to(current_codebase)
                 decls_by_rel_tu.setdefault(rel_tu_path, {})[q] = (
                     relative.as_posix(),

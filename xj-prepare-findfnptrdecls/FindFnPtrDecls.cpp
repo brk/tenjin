@@ -366,11 +366,11 @@ public:
         return rv;
       }
 
-      llvm::errs() << "ret type range: " << FTL.getReturnLoc().getSourceRange().printToString(*SM) << "\n";
-      llvm::errs() << "ret type begin loc: " << FTL.getReturnLoc().getBeginLoc().printToString(*SM) << "\n";
-      llvm::errs() << "ret type end loc: " << FTL.getReturnLoc().getEndLoc().printToString(*SM) << "\n";
-      llvm::errs() << "decl primary loc: " << d->getLocation().printToString(*SM) << "\n";
-      llvm::errs() << "\n";
+      // llvm::errs() << "ret type range: " << FTL.getReturnLoc().getSourceRange().printToString(*SM) << "\n";
+      // llvm::errs() << "ret type begin loc: " << FTL.getReturnLoc().getBeginLoc().printToString(*SM) << "\n";
+      // llvm::errs() << "ret type end loc: " << FTL.getReturnLoc().getEndLoc().printToString(*SM) << "\n";
+      // llvm::errs() << "decl primary loc: " << d->getLocation().printToString(*SM) << "\n";
+      // llvm::errs() << "\n";
 
       // return type as written
       //    (getReturnLoc().getSourceRange() can be empty for void returns)
