@@ -670,19 +670,6 @@ def run_preparation_passes(
         for q in remove_expanded_src_for:
             del quss_to_expanded_src[q]
 
-        print("PPRC: QUSS to header source mapping:")
-        pprint(quss_to_header_src)
-
-        print("PPRC: store.decls_defined_by_headers:")
-        pprint(store.decls_defined_by_headers)
-
-        print("PPRC: store.decls_defined_after_pp:")
-        for k, v in store.decls_defined_after_pp.items():
-            print(f"  TU: {k}")
-            print(f"  TU contains 'alnumsort': {'alnumsort' in v}")
-            print(list(v.keys()))
-        # pprint.pprint(store.decls_defined_after_pp)
-
         defn_offsets_by_tu: dict[FilePathStr, dict[QUSS, tuple[int, int]]] = {}
 
         # For each TU, collect the actual source text for each QUSS
