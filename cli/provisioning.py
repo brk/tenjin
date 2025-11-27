@@ -145,6 +145,41 @@ def download(url: str, filename: Path, first_attempt=True) -> None:
 # platform.system() in ["Linux", "Darwin"]
 
 
+def clone_or_fetch_git_repo(
+    repo_url: str,
+    target_dir: Path,
+    version: str,
+    log_prefix: str,
+    display_name: str,
+    ctx: str,
+) -> None:
+    """Clone a git repo if not present, or fetch and reset to the given version.
+
+    Args:
+        repo_url: The URL of the git repository to clone.
+        target_dir: The directory to clone into or update.
+        version: The git ref (tag, branch, commit) to checkout.
+        log_prefix: Prefix for log files, e.g., "xj-c2rust" -> "xj-c2rust-clone.log".
+        display_name: Human-readable name for messages, e.g., "C2Rust".
+        ctx: Context string for sez(), e.g., "(c2rust) ".
+    """
+    localdir = HAVE.localdir
+    if target_dir.is_dir():
+        sez(f"Fetching and resetting {display_name} to version {version} ...", ctx)
+        subprocess.check_call(["git", "fetch", "--all"], cwd=str(target_dir))
+        subprocess.check_call(["git", "switch", "--detach", version], cwd=str(target_dir))
+    else:
+        sez(f"Cloning {display_name} {version} ...", ctx)
+        stdout_path = Path(localdir, f"{log_prefix}-clone.log")
+        stderr_path = Path(localdir, f"{log_prefix}-clone.err")
+        hermetic.run_command_with_progress(
+            ["git", "clone", repo_url, str(target_dir)],
+            stdout_file=stdout_path,
+            stderr_file=stderr_path,
+        )
+        subprocess.check_call(["git", "switch", "--detach", version], cwd=str(target_dir))
+
+
 # See https://stackoverflow.com/questions/45125516/possible-values-for-uname-m
 # See https://gist.github.com/skyzyx/d82b7d9ba05523dd1a9301fd282b32c4
 def machine_normalized(aarch64="aarch64") -> str:
@@ -325,34 +360,14 @@ def want_10j_reference_c2rust_tag():
         version: str,
         xj_upstream_c2rust: Path,
     ):
-        def say(msg: str):
-            sez(msg, ctx="(c2rust) ")
-
-        localdir = HAVE.localdir
-        if xj_upstream_c2rust.is_dir():
-            say(f"Fetching and resetting C2Rust to version {version} ...")
-            subprocess.check_call(["git", "fetch", "--all"], cwd=str(xj_upstream_c2rust))
-            subprocess.check_call(
-                ["git", "switch", "--detach", version], cwd=str(xj_upstream_c2rust)
-            )
-        else:
-            say(f"Cloning C2Rust {version} ...")
-
-            stdout_path = Path(localdir, "xj-c2rust-clone.log")
-            stderr_path = Path(localdir, "xj-c2rust-clone.err")
-            hermetic.run_command_with_progress(
-                [
-                    "git",
-                    "clone",
-                    "https://github.com/immunant/c2rust.git",
-                    str(xj_upstream_c2rust),
-                ],
-                stdout_file=stdout_path,
-                stderr_file=stderr_path,
-            )
-            subprocess.check_call(
-                ["git", "switch", "--detach", version], cwd=str(xj_upstream_c2rust)
-            )
+        clone_or_fetch_git_repo(
+            repo_url="https://github.com/immunant/c2rust.git",
+            target_dir=xj_upstream_c2rust,
+            version=version,
+            log_prefix="xj-c2rust",
+            display_name="C2Rust",
+            ctx="(c2rust) ",
+        )
 
     def provision_10j_reference_c2rust_tag_with(
         version: str,
@@ -439,30 +454,14 @@ def want_codehawk():
         version: str,
         xj_codehawk: Path,
     ):
-        def say(msg: str):
-            sez(msg, ctx="(codehawk) ")
-
-        localdir = HAVE.localdir
-        if xj_codehawk.is_dir():
-            say(f"Fetching and resetting CodeHawk to version {version} ...")
-            subprocess.check_call(["git", "fetch", "--all"], cwd=str(xj_codehawk))
-            subprocess.check_call(["git", "switch", "--detach", version], cwd=str(xj_codehawk))
-        else:
-            say(f"Cloning CodeHawk {version} ...")
-
-            stdout_path = Path(localdir, "xj-codehawk-clone.log")
-            stderr_path = Path(localdir, "xj-codehawk-clone.err")
-            hermetic.run_command_with_progress(
-                [
-                    "git",
-                    "clone",
-                    "https://github.com/static-analysis-engineering/codehawk.git",
-                    str(xj_codehawk),
-                ],
-                stdout_file=stdout_path,
-                stderr_file=stderr_path,
-            )
-            subprocess.check_call(["git", "switch", "--detach", version], cwd=str(xj_codehawk))
+        clone_or_fetch_git_repo(
+            repo_url="https://github.com/static-analysis-engineering/codehawk.git",
+            target_dir=xj_codehawk,
+            version=version,
+            log_prefix="xj-codehawk",
+            display_name="CodeHawk",
+            ctx="(codehawk) ",
+        )
 
     def provision_codehawk_with(
         version: str,
@@ -515,30 +514,14 @@ def want_codehawk_c():
         version: str,
         xj_codehawk: Path,
     ):
-        def say(msg: str):
-            sez(msg, ctx="(codehawk) ")
-
-        localdir = HAVE.localdir
-        if xj_codehawk.is_dir():
-            say(f"Fetching and resetting CodeHawk-C to version {version} ...")
-            subprocess.check_call(["git", "fetch", "--all"], cwd=str(xj_codehawk))
-            subprocess.check_call(["git", "switch", "--detach", version], cwd=str(xj_codehawk))
-        else:
-            say(f"Cloning CodeHawk-C {version} ...")
-
-            stdout_path = Path(localdir, "xj-codehawk-c-clone.log")
-            stderr_path = Path(localdir, "xj-codehawk-c-clone.err")
-            hermetic.run_command_with_progress(
-                [
-                    "git",
-                    "clone",
-                    "https://github.com/static-analysis-engineering/CodeHawk-C.git",
-                    str(xj_codehawk),
-                ],
-                stdout_file=stdout_path,
-                stderr_file=stderr_path,
-            )
-            subprocess.check_call(["git", "switch", "--detach", version], cwd=str(xj_codehawk))
+        clone_or_fetch_git_repo(
+            repo_url="https://github.com/static-analysis-engineering/CodeHawk-C.git",
+            target_dir=xj_codehawk,
+            version=version,
+            log_prefix="xj-codehawk-c",
+            display_name="CodeHawk-C",
+            ctx="(codehawk) ",
+        )
 
     def provision_codehawk_c_with(
         version: str,
