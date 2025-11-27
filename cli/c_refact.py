@@ -1339,32 +1339,32 @@ def localize_mutable_globals(
             f"  - {cursor.spelling}: {cursor.type.spelling} at {cursor.location.file}:{cursor.location.line}"
         )
 
-    print(f"\nNeed {len(needed_struct_defs)} struct/union definitions:")
-    for name, decl in needed_struct_defs.items():
-        print(f"  - {name} -> {decl.location}")
-        print(f"           -> {decl.extent}")
-        print(f"           -> {decl.type}")
-        print(f"           -> {decl.type.spelling}")
-        print(f"           -> {decl.get_usr()}")
-        print(f"           -> {decl.get_definition()}")
-        print(f"           -> {decl.get_definition().extent}")
-        print()
+    # print(f"\nNeed {len(needed_struct_defs)} struct/union definitions:")
+    # for name, decl in needed_struct_defs.items():
+    #     print(f"  - {name} -> {decl.location}")
+    #     print(f"           -> {decl.extent}")
+    #     print(f"           -> {decl.type}")
+    #     print(f"           -> {decl.type.spelling}")
+    #     print(f"           -> {decl.get_usr()}")
+    #     print(f"           -> {decl.get_definition()}")
+    #     print(f"           -> {decl.get_definition().extent}")
+    #     print()
 
-    print(f"\nNeed {len(needed_typedefs)} typedef definitions:")
-    for name, (decl, canonical_spelling) in needed_typedefs.items():
-        print(f"  - {name} -> {decl.location}")
-        print(f"           -> {decl.extent}")
-        print(f"           -> {decl.type}")
-        print(f"           -> {decl.type.spelling}")
-        print(f"  canon_ty -> {canonical_spelling}")
-        print(f"           -> {decl.get_usr()}")
-        print(f"           -> {decl.get_definition()}")
-        print(f"           -> {decl.get_definition().extent}")
-        print()
+    # print(f"\nNeed {len(needed_typedefs)} typedef definitions:")
+    # for name, (decl, canonical_spelling) in needed_typedefs.items():
+    #     print(f"  - {name} -> {decl.location}")
+    #     print(f"           -> {decl.extent}")
+    #     print(f"           -> {decl.type}")
+    #     print(f"           -> {decl.type.spelling}")
+    #     print(f"  canon_ty -> {canonical_spelling}")
+    #     print(f"           -> {decl.get_usr()}")
+    #     print(f"           -> {decl.get_definition()}")
+    #     print(f"           -> {decl.get_definition().extent}")
+    #     print()
 
-    print(f"\nCan forward-declare {len(forward_declarable_types)} types:")
-    for name in forward_declarable_types:
-        print(f"  - {name}")
+    # print(f"\nCan forward-declare {len(forward_declarable_types)} types:")
+    # for name in forward_declarable_types:
+    #     print(f"  - {name}")
     print("=" * 80)
 
     # Steps 5 and 6: Modify function signatures and call sites
