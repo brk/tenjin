@@ -772,14 +772,14 @@ def run_preparation_passes(
                 # Apply the consolidation: replace TU versions with header version,
                 # and update header with the modified version
                 modified_version = modified_versions.pop()
-                original_header_version = quss_to_header_src[q]
+                # original_header_version = quss_to_header_src[q]
                 expanded_header_version = quss_to_expanded_src[q]
 
-                print(f"PPRC: Consolidating declaration {q}:")
-                print(f"  Original (header):\n{original_header_version}")
-                print("----------------------------")
-                print(f"  Modified (TUs):\n{modified_version}")
-                print("----------------------------")
+                # print(f"PPRC: Consolidating declaration {q}:")
+                # print(f"  Original (header):\n{original_header_version}")
+                # print("----------------------------")
+                # print(f"  Modified (TUs):\n{modified_version}")
+                # print("----------------------------")
 
                 # Replace in each TU: modified_version -> expanded_header_version
                 for tu_path in modifying_tus:
