@@ -7,6 +7,7 @@ from typing import Callable
 from subprocess import CompletedProcess
 import hashlib
 from dataclasses import dataclass
+from enum import Enum
 
 from clang.cindex import CursorKind
 
@@ -148,9 +149,16 @@ type FileContentsStr = str
 type RelativeFilePathStr = str
 
 
+class FnDefHandling(Enum):
+    EXCLUDE = 1
+    INCLUDE_BODY = 2
+    INCLUDE_DECL_ONLY = 3
+
+
 def collect_decls_by_rel_tu(
     current_codebase: Path,
     restricted_to_files: set[FilePathStr] | None = None,
+    fn_def_handling: FnDefHandling = FnDefHandling.EXCLUDE,
 ) -> dict[RelativeFilePathStr, dict[QUSS, tuple[RelativeFilePathStr, int, int, FileContentsStr]]]:
     def path_of_interest(p: FilePathStr) -> bool:
         if not Path(p).is_relative_to(current_codebase):
@@ -190,21 +198,24 @@ def collect_decls_by_rel_tu(
                 # print("   found in TU:", tu_path)
                 cursor_end = cursor.extent.end
                 if cursor.kind == CursorKind.FUNCTION_DECL and cursor.is_definition():
-                    # Do not include the function body in the recorded declaration.
-                    prev_tok = None
-                    for t in cursor.get_tokens():
-                        if t.location.offset >= cursor.location.offset:
-                            # This will break on pernicious code which defines a macro
-                            # to hide the opening curly brace of the function body.
-                            if t.spelling == "{":
-                                if prev_tok:
-                                    # Probably a ) before { but it could be
-                                    # an attribute or an #endif or a non-expanding macro...)
-                                    cursor_end = prev_tok.extent.end
-                                else:
-                                    cursor_end = t.extent.start
-                                break
-                            prev_tok = t
+                    if fn_def_handling == FnDefHandling.EXCLUDE:
+                        continue
+                    if fn_def_handling == FnDefHandling.INCLUDE_DECL_ONLY:
+                        # Do not include the function body in the recorded declaration.
+                        prev_tok = None
+                        for t in cursor.get_tokens():
+                            if t.location.offset >= cursor.location.offset:
+                                # This will break on pernicious code which defines a macro
+                                # to hide the opening curly brace of the function body.
+                                if t.spelling == "{":
+                                    if prev_tok:
+                                        # Probably a ) before { but it could be
+                                        # an attribute or an #endif or a non-expanding macro...)
+                                        cursor_end = prev_tok.extent.end
+                                    else:
+                                        cursor_end = t.extent.start
+                                    break
+                                prev_tok = t
 
                 print("Collecting declaration:", q, "from location:", cursor.location.file.name)
                 print("   found in TU:", tu_path)
@@ -573,9 +584,9 @@ def run_preparation_passes(
         # store.decls_defined_by_headers has, for each header, a collection of
         # (quss-ident, (start_offset, end_offset, source_text)) entries.
         # For each translation unit, we'll find the corresonding range for the
-        # same quss-ident, and compare it with the header's version.
+        # quss-ident's declaration(s) and compare with the header's version.
         # If the header's version is different, we'll record that this TU
-        # modified the definition.
+        # modified the declaration.
         # If every TU modifies the same header-defined declaration in the same way,
         # we will replace each TU's version with the header's version,
         # and replace the header's version with the modified version.
@@ -672,6 +683,8 @@ def run_preparation_passes(
             print(list(v.keys()))
         # pprint.pprint(store.decls_defined_after_pp)
 
+        defn_offsets_by_tu: dict[FilePathStr, dict[QUSS, tuple[int, int]]] = {}
+
         # For each TU, collect the actual source text for each QUSS
         for tu_path, tu in tus.items():
             assert Path(tu_path).is_relative_to(current_codebase)
@@ -709,6 +722,7 @@ def run_preparation_passes(
                         end_offset = cursor.extent.end.offset
                         newest_tu_src = tu_file_contents[start_offset:end_offset]
                         decls_src_by_tu.setdefault(tu_path, {})[q] = newest_tu_src
+                        defn_offsets_by_tu.setdefault(tu_path, {})[q] = (start_offset, end_offset)
 
                         expanded_tu_src = store.decls_defined_after_pp.get(rel_tu_path, {}).get(
                             q, (None, None, None)
@@ -732,6 +746,34 @@ def run_preparation_passes(
                             tus_modifying_decls.setdefault(q, set()).add(tu_path)
 
         with batching_rewriter.BatchingRewriter() as rewriter:
+            # Temporary workaround:
+            # Remove the forward declaration of 'struct XjGlobals' from the
+            # start of each TU which contains `#include "xj_globals.h"`.
+            # We can drop this when clang-refold can handle it properly.
+            for tu_path, tu in tus.items():
+                tu_file_contents = rewriter.get_content(tu_path)
+                include_offset = tu_file_contents.find(b'#include "xj_globals.h"')
+                if include_offset != -1:
+                    # The trailing newline matters!
+                    forward_decl = b"struct XjGlobals;\n"
+                    fwd_decl_offset = tu_file_contents.find(forward_decl)
+                    if fwd_decl_offset != -1:
+                        fwd_decl_needed = (
+                            b"XjGlobals"
+                            in tu_file_contents[
+                                fwd_decl_offset + len(forward_decl) : include_offset
+                            ]
+                        )
+                        if fwd_decl_needed:
+                            # We'll have to reinstate it (TODO).
+                            pass
+                        rewriter.add_rewrite(
+                            tu_path,
+                            fwd_decl_offset,
+                            len(forward_decl),
+                            "",
+                        )
+
             # Find declarations that are modified identically in all TUs
             for q, modifying_tus in tus_modifying_decls.items():
                 # Check if all TUs modify it in the same way
@@ -757,19 +799,19 @@ def run_preparation_passes(
                 print(f"  Modified (TUs):\n{modified_version}")
                 print("----------------------------")
 
-                # Replace in each TU: modified_version -> original_expanded_version
+                # Replace in each TU: modified_version -> expanded_header_version
                 for tu_path in modifying_tus:
-                    if q in decls_src_by_tu[tu_path]:
+                    assert tu_path in defn_offsets_by_tu
+                    if q in defn_offsets_by_tu[tu_path]:
                         tu_file_path = Path(tu_path)
-                        tu_contents = tu_file_path.read_text(encoding="utf-8")
-                        # We use simple string replacement here instead of the batched
-                        # rewriter because we don't have precise byte offsets for the
-                        # modified TU decls.
-                        new_contents = tu_contents.replace(
-                            modified_version, expanded_header_version
+                        # We cannot use simple string replacement here because we
+                        # do not want to modify the signatures of function definitions,
+                        # only the declarations.
+                        start_offset, end_offset = defn_offsets_by_tu[tu_path][q]
+                        length = end_offset - start_offset
+                        rewriter.add_rewrite(
+                            tu_file_path.as_posix(), start_offset, length, expanded_header_version
                         )
-                        if new_contents != tu_contents:
-                            tu_file_path.write_text(new_contents, encoding="utf-8")
 
                 # Update the header with the modified version
                 for rel_header_path_str, header_decls in store.decls_defined_by_headers.items():
