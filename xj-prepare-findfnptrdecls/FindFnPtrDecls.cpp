@@ -429,7 +429,8 @@ public:
                         *SM,
                         Ctx->getLangOpts(),
                         /*SkipTrailingWhitespaceAndNewline=*/ true);
-      if (fdd->hasBody()) { 
+      if (fdd->hasBody()) {
+          llvm::errs() << "For body-having function decl of " << fdd->getNameAsString() << "\n";
           llvm::errs() << "post_loc for body after rbrace was " << post_loc.printToString(*SM) << "\n";
           llvm::errs() << "end_loc for body               was " << fdd->getEndLoc().printToString(*SM) << "\n";
       }
