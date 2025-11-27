@@ -717,13 +717,13 @@ def run_preparation_passes(
                                 rel_tu_path,
                             )
                         elif newest_tu_src != expanded_tu_src:
-                            print(
-                                f"PPRC: Found MODIFIED {q} declaration in TU:",
-                                rel_tu_path,
-                            )
-                            print("PPRC: Source text:", newest_tu_src)
-                            print("PPRC: extent offsets:", start_offset, end_offset)
-                            print("PPRC: extent: ", cursor.extent)
+                            # print(
+                            #     f"PPRC: Found MODIFIED {q} declaration in TU:",
+                            #     rel_tu_path,
+                            # )
+                            # print("PPRC: Source text:", newest_tu_src)
+                            # print("PPRC: extent offsets:", start_offset, end_offset)
+                            # print("PPRC: extent: ", cursor.extent)
 
                             tus_modifying_decls.setdefault(q, set()).add(tu_path)
 
