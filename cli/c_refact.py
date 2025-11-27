@@ -1398,9 +1398,9 @@ def localize_mutable_globals(
                     var_name = child.spelling
 
                     replacement = f"xjg->{var_name}"
-                    print(
-                        f"    Found DECL_REF_EXPR for {var_name} at {tu_path}:{child.location.line}:{child.location.column}"
-                    )
+                    # print(
+                    #     f"    Found DECL_REF_EXPR for {var_name} at {tu_path}:{child.location.line}:{child.location.column}"
+                    # )
 
                     # Check the parent - if it's a VAR_DECL, skip it
                     parent = child.semantic_parent
@@ -1422,7 +1422,7 @@ def localize_mutable_globals(
                         # This is a local variable with the same name as a global; skip it
                         continue
 
-                    print(f"    Replacing {var_name} with {replacement}")
+                    # print(f"    Replacing {var_name} with {replacement}")
 
                     rewriter.add_rewrite(tu_path, start_offset, length, replacement)
                     assert current_fn_start is not None
