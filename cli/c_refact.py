@@ -1198,6 +1198,10 @@ def localize_mutable_globals(
         and c.spelling not in phase1results.ineligible_for_lifting
     ]
 
+    if not liftable_mutated_globals_and_statics:
+        print("No liftable mutated globals found; skipping further localization steps.")
+        return
+
     # Step 2b: Construct transitive closure of struct/union definitions
     print("\n" + "=" * 80)
     print("STEP 2b: Finding struct/union dependencies")
@@ -1640,8 +1644,6 @@ def localize_mutable_globals(
 
                                 init_lines.append("")
 
-                            init_lines.append("\n  struct XjGlobals xjgv = {")
-
                             # Initialize each field based on original initializers
                             field_inits = []
                             for global_name in sorted(mutated_globals_cursors_by_name.keys()):
@@ -1677,6 +1679,7 @@ def localize_mutable_globals(
 
                                 field_inits.append(f"    .{global_name} = {initializer}")
 
+                            init_lines.append("\n  struct XjGlobals xjgv = {")
                             init_lines.append(",\n".join(field_inits))
                             init_lines.append("\n  };")
                             init_lines.append("struct XjGlobals *xjg = &xjgv;\n")

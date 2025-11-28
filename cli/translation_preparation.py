@@ -728,27 +728,22 @@ def run_preparation_passes(
                             tus_modifying_decls.setdefault(q, set()).add(tu_path)
 
         with batching_rewriter.BatchingRewriter() as rewriter:
-            # Temporary workaround:
             # Remove the forward declaration of 'struct XjGlobals' from the
-            # start of each TU which contains `#include "xj_globals.h"`.
-            # We can drop this when clang-refold can handle it properly.
+            # start of each TU when it doesn't seem to be needed.
             for tu_path, tu in tus.items():
+                # The trailing newline matters!
+                forward_decl = b"struct XjGlobals;\n"
+                fwd_decl_needed = True
                 tu_file_contents = rewriter.get_content(tu_path)
                 include_offset = tu_file_contents.find(b'#include "xj_globals.h"')
-                if include_offset != -1:
-                    # The trailing newline matters!
-                    forward_decl = b"struct XjGlobals;\n"
+                if include_offset == -1:
+                    fwd_decl_needed = tu_file_contents.count(b"XjGlobals") > 1
+                else:
+                    fwd_decl_needed = tu_file_contents[0:include_offset].count(b"XjGlobals") > 1
+
+                if not fwd_decl_needed:
                     fwd_decl_offset = tu_file_contents.find(forward_decl)
                     if fwd_decl_offset != -1:
-                        fwd_decl_needed = (
-                            b"XjGlobals"
-                            in tu_file_contents[
-                                fwd_decl_offset + len(forward_decl) : include_offset
-                            ]
-                        )
-                        if fwd_decl_needed:
-                            # We'll have to reinstate it (TODO).
-                            pass
                         rewriter.add_rewrite(
                             tu_path,
                             fwd_decl_offset,
