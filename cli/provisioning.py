@@ -1477,6 +1477,64 @@ def cook_m4_within():
     assert path_of_unusual_size not in data, "Oops, m4 was left undercooked!"
 
 
+def cook_automake_and_autoconf_within() -> None:
+    """Cook automake/aclocal/autoconf scripts and Config.pm to use actual paths.
+
+    These are text files (Perl scripts and modules) that have '/outputs'
+    embedded as a placeholder prefix. We replace it with the actual
+    xj-build-deps path.
+    """
+
+    def say(msg: str):
+        sez(msg, ctx="(automake) ")
+
+    xj_build_deps = hermetic.xj_build_deps(HAVE.localdir)
+    placeholder = b"/outputs"  # XREF(tenjin-build-deps-automake-path)
+    replacement = bytes(xj_build_deps)
+
+    # Collect all the text files that need cooking
+    files_to_cook: list[Path] = []
+
+    config_pm = xj_build_deps / "share" / "automake-1.17" / "Automake" / "Config.pm"
+    assert config_pm.is_file()
+    files_to_cook.append(config_pm)
+
+    autom4te_cfg = xj_build_deps / "share" / "autoconf" / "autom4te.cfg"
+    assert autom4te_cfg.is_file()
+    files_to_cook.append(autom4te_cfg)
+
+    # automake, aclocal, and autoconf scripts (including versioned variants)
+    bindir = xj_build_deps / "bin"
+    for pattern in ["automake*", "aclocal*"]:
+        files_to_cook.extend(bindir.glob(pattern))
+    for name in [
+        "autoconf",
+        "autoreconf",
+        "autoheader",
+        "autom4te",
+        "autoscan",
+        "autoupdate",
+        "ifnames",
+    ]:
+        files_to_cook.append(bindir / name)
+
+    say("Cooking automake/aclocal/autoconf...")
+    for filepath in files_to_cook:
+        with open(filepath, "rb") as f:
+            data = f.read()
+
+        if placeholder not in data:
+            # This file doesn't need cooking (or was already cooked)
+            continue
+
+        data = data.replace(placeholder, replacement)
+
+        with open(filepath, "wb") as ftc:
+            ftc.write(data)
+
+    say("... done cooking automake/aclocal.")
+
+
 def provision_10j_deps_with(version: str, keyname: str):
     match platform.system():
         case "Linux":
@@ -1488,6 +1546,7 @@ def provision_10j_deps_with(version: str, keyname: str):
             download_and_extract_tarball(url, target, ctx="(builddeps) ")
             cook_pkg_config_within()
             cook_m4_within()
+            cook_automake_and_autoconf_within()
 
         case "Darwin":
             # For macOS, we don't do hermetic build deps; instead, we rely on homebrew.
