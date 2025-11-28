@@ -6,6 +6,7 @@ from pathlib import Path
 import tomllib
 import os
 from typing import Sequence
+import platform
 
 import click
 
@@ -93,10 +94,17 @@ def mk_env_for(localdir: Path, with_tenjin_deps=True, env_ext=None, **kwargs) ->
             env["PATH"],
         ])
 
-        env["LD_LIBRARY_PATH"] = os.pathsep.join([
+        sysroot_plat_lib_path = []
+        if platform.system() == "Linux":
+            triple = f"{platform.machine()}-linux-gnu"
+            sysroot_plat_lib_path = [str(llvm_root / "sysroot" / "usr" / "lib" / triple)]
+
+        ld_lib_paths = [
             str(llvm_root / "lib"),
+            *sysroot_plat_lib_path,
             env.get("LD_LIBRARY_PATH", ""),
-        ])
+        ]
+        env["LD_LIBRARY_PATH"] = os.pathsep.join(ld_lib_paths)
 
     return env
 
