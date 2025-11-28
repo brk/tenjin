@@ -794,9 +794,9 @@ def provision_debian_bullseye_sysroot_with(dest_sysroot: Path):
     # These don't go in WANT because they're quite stable;
     # we don't expect to need a new version, ever.
     DEBIAN_BULLSEYE_SYSROOT_SHA256SUMS = {
-        "x86_64": "36a164623d03f525e3dfb783a5e9b8a00e98e1ddd2b5cff4e449bd016dd27e50",
-        "aarch64": "2f915d821eec27515c0c6d21b69898e23762908d8d7ccc1aa2a8f5f25e8b7e18",
-        "armhf": "47b3a0b161ca011b2b33d4fc1ef6ef269b8208a0b7e4c900700c345acdfd1814",
+        "x86_64": "dec7a3a0fc5b83b909cba1b6d119077e0429a138eadef6bf5a0f2e03b1904631",
+        "aarch64": "308e23faba3174bd01accfe358467b8a40fad4db4c49ef629da30219f65a275f",
+        "armhf": "fe81e7114b97440262bce004caf02c1514732e2fa7f99693b2836932ad1c4626",
     }
     tarball_sha256sum = DEBIAN_BULLSEYE_SYSROOT_SHA256SUMS[machine_normalized()]
 
