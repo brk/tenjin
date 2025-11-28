@@ -1339,6 +1339,13 @@ def update_10j_llvm_have(keyname: str, version: str, llvm_version: str, xj_llvm_
     HAVE.note_we_have(keyname, specifier=version)
 
 
+def get_path_of_unusual_size() -> bytes:
+    fifty = b"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    rilly = b"thisverylongpathistogiveusroomtooverwriteitlaterok"
+    twohundredfifty = fifty + fifty + fifty + fifty + rilly
+    return b"/tmp/" + twohundredfifty + b"/" + twohundredfifty
+
+
 #                COMMENTARY(pkg-config-paths)
 # pkg-config embeds various configured paths into the binary.
 # In particular, it embeds, via compiler flags during compilation,
@@ -1354,10 +1361,7 @@ def cook_pkg_config_within():
     def say(msg: str):
         sez(msg, ctx="(pkg-config) ")
 
-    fifty = b"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-    rilly = b"thisverylongpathistogiveusroomtooverwriteitlaterok"
-    twohundredfifty = fifty + fifty + fifty + fifty + rilly
-    path_of_unusual_size = b"/tmp/" + twohundredfifty + b"/" + twohundredfifty
+    path_of_unusual_size = get_path_of_unusual_size()
     libdir = path_of_unusual_size + b"/prefix/lib"
     sysinc = path_of_unusual_size + b"/sysinc:/usr/include"
     syslib = path_of_unusual_size + b"/syslib:/usr/lib:/lib"
@@ -1378,7 +1382,7 @@ def cook_pkg_config_within():
         assert len(newstuff) <= len(needle)
         if len(newstuff) < len(needle):
             # Pad the newstuff with null bytes to match the length of needle.
-            newstuff += b"\0" * (len(needle) - len(newstuff))
+            newstuff += nullbyte * (len(needle) - len(newstuff))
 
         assert len(newstuff) == len(needle)
         return haystack.replace(needle, newstuff)
@@ -1423,6 +1427,56 @@ def cook_pkg_config_within():
     assert path_of_unusual_size not in data, "Oops, pkg-config was left undercooked!"
 
 
+def cook_m4_within():
+    def say(msg: str):
+        sez(msg, ctx="(m4) ")
+
+    path_of_unusual_size = get_path_of_unusual_size()
+    localedir = path_of_unusual_size + b"/share/locale"
+    nullbyte = b"\0"
+
+    bindir = hermetic.xj_build_deps(HAVE.localdir) / "bin"
+
+    uncooked = bindir / "m4.uncooked"
+    if not uncooked.is_file():
+        # m4.uncooked may not be present in older tarballs; skip cooking if absent.
+        return
+    cooked = bindir / "m4"
+    shutil.copy(uncooked, cooked)
+
+    def replace_null_terminated_needle_in(haystack: bytes, needle: bytes, newstuff: bytes) -> bytes:
+        # Make sure it has the embedded path/data we are expecting it to have.
+        assert (needle + nullbyte) in haystack
+
+        assert len(newstuff) <= len(needle)
+        if len(newstuff) < len(needle):
+            # Pad the newstuff with null bytes to match the length of needle.
+            newstuff += nullbyte * (len(needle) - len(newstuff))
+
+        assert len(newstuff) == len(needle)
+        return haystack.replace(needle, newstuff)
+
+    say("Cooking m4...")
+    with open(cooked, "r+b") as f:
+        # Read the file into memory
+        data = f.read()
+
+        # Replace the placeholder pkgdatadir with the actual path.
+        data = replace_null_terminated_needle_in(
+            data,
+            localedir,
+            bytes(hermetic.xj_build_deps(HAVE.localdir) / "share" / "locale"),
+        )
+
+        # Write the modified data back to the file
+        f.seek(0)
+        f.write(data)
+        f.truncate()
+    say("... done cooking m4.")
+
+    assert path_of_unusual_size not in data, "Oops, m4 was left undercooked!"
+
+
 def provision_10j_deps_with(version: str, keyname: str):
     match platform.system():
         case "Linux":
@@ -1433,6 +1487,7 @@ def provision_10j_deps_with(version: str, keyname: str):
                 shutil.rmtree(target)
             download_and_extract_tarball(url, target, ctx="(builddeps) ")
             cook_pkg_config_within()
+            cook_m4_within()
 
         case "Darwin":
             # For macOS, we don't do hermetic build deps; instead, we rely on homebrew.
