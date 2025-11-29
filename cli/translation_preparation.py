@@ -400,6 +400,67 @@ def run_preparation_passes(
             ),
         )
 
+    def prep_uniquify_compdb(prev: Path, current_codebase: Path, store: PrepPassResultStore):
+        compdb = compilation_database.CompileCommands.from_json_file(
+            compdb_path_in(current_codebase)
+        )
+
+        # Some codebases will compile the same source file multiple times with different
+        # flags. It's really convenient for us if each source file is only compiled once.
+        # So we duplicate source files as needed and adjust the compilation database.
+
+        outputs = [cmd.output for cmd in compdb.commands if cmd.output is not None]
+        assert len(outputs) == len(set(outputs)), f"Output files are not unique: {outputs}"
+
+        new_commands: list[compilation_database.CompileCommand] = []
+        for abs_path in compdb.get_source_files():
+            cmds = compdb.get_commands_for_path(abs_path)
+            if len(cmds) == 1:
+                # Only one command for this file, keep as-is
+                new_commands.append(cmds[0])
+                continue
+
+            # Multiple commands for same file - need to duplicate all of them
+            for idx, cmd in enumerate(cmds):
+                # Create unique file name: foo.c -> foo_xjdup_0.c, foo_xjdup_1.c, ...
+                stem = abs_path.stem
+                suffix = abs_path.suffix
+                new_filename = f"{stem}_xjdup_{idx}{suffix}"
+                new_file_path = abs_path.parent / new_filename
+
+                # Copy the source file  to the new file
+                shutil.copyfile(abs_path, new_file_path)
+
+                # Update command arguments to reference new file
+                new_args = cmd.get_command_parts().copy()
+                for i, arg in enumerate(new_args):
+                    arg_path = Path(arg)
+                    if not arg_path.is_absolute():
+                        arg_path = cmd.directory_path / arg_path
+                    try:
+                        if arg_path.resolve() == abs_path.resolve():
+                            new_args[i] = str(new_file_path)
+                            break
+                    except OSError:
+                        # Path resolution can fail for non-existent paths
+                        pass
+
+                # Create new compile command with updated file and arguments
+                new_commands.append(
+                    compilation_database.CompileCommand(
+                        directory=cmd.directory,
+                        file=str(new_file_path),
+                        arguments=new_args if cmd.arguments else None,
+                        command=" ".join(new_args) if cmd.command else None,
+                        output=cmd.output,
+                    )
+                )
+
+        # Write updated compile_commands.json
+        compilation_database.CompileCommands(commands=new_commands).to_json_file(
+            compdb_path_in(current_codebase)
+        )
+
     def prep_localize_mutable_globals(
         prev: Path, current_codebase: Path, store: PrepPassResultStore
     ):
@@ -861,6 +922,7 @@ def run_preparation_passes(
     ] = [
         ("copy_pristine_codebase", prep_00_copy_pristine_codebase),
         ("materialize_compdb", prep_01_materialize_compdb),
+        ("uniquify_compdb", prep_uniquify_compdb),
         ("uniquify_statics", prep_uniquify_statics),
         ("split_joined_decls", prep_split_joined_decls),
         ("expand_preprocessor", prep_expand_preprocessor),
