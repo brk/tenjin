@@ -12,7 +12,7 @@ import ingest
 # See https://clang.llvm.org/docs/JSONCompilationDatabase.html
 
 
-@dataclass
+@dataclass(frozen=True)
 class CompileCommand:
     """Represents a single compile command entry from compile_commands.json"""
 
@@ -60,12 +60,22 @@ class CompileCommand:
             return shlex.split(self.command)
         return []
 
-    def set_command_parts(self, parts: list[str]):
-        """Set command as a list of arguments, regardless of original format"""
-        if self.arguments:
-            self.arguments = parts
-        elif self.command:
-            self.command = " ".join(parts)
+    def with_command_parts(self, new_parts: list[str]) -> CompileCommand:
+        """Return a copy of this CompileCommand with the command/arguments replaced."""
+        if self.arguments is not None:
+            return CompileCommand(
+                directory=self.directory,
+                file=self.file,
+                arguments=new_parts,
+                output=self.output,
+            )
+        else:
+            return CompileCommand(
+                directory=self.directory,
+                file=self.file,
+                command=" ".join(new_parts),
+                output=self.output,
+            )
 
 
 @dataclass
@@ -231,41 +241,47 @@ def rebase_compile_commands_from_to(compile_commands_path: Path, from_dir: Path,
     def update(p: str) -> str:
         return p.replace(from_dir.as_posix(), to_dir.as_posix())
 
-    ccs = CompileCommands.from_json_file(compile_commands_path)
-    for cc in ccs.commands:
-        cc.directory = update(cc.directory)
-        cc.file = update(cc.file)
-        cc.set_command_parts([update(arg) for arg in cc.get_command_parts()])
-
-    ccs.to_json_file(compile_commands_path)
+    ccs_orig = CompileCommands.from_json_file(compile_commands_path)
+    ccs: list[CompileCommand] = []
+    for cc in ccs_orig.commands:
+        parts = [update(arg) for arg in cc.get_command_parts()]
+        ccs.append(
+            CompileCommand(
+                directory=update(cc.directory),
+                file=update(cc.file),
+                command=" ".join(parts) if cc.command is not None else None,
+                arguments=parts if cc.arguments is not None else None,
+                output=cc.output,
+            )
+        )
+    CompileCommands(commands=ccs).to_json_file(compile_commands_path)
 
 
 def munge_compile_commands_for_hermetic_translation(compile_commands_path: Path):
     """Modify compile_commands.json to explicitly provide Tenjin's sysroot.
     The clang driver automatically gets this via .cfg files, but c2rust doesn't."""
-    ccs = CompileCommands.from_json_file(compile_commands_path)
-    for cc in ccs.commands:
+
+    ccs_orig = CompileCommands.from_json_file(compile_commands_path)
+    ccs: list[CompileCommand] = []
+    for cc in ccs_orig.commands:
         args = cc.get_command_parts()
-        if not args:
-            continue
-        if Path(args[0]).name in ("clang", "cc") and "-c" in args:
+        if args and Path(args[0]).name in ("clang", "cc") and "-c" in args:
             args.append("--sysroot")
             args.append(str(hermetic.xj_llvm_root(repo_root.localdir()) / "sysroot"))
 
-        cc.set_command_parts(args)
-
-    ccs.to_json_file(compile_commands_path)
+        ccs.append(cc.with_command_parts(args))
+    CompileCommands(commands=ccs).to_json_file(compile_commands_path)
 
 
 def munge_compile_commands_for_tenjin_translation(compile_commands_path: Path):
     """Modify compile_commands.json to include Tenjin-specific declarations
     and block expansion of macros that Tenjin gives special treatment."""
-    ccs = CompileCommands.from_json_file(compile_commands_path)
-    for cc in ccs.commands:
+
+    ccs_orig = CompileCommands.from_json_file(compile_commands_path)
+    ccs: list[CompileCommand] = []
+    for cc in ccs_orig.commands:
         args = cc.get_command_parts()
-        if not args:
-            continue
-        if Path(args[0]).name in ("clang", "cc") and "-c" in args:
+        if args and Path(args[0]).name in ("clang", "cc") and "-c" in args:
             args.append("-include")
             args.append(
                 str(repo_root.find_repo_root_dir_Path() / "cli" / "autoincluded_tenjin_decls.h")
@@ -279,6 +295,5 @@ def munge_compile_commands_for_tenjin_translation(compile_commands_path: Path):
             args.append("--block-macros-file=" + macros_file.as_posix())
             # See https://github.com/Aarno-Labs/llvm-project/commit/4256d14834810a78a1a61679316441172e0f0dd2
 
-        cc.set_command_parts(args)
-
-    ccs.to_json_file(compile_commands_path)
+        ccs.append(cc.with_command_parts(args))
+    CompileCommands(commands=ccs).to_json_file(compile_commands_path)
