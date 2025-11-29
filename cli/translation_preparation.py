@@ -923,16 +923,16 @@ def run_preparation_passes(
         ("copy_pristine_codebase", prep_00_copy_pristine_codebase),
         ("materialize_compdb", prep_01_materialize_compdb),
         ("uniquify_compdb", prep_uniquify_compdb),
-        ("uniquify_statics", prep_uniquify_statics),
-        ("split_joined_decls", prep_split_joined_decls),
-        ("expand_preprocessor", prep_expand_preprocessor),
-        ("run_cclzyerpp_analysis", prep_run_cclzyerpp_analysis),
-        ("localize_mutable_globals", prep_localize_mutable_globals),
-        ("lift_subfield_args", prep_lift_subfield_args),
-        # Refolding and pre-refolding should always go together.
-        # They are separate steps to allow inspection of the intermediate codebase.
-        ("pre_refold_consolidation", prep_pre_refold_consolidation),
-        ("refold_preprocessor", prep_refold_preprocessor),
+        # ("uniquify_statics", prep_uniquify_statics),
+        # ("split_joined_decls", prep_split_joined_decls),
+        # ("expand_preprocessor", prep_expand_preprocessor),
+        # ("run_cclzyerpp_analysis", prep_run_cclzyerpp_analysis),
+        # ("localize_mutable_globals", prep_localize_mutable_globals),
+        # ("lift_subfield_args", prep_lift_subfield_args),
+        # # Refolding and pre-refolding should always go together.
+        # # They are separate steps to allow inspection of the intermediate codebase.
+        # ("pre_refold_consolidation", prep_pre_refold_consolidation),
+        # ("refold_preprocessor", prep_refold_preprocessor),
     ]
 
     prev = original_codebase.absolute()
