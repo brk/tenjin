@@ -138,6 +138,49 @@ def write_synthetic_compile_commands_to(compdb_path: Path, c_file: Path, builddi
     ]).to_json_file(compdb_path)
 
 
+def extract_macro_args_affecting_content_from_compile_command(cc: CompileCommand) -> list[str]:
+    """Extract -D and -U arguments which can affect the compiler-visible
+    contents of the given file after preprocessing.
+
+    Normalizes ["-D", "KEY"] and ["-DKEY"] forms into ["-DKEY=1"].
+
+    Currently does not handle --include or -nostdinc.
+
+    Returns a list of strings each of which starts with "-D" or "-U".
+    """
+    args_affecting_content: list[str] = []
+    args = cc.get_command_parts()
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        i += 1
+        if arg in ("-D", "--define-macro") and i + 1 < len(args):
+            # If we find a bare -D, the next argument is a definition.
+            key, _, value = args[i + 1].partition("=")
+            i += 1  # Skip the value
+            args_affecting_content.append(f"-D{key}={value}")
+        elif arg.startswith("-D") and "=" in arg:
+            # Handle -Dkey=value style definitions.
+            key, _, value = arg[2:].partition("=")
+            args_affecting_content.append(f"-D{key}={value}")
+        elif arg.startswith("-D"):
+            # Handle -Dkey style definitions.
+            args_affecting_content.append(f"{arg}=1")
+        elif arg.startswith("--define-macro") and "=" in arg:
+            _, _, key = arg[2:].partition("=")
+            args_affecting_content.append(f"-D{key}=1")
+        elif arg in ("-U", "--undefine-macro") and i + 1 < len(args):
+            # Handle -U key style undefinitions.
+            args_affecting_content.append(f"-U{args[i + 1]}")
+        elif arg.startswith("-U"):
+            # Handle -Ukey style undefinitions.
+            args_affecting_content.append(arg)
+        elif arg.startswith("--undefine-macro") and "=" in arg:
+            _, _, key = arg[2:].partition("=")
+            args_affecting_content.append(f"-U{key}")
+    return args_affecting_content
+
+
 def extract_preprocessor_definitions_from_compile_commands(
     compile_commands_path: Path,
     codebase: Path,
