@@ -1308,10 +1308,9 @@ def provision_10j_llvm_with(version: str, keyname: str):
         hermetic.run_cargo_in(["clean"], repo_root.find_repo_root_dir_Path() / "c2rust")
 
         # So will xj-prepare-find-fn-ptr-decls, so we can just delete its build dir.
-        shutil.rmtree(
-            hermetic.xj_prepare_findfnptrdecls_build_dir(HAVE.localdir),
-            ignore_errors=False,
-        )
+        dirty = hermetic.xj_prepare_findfnptrdecls_build_dir(HAVE.localdir)
+        if dirty.is_dir():
+            shutil.rmtree(dirty, ignore_errors=False)
 
         # Upstream c2rust is not rebuilt automatically, so we need to do it here.
         upstream_c2rust_dir = hermetic.xj_upstream_c2rust(HAVE.localdir)
