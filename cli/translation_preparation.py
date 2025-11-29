@@ -65,6 +65,9 @@ def materialize_compilation_database_in(
             capture_output=True,
         )
         tracker.update_sub(cp)
+        compilation_database.rebase_compile_commands_from_to(
+            builddir / "compile_commands.json", builddir, codebase
+        )
     elif codebase.is_file() and codebase.suffix == ".c":
         # If we have a single C file, we can trivially generate a compile_commands.json
         # with a single entry for it.
