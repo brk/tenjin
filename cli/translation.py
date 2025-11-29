@@ -37,6 +37,8 @@ def stub_ingestion_record(codebase: Path, guidance: dict) -> ingest.TranslationR
         return None
 
     codebase_wcs = vcs_helpers.vcs_working_copy_status(codebase_vcs_dir)
+    if codebase_wcs.origin is None or codebase_wcs.commit is None:
+        return None
 
     tenjin_vcs_dir = vcs_helpers.find_containing_vcs_dir(find_repo_root_dir_Path())
     assert tenjin_vcs_dir is not None, "No VCS directory found for Tenjin?!?!"
