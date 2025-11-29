@@ -814,6 +814,18 @@ def provision_debian_bullseye_sysroot_with(dest_sysroot: Path):
     shutil.unpack_archive(tarball, dest_sysroot, filter="tar")
     tarball.unlink()
 
+    quarantine_surplus_sysroot_files(dest_sysroot)
+
+
+def quarantine_surplus_sysroot_files(debian_bullseye_sysroot: Path):
+    """The sysroot provides an assortment of system and third-party libraries.
+    We don't want to end up with conflicting system libraries, especially
+    libstdc++.so.6. So we'll use `find` to find where the host stores its
+    copy of that library, then set aside any libraries in the sysroot which
+    conflict with it or its siblings."""
+
+    pass
+
 
 def provision_opam_binary_with(opam_version: str) -> None:
     def say(msg: str):
