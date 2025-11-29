@@ -142,17 +142,17 @@ def git_working_copy_status(vcs_root: Path, origin_remote: str = "origin") -> Wo
 
     - Raises RuntimeError if the working copy does not have the expected origin remote.
     - Raises CalledProcessError if a `git` invocation fails."""
-    remotes_lines = (
-        hermetic.check_output(
-            ["git", "remote", "get-url", origin_remote],
-            cwd=vcs_root,
+    try:
+        remotes_lines = (
+            hermetic.check_output(
+                ["git", "remote", "get-url", origin_remote],
+                cwd=vcs_root,
+            )
+            .decode("utf-8")
+            .strip()
         )
-        .decode("utf-8")
-        .strip()
-    )
-
-    if not remotes_lines:
-        raise RuntimeError(f"No remote named {origin_remote} found in 'git remote get-url' output.")
+    except subprocess.CalledProcessError:
+        remotes_lines = None
 
     try:
         commit = (
