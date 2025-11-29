@@ -866,6 +866,10 @@ def quarantine_surplus_sysroot_files(debian_bullseye_sysroot: Path):
         for item in host_lib_dir.iterdir():
             host_lib_names.add(item.name)
 
+    # This file is referenced by the linker script `libm.so` in some
+    # implementations, so we must not quarantine it.
+    host_lib_names.discard("libmvec.so")
+
     if not host_lib_names:
         say("No host libraries found, skipping sysroot quarantine.")
         return
