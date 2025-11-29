@@ -5075,7 +5075,22 @@ impl<'c> Translation<'c> {
             }
 
             Unary(type_id, op, arg, lrvalue) => {
-                self.convert_unary_operator(ctx, op, override_ty.unwrap_or(type_id), arg, lrvalue)
+                let val = self.convert_unary_operator(
+                    ctx,
+                    op,
+                    override_ty.unwrap_or(type_id),
+                    arg,
+                    lrvalue,
+                )?;
+
+                // if the context wants a different type, add a cast
+                if let Some(expected_ty) = override_ty {
+                    if expected_ty != type_id {
+                        let ty = self.convert_type(expected_ty.ctype)?;
+                        return Ok(val.map(|val| mk().cast_expr(val, ty)));
+                    }
+                }
+                Ok(val)
             }
 
             Conditional(ty, cond, lhs, rhs) => {
