@@ -400,6 +400,13 @@ def run_preparation_passes(
             ),
         )
 
+        # Writing out the user-provided guidance can go pretty much wherever in the early stages.
+        json.dump(
+            guidance,
+            open(current_codebase / XJ_GUIDANCE_FILENAME, "w", encoding="utf-8"),
+            indent=2,
+        )
+
     def prep_uniquify_compdb(prev: Path, current_codebase: Path, store: PrepPassResultStore):
         compdb = compilation_database.CompileCommands.from_json_file(
             compdb_path_in(current_codebase)
@@ -877,13 +884,6 @@ def run_preparation_passes(
 
         store.decls_defined_by_headers = organize_decls_by_headers(
             collect_decls_by_rel_tu(current_codebase, restricted_to_files=local_header_paths)
-        )
-
-        # Writing out the user-provided guidance can go pretty much wherever in the early stages.
-        json.dump(
-            guidance,
-            open(current_codebase / XJ_GUIDANCE_FILENAME, "w", encoding="utf-8"),
-            indent=2,
         )
 
         # Miscellaneous tasks over, onwards with preprocessor expansion!
