@@ -1,6 +1,7 @@
-from typing import Any, Optional, cast
+from typing import Any, cast
 from dataclasses import dataclass
 from pathlib import Path
+import os.path
 
 import bencodepy
 from cmake_file_api import CMakeProject, ObjectKind
@@ -10,6 +11,13 @@ from cmake_file_api.kinds.codemodel.target.v2 import (
     TargetType,
     LinkFragmentRole,
 )
+
+
+# Path.resolve() resolves symlinks, but we want to preserve them
+def combine(path1: str, path2: str) -> str:
+    if os.path.isabs(path2):
+        return os.path.normpath(path2)
+    return os.path.normpath(os.path.join(path1, path2))
 
 
 @dataclass
@@ -22,7 +30,78 @@ class EntryInfo:
     lib_dirs: list[str]
     compile_only: bool
     shared_lib: bool
-    output: Optional[str] = None
+    output: str | None = None
+
+
+def convert_json_entries(entries: list[dict[str, Any]]) -> list[EntryInfo]:
+    entry_infos = []
+    for entry in entries:
+        old_args, entry["arguments"] = entry["arguments"], []
+        arg_iter = iter(old_args)
+
+        ei = EntryInfo(
+            entry=entry,
+            new_args=[],
+            c_inputs=[],
+            rest_inputs=[],
+            libs=[],
+            lib_dirs=[],
+            compile_only=False,
+            shared_lib=False,
+            output=None,
+        )
+
+        ei.new_args.append(next(arg_iter))  # Copy over old_args[0]
+        for arg in arg_iter:
+            if arg in {"-D", "-U", "-I", "-include"}:
+                # TODO: use the full list of `Separate` options from gcc
+                ei.new_args.append(arg)
+                ei.new_args.append(next(arg_iter))
+
+            elif arg == "-c":
+                ei.compile_only = True
+
+            elif arg == "-o":
+                ei.output = next(arg_iter)
+                ei.new_args.append(arg)
+                assert ei.output is not None
+                ei.new_args.append(ei.output)
+
+            elif arg[:2] == "-o":
+                ei.output = arg[2:]
+                ei.new_args.append(arg)
+
+            elif arg == "-l":
+                ei.libs.append(next(arg_iter))
+
+            elif arg[:2] == "-l":
+                ei.libs.append(arg[2:])
+
+            # -pthread implicitly adds -lpthread
+            elif arg == "-pthread":
+                ei.libs.append("pthread")
+                ei.new_args.append(arg)
+
+            elif arg == "-L":
+                ei.lib_dirs.append(next(arg_iter))
+
+            elif arg[:2] == "-L":
+                ei.lib_dirs.append(arg[2:])
+
+            elif arg == "-shared":
+                ei.shared_lib = True
+
+            elif arg[0] != "-" and arg[0] != "-":
+                if arg[-2:] == ".c":
+                    ei.c_inputs.append(arg)
+                else:
+                    ei.rest_inputs.append(arg)
+
+            else:
+                ei.new_args.append(arg)
+
+        entry_infos.append(ei)
+    return entry_infos
 
 
 def cmake_project_to_entry_infos(cmake_project: CMakeProject) -> list[EntryInfo]:
@@ -146,7 +225,8 @@ def extract_link_compile_commands(
             assert inp_path.is_relative_to(codebase)
 
             # TODO: handle duplicates
-            c_object = ei.output or "%s___%d.o" % (Path(inp).stem, get_fake())
+            c_object_unresolved = ei.output or "%s___%d.o" % (Path(inp).stem, get_fake())
+            c_object = resolve_in_ei_directory(ei, c_object_unresolved, builddir)
             object_map[inp] = c_object
 
             new_entry = ei.entry.copy()
@@ -158,17 +238,25 @@ def extract_link_compile_commands(
 
     for ei in filter(lambda ei: not ei.compile_only, entry_infos):
         new_entry = ei.entry.copy()
-        mapped_c_objects = list(set([object_map[inp] for inp in ei.c_inputs]))
-        c_files = [inp for inp in ei.c_inputs if inp in object_map]
-        print("mapped_c_objects:", mapped_c_objects)
-        print("c_files:", c_files)
+        # mapped_c_objects = list(set([object_map[inp] for inp in ei.c_inputs]))
+        # c_files = [inp for inp in ei.c_inputs if inp in object_map]
+        # print("c_inputs:", ei.c_inputs)
+        # print("mapped_c_objects:", mapped_c_objects)
+        # print("c_files:", c_files)
+        # print()
+        assert not ei.c_inputs
+        mapped_c_objects = []
+        c_files = []
 
         new_entry["arguments"] = ei.new_args
         # Hacky solution: c2rust-tranpile needs an absolute path here,
         # so we add a path-like prefix so that the transpiler can both
         # parse it correctly and recognize it as a bencoded link command
+        inputs = mapped_c_objects + [
+            resolve_in_ei_directory(ei, x, builddir) for x in ei.rest_inputs
+        ]
         link_info = {
-            "inputs": mapped_c_objects + ei.rest_inputs,  # FIXME: wrong order???
+            "inputs": inputs,  # FIXME: wrong order???
             "c_files": c_files,
             "libs": ei.libs,
             "lib_dirs": ei.lib_dirs,
@@ -176,11 +264,26 @@ def extract_link_compile_commands(
             # TODO: parse and add in other linker flags
             # for now, we don't do this because rustc doesn't use them
         }
-        new_entry["_c2rust_link"] = link_info  # delay bencoding, to allow editing of paths
-        # new_entry["file"] = "/c2rust/link/" + bencodepy.encode(link_info).decode("utf-8")
-        new_entry["file"] = "/c2rust/link"
-        new_entry["output"] = ei.output or "a.out"
+        # new_entry["_c2rust_link"] = link_info  # delay bencoding, to allow editing of paths
+        new_entry["file"] = "/c2rust/link/" + bencodepy.encode(link_info).decode("utf-8")
+        # new_entry["file"] = "/c2rust/link"
+        output = ei.output or "a.out"
+        # CMake's compile_commands.json output paths are relative to the build directory,
+        # even when the "directory" is a subdirectory of the build directory.
+        new_entry["output"] = resolve_in_ei_directory(ei, output, builddir)
         del new_entry["type"]
         new_entries.append(new_entry)
 
-    return new_entries
+    return sorted(new_entries, key=lambda e: e["file"])
+
+
+def resolve_in_ei_directory(ei: EntryInfo, pathbuf: str, builddir: Path) -> str:
+    if not Path(pathbuf).is_absolute():
+        # Compute a ".."-free path without calling Path.resolve(),
+        # since (especially on macOS) the builddir may be a symlink.
+        out_abs = combine(ei.entry["directory"], pathbuf)
+        p = Path(out_abs)
+        if not p.exists():
+            return pathbuf
+        assert p.is_relative_to(builddir)
+        return p.relative_to(builddir).as_posix()

@@ -56,6 +56,12 @@ def materialize_compilation_database_in(
         # If we have a CMakeLists.txt, we can generate the compile_commands.json
         cmake_project = CMakeProject(str(builddir), str(codebase), api_version=1)
         cmake_project.cmake_file_api.instrument_all()
+        cc_launcher = str(
+            repo_root.find_repo_root_dir_Path() / "cli" / "sh" / "cc-ld-intercept" / "cc"
+        )
+        ld_launcher = str(
+            repo_root.find_repo_root_dir_Path() / "cli" / "sh" / "cc-ld-intercept" / "ld"
+        )
         cp = hermetic.run(
             [
                 "cmake",
@@ -64,19 +70,63 @@ def materialize_compilation_database_in(
                 "-B",
                 str(builddir),
                 "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON",
+                f"-DCMAKE_C_COMPILER_LAUNCHER={cc_launcher}",
+                f"-DCMAKE_C_LINKER_LAUNCHER={ld_launcher}",
             ],
             check=True,
-            capture_output=True,
+            # capture_output=True,
         )
         tracker.update_sub(cp)
-        entry_infos = targets_from_cmake.cmake_project_to_entry_infos(cmake_project)
-        print("entry infos:")
-        pprint(entry_infos)
-        new_commands = targets_from_cmake.extract_link_compile_commands(
-            entry_infos, codebase, builddir
+
+        # Build the project to ensure all compile and link commands are intercepted.
+        buildcmds = codebase / ".xj-build-commands"
+        cp2 = hermetic.run(
+            [
+                "cmake",
+                "--build",
+                str(builddir),
+                "--parallel",
+            ],
+            check=True,
+            env_ext={
+                "BUILD_COMMANDS_DIRECTORY": str(buildcmds),
+            },
+            # capture_output=True,
         )
-        print("link commands:")
-        pprint(new_commands)
+        tracker.update_sub(cp2)
+
+        import json
+
+        entries = []
+        for json_file in buildcmds.glob("*.json"):
+            with open(json_file, "r", encoding="utf-8") as f:
+                entry = json.load(f)
+                # if entry["type"] != "cc":
+                #     continue  # FIXME
+                entries.append(entry)
+        parsed_entries = targets_from_cmake.convert_json_entries(entries)
+        print("parsed entries:")
+        pprint(parsed_entries)
+
+        # entry_infos = targets_from_cmake.cmake_project_to_entry_infos(cmake_project)
+        # print("entry infos:")
+        # pprint(entry_infos)
+        new_commands = targets_from_cmake.extract_link_compile_commands(
+            parsed_entries, codebase, builddir
+        )
+        # print("link commands:")
+        # pprint(new_commands)
+
+        shutil.copyfile(
+            builddir / "compile_commands.json", codebase / "compile_commands.cmake.json"
+        )
+
+        Path(codebase / "compile_commands.withlinks.json").write_text(
+            json.dumps(new_commands, indent=2), encoding="utf-8"
+        )
+        shutil.copyfile(
+            codebase / "compile_commands.withlinks.json", builddir / "compile_commands.json"
+        )
         compilation_database.rebase_compile_commands_from_to(
             builddir / "compile_commands.json", builddir, codebase
         )

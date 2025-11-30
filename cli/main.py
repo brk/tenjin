@@ -421,6 +421,32 @@ if __name__ == "__main__":
                 click.echo(f"Error occurred while running uv: {e}", err=True)
                 sys.exit(1)
             sys.exit(0)
+        # if sys.argv[1] == "convert-build-commands":
+        #     in_dir = sys.argv[2]
+        #     out_file = sys.argv[3]
+        #     out_dir = os.path.dirname(os.path.realpath(out_file))
+
+        #     import glob
+        #     import json
+
+        #     entries = []
+        #     for json_file in glob.glob(os.path.join(in_dir, "*.json")):
+        #         with open(json_file, "r", encoding="utf-8") as f:
+        #             entry = json.load(f)
+        #             # if entry["type"] != "cc":
+        #             #     continue  # FIXME
+        #             entries.append(entry)
+
+        #     import targets_from_cmake
+
+        #     parsed_entries = targets_from_cmake.convert_json_entries(entries)
+        #     new_entries = targets_from_cmake.extract_link_compile_commands(
+        #         parsed_entries, codebase=Path(out_dir), builddir=Path(builddir)
+        #     )
+        #     link_entries = [e for e in new_entries if "_c2rust_link" in e]
+        #     print(json.dumps(link_entries, indent=2))
+        #     sys.exit(0)
+
         if sys.argv[1] == "clang-ast-xml":
             sys.exit(
                 hermetic.run_shell_cmd([
@@ -431,5 +457,11 @@ if __name__ == "__main__":
                     *sys.argv[2:],
                 ]).returncode
             )
+        if sys.argv[1] == "intercept-exec" and len(sys.argv) >= 5:
+            import intercept_exec
+
+            category = sys.argv[2]
+            binary = sys.argv[3]
+            sys.exit(intercept_exec.intercept_exec(category, binary, sys.argv[4:]))
 
     cli()
