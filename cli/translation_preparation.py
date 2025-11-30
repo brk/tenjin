@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from enum import Enum
 
 from clang.cindex import CursorKind
+from cmake_file_api import CMakeProject
 
 import compilation_database
 import batching_rewriter
@@ -22,6 +23,7 @@ import hermetic
 import repo_root
 import ingest_tracking
 import llvm_bitcode_linking
+import targets_from_cmake
 from caching_file_contents import FilePathStr, CachingFileContents
 from constants import WANT, XJ_GUIDANCE_FILENAME
 
@@ -52,6 +54,8 @@ def materialize_compilation_database_in(
 
     if provided_cmakelists.exists() and not provided_compdb.exists():
         # If we have a CMakeLists.txt, we can generate the compile_commands.json
+        cmake_project = CMakeProject(str(builddir), str(codebase), api_version=1)
+        cmake_project.cmake_file_api.instrument_all()
         cp = hermetic.run(
             [
                 "cmake",
@@ -65,9 +69,13 @@ def materialize_compilation_database_in(
             capture_output=True,
         )
         tracker.update_sub(cp)
+        entry_infos = targets_from_cmake.cmake_project_to_entry_infos(cmake_project)
+        print("entry infos:")
+        pprint(entry_infos)
         compilation_database.rebase_compile_commands_from_to(
             builddir / "compile_commands.json", builddir, codebase
         )
+
     elif codebase.is_file() and codebase.suffix == ".c":
         # If we have a single C file, we can trivially generate a compile_commands.json
         # with a single entry for it.
