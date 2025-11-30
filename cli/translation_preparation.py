@@ -72,6 +72,11 @@ def materialize_compilation_database_in(
         entry_infos = targets_from_cmake.cmake_project_to_entry_infos(cmake_project)
         print("entry infos:")
         pprint(entry_infos)
+        new_commands = targets_from_cmake.extract_link_compile_commands(
+            entry_infos, codebase, builddir
+        )
+        print("link commands:")
+        pprint(new_commands)
         compilation_database.rebase_compile_commands_from_to(
             builddir / "compile_commands.json", builddir, codebase
         )

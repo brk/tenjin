@@ -1,7 +1,8 @@
 from typing import Any, Optional, cast
 from dataclasses import dataclass
-import bencodepy
+from pathlib import Path
 
+import bencodepy
 from cmake_file_api import CMakeProject, ObjectKind
 from cmake_file_api.kinds.codemodel.v2 import CodemodelV2
 from cmake_file_api.kinds.codemodel.target.v2 import (
@@ -105,7 +106,9 @@ def cmake_project_to_entry_infos(cmake_project: CMakeProject) -> list[EntryInfo]
                         elif lib_dir:
                             ei.lib_dirs.append(lib_dir)
                     elif frag.role == LinkFragmentRole.LINK_FLAGS:
-                        ei.new_args.append(frag.fragment.strip())
+                        linkfrag = frag.fragment.strip()
+                        if linkfrag:
+                            ei.new_args.append(linkfrag)
 
             entry_infos.append(ei)
 
@@ -114,41 +117,68 @@ def cmake_project_to_entry_infos(cmake_project: CMakeProject) -> list[EntryInfo]
 
 # Extracted from c2rust/scripts/convert_build_commands.py
 def extract_link_compile_commands(
-    entry_infos: list[EntryInfo], out_dir: str | None = None
+    entry_infos: list[EntryInfo], codebase: Path, builddir: Path
 ) -> list[dict]:
+    fake_ctr = -1
+
+    def get_fake() -> int:
+        nonlocal fake_ctr
+        fake_ctr += 1
+        return fake_ctr
+
     object_map = {}
     new_entries = []
-    # for ei in entry_infos:
-    #     for inp in ei.c_inputs:
-    #         # inp_path = os.path.join(entry["directory"], inp)
-    #         # inp_path = os.path.realpath(inp_path)
+    for ei in entry_infos:
+        for inp in ei.c_inputs:
+            inp_path = Path(inp)
+            if not inp_path.is_absolute():
+                abs = codebase / inp_path
+                if abs.exists():
+                    inp_path = abs
+                else:
+                    d = Path(ei.entry["directory"])
+                    abs = codebase / d / inp_path
+                    if abs.exists():
+                        inp_path = abs
 
-    #         # TODO: handle duplicates
-    #         # c_object = ei.output or "%s_%d.o" % (inp[:-2], get_fake())
-    #         # object_map[inp] = c_object
+            assert inp_path.exists(), f"Input file {inp_path} does not exist"
+            assert inp_path.is_absolute()
+            assert inp_path.is_relative_to(codebase)
 
-    #         new_entry = ei.entry.copy()
-    #         new_entry["arguments"] = ei.new_args + ["-c", inp]
-    #         new_entry["file"] = os.path.relpath(inp_path, out_dir) if out_dir else inp_path
-    #         new_entry["output"] = c_object
-    #         del new_entry["type"]
-    #         new_entries.append(new_entry)
+            # TODO: handle duplicates
+            c_object = ei.output or "%s___%d.o" % (Path(inp).stem, get_fake())
+            object_map[inp] = c_object
+
+            new_entry = ei.entry.copy()
+            new_entry["arguments"] = [*ei.new_args, "-c", inp]
+            new_entry["file"] = inp_path.as_posix()  # .relative_to(codebase).as_posix()
+            new_entry["output"] = c_object
+            del new_entry["type"]
+            new_entries.append(new_entry)
 
     for ei in filter(lambda ei: not ei.compile_only, entry_infos):
         new_entry = ei.entry.copy()
-        c_objects = [object_map[inp] for inp in ei.c_inputs]
+        mapped_c_objects = list(set([object_map[inp] for inp in ei.c_inputs]))
+        c_files = [inp for inp in ei.c_inputs if inp in object_map]
+        print("mapped_c_objects:", mapped_c_objects)
+        print("c_files:", c_files)
+
         new_entry["arguments"] = ei.new_args
         # Hacky solution: c2rust-tranpile needs an absolute path here,
         # so we add a path-like prefix so that the transpiler can both
         # parse it correctly and recognize it as a bencoded link command
-        new_entry["file"] = "/c2rust/link/" + bencodepy.encode({
-            "inputs": c_objects + ei.rest_inputs,  # FIXME: wrong order???
+        link_info = {
+            "inputs": mapped_c_objects + ei.rest_inputs,  # FIXME: wrong order???
+            "c_files": c_files,
             "libs": ei.libs,
             "lib_dirs": ei.lib_dirs,
             "type": "shared" if ei.shared_lib else "exe",
             # TODO: parse and add in other linker flags
             # for now, we don't do this because rustc doesn't use them
-        })
+        }
+        new_entry["_c2rust_link"] = link_info  # delay bencoding, to allow editing of paths
+        # new_entry["file"] = "/c2rust/link/" + bencodepy.encode(link_info).decode("utf-8")
+        new_entry["file"] = "/c2rust/link"
         new_entry["output"] = ei.output or "a.out"
         del new_entry["type"]
         new_entries.append(new_entry)
