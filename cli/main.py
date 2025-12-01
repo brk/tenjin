@@ -86,10 +86,6 @@ def cli():
     help="Name of the crate to generate (default: 'tenjinized').",
 )
 @click.option(
-    "--c_main_in",
-    help="Relative path to the main C file to translate.",
-)
-@click.option(
     "--guidance",
     help="Guidance for the translation process. Path or JSON literal.",
 )
@@ -102,7 +98,7 @@ def cli():
     help="If the results directory already exists, delete its contents.",
     is_flag=True,
 )
-def translate(codebase, resultsdir, cratename, c_main_in, guidance, buildcmd, reset_resultsdir):
+def translate(codebase, resultsdir, cratename, guidance, buildcmd, reset_resultsdir):
     root = repo_root.find_repo_root_dir_Path()
     cli_subcommands.do_build_star()
 
@@ -125,9 +121,7 @@ def translate(codebase, resultsdir, cratename, c_main_in, guidance, buildcmd, re
             else:
                 item.unlink()
 
-    translation.do_translate(
-        root, Path(codebase), resultsdir, cratename, guidance, c_main_in, buildcmd
-    )
+    translation.do_translate(root, Path(codebase), resultsdir, cratename, guidance, buildcmd)
 
 
 @cli.command()

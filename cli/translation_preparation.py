@@ -34,7 +34,11 @@ def elapsed_ms_of_ns(start_ns: int, end_ns: int) -> float:
 
 
 def materialize_compilation_database_in(
-    builddir: Path, codebase: Path, buildcmd: str | None, tracker: ingest_tracking.TimingRepo
+    builddir: Path,
+    codebase: Path,
+    buildcmd: str | None,
+    tracker: ingest_tracking.TimingRepo,
+    mut_cmake_exe_targets: list[str] | None = None,
 ):
     """Leaves a copy of a provided-or-generated compile_commands.json file
     in the given build directory.
@@ -95,8 +99,6 @@ def materialize_compilation_database_in(
         )
         tracker.update_sub(cp2)
 
-        import json
-
         entries = []
         for json_file in buildcmds.glob("*.json"):
             with open(json_file, "r", encoding="utf-8") as f:
@@ -105,12 +107,15 @@ def materialize_compilation_database_in(
                 #     continue  # FIXME
                 entries.append(entry)
         parsed_entries = targets_from_cmake.convert_json_entries(entries)
-        print("parsed entries:")
-        pprint(parsed_entries)
+        # print("parsed entries:")
+        # pprint(parsed_entries)
 
         # entry_infos = targets_from_cmake.cmake_project_to_entry_infos(cmake_project)
         # print("entry infos:")
         # pprint(entry_infos)
+
+        targets_from_cmake.collect_executable_target_names(cmake_project, mut_cmake_exe_targets)
+
         new_commands = targets_from_cmake.extract_link_compile_commands(
             parsed_entries, codebase, builddir
         )
@@ -426,6 +431,7 @@ class PrepPassResultStore:
     decls_defined_after_pp: dict[
         RelativeFilePathStr, dict[QUSS, tuple[FilePathStr, int, int, FileContentsStr]]
     ]
+    cmake_exe_targets: list[str]
 
 
 def run_preparation_passes(
@@ -434,8 +440,9 @@ def run_preparation_passes(
     tracker: ingest_tracking.TimingRepo,
     guidance: dict,
     buildcmd: str | None = None,
-) -> Path:
-    """Returns the path to the final prepared codebase directory."""
+) -> tuple[Path, list[str]]:
+    """Returns the path to the final prepared codebase directory,
+    along with a list of CMake executable targets (if applicable)."""
 
     def prep_00_copy_pristine_codebase(pristine: Path, newdir: Path, store: PrepPassResultStore):
         if pristine.is_file():
@@ -447,7 +454,9 @@ def run_preparation_passes(
     def prep_01_materialize_compdb(prev: Path, current_codebase: Path, store: PrepPassResultStore):
         with tempfile.TemporaryDirectory() as builddirname:
             builddir = Path(builddirname)
-            materialize_compilation_database_in(builddir, current_codebase, buildcmd, tracker)
+            materialize_compilation_database_in(
+                builddir, current_codebase, buildcmd, tracker, store.cmake_exe_targets
+            )
             # The generated compile_commands.json is in builddir and refers to current_codebase.
 
             compdb_contents = compdb_path_in(builddir).read_text()
@@ -525,6 +534,12 @@ def run_preparation_passes(
                         output=cmd.output,
                     )
                 )
+
+        # compdb.get_source_files() ignores fake link thingy commands,
+        # so we need to add them back in.
+        for cmd in compdb.commands:
+            if cmd.is_fake_link_thingy:
+                new_commands.append(cmd)
 
         # Write updated compile_commands.json
         compilation_database.CompileCommands(commands=new_commands).to_json_file(
@@ -1001,7 +1016,9 @@ def run_preparation_passes(
     prev = original_codebase.absolute()
     resultsdir_abs = resultsdir.absolute()
 
-    store = PrepPassResultStore(decls_defined_by_headers={}, decls_defined_after_pp={})
+    store = PrepPassResultStore(
+        decls_defined_by_headers={}, decls_defined_after_pp={}, cmake_exe_targets=[]
+    )
 
     # Note: the original codebase may be a file or directory,
     # but after the first round, `prev` always refers to a directory.
@@ -1021,4 +1038,4 @@ def run_preparation_passes(
 
             prev = newdir
 
-    return prev
+    return prev, store.cmake_exe_targets

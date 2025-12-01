@@ -290,7 +290,7 @@ fn emit_cargo_toml(
             "crate_name": ccfg.crate_name,
             "crate_rust_name": ccfg.crate_name.replace('-', "_"),
             "crate_types": ccfg.link_cmd.r#type.as_cargo_types(),
-            "is_library": ccfg.link_cmd.r#type.is_library(),
+            "is_library": "true", // ccfg.link_cmd.r#type.is_library(),
             "lib_rs_file": get_lib_rs_file_name(tcfg),
             "binaries": binaries,
             "dependencies": dependencies,

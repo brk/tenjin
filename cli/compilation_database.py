@@ -51,6 +51,11 @@ class CompileCommand:
             return Path(self.file)
         return self.directory_path / self.file
 
+    @property
+    def is_fake_link_thingy(self) -> bool:
+        """Check if this compile command corresponds to a fake link thingy created during linking."""
+        return self.file.startswith("/c2rust/link/")
+
     def get_command_parts(self) -> list[str]:
         """Get command as a list of arguments, regardless of original format"""
         if self.arguments:
@@ -118,11 +123,13 @@ class CompileCommands:
 
     def get_source_files(self) -> list[Path]:
         """Get all unique source files (as absolute paths)"""
-        return list(set(cmd.absolute_file_path for cmd in self.commands))
+        return list(
+            set(cmd.absolute_file_path for cmd in self.commands if not cmd.is_fake_link_thingy)
+        )
 
     def get_directories(self) -> list[Path]:
         """Get all unique directories"""
-        return list(set(cmd.directory_path for cmd in self.commands))
+        return list(set(cmd.directory_path for cmd in self.commands if not cmd.is_fake_link_thingy))
 
     def get_commands_for_path(self, path: Path) -> list[CompileCommand]:
         """Get all commands for a specific source file, which should be an absolute path."""

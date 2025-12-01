@@ -287,3 +287,28 @@ def resolve_in_ei_directory(ei: EntryInfo, pathbuf: str, builddir: Path) -> str:
             return pathbuf
         assert p.is_relative_to(builddir)
         return p.relative_to(builddir).as_posix()
+
+
+def collect_executable_target_names(
+    cmake_project: CMakeProject,
+    mut_cmake_exe_targets: list[str] | None,
+) -> None:
+    """
+    Collect names of executable targets from a CMakeProject
+    into the provided list.
+    """
+    if mut_cmake_exe_targets is None:
+        return
+
+    results = cmake_project.cmake_file_api.inspect_all()
+    codemodel_v2 = cast(CodemodelV2, results[ObjectKind.CODEMODEL][2])
+
+    for config in codemodel_v2.configurations:
+        for cmake_target in config.targets:
+            target: CodemodelTargetV2 = cmake_target.target
+
+            # Only process EXECUTABLE targets
+            if target.type != TargetType.EXECUTABLE:
+                continue
+
+            mut_cmake_exe_targets.append(target.name)

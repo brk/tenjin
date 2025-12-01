@@ -21,6 +21,7 @@ import ingest_tracking
 import hermetic
 import vcs_helpers
 import static_measurements_rust
+from c_refact_identify_mains import find_main_translation_units
 from translation_preparation import run_preparation_passes
 from translation_improvement import run_improvement_passes
 from constants import XJ_GUIDANCE_FILENAME
@@ -177,41 +178,6 @@ def create_translation_snapshot(
     return results_snapshot
 
 
-def choose_c_main_filename(codebase: Path, c_main_in: str | None) -> str | None:
-    if not c_main_in and codebase.is_file() and codebase.suffix == ".c":
-        if b"main(" in codebase.read_bytes():
-            c_main_in = codebase.name
-
-    if not c_main_in and (codebase / "main.c").is_file():
-        c_main_in = "main.c"
-
-    if not c_main_in and (codebase / "src" / "main.c").is_file():
-        c_main_in = "main.c"
-
-    return c_main_in
-
-
-def choose_c2rust_transpile_flags(codebase: Path, c_main_in: str | None) -> list[str]:
-    c2rust_transpile_flags = [
-        "--translate-const-macros",
-        "conservative",
-        "--reduce-type-annotations",
-        "--disable-refactoring",
-    ]
-
-    c_main_filename = choose_c_main_filename(codebase, c_main_in)
-
-    if c_main_filename:
-        if c_main_filename == "tree.c":
-            c_main_filename = "tree_nolines.c"
-
-        c2rust_transpile_flags.extend(["--binary", c_main_filename.removesuffix(".c")])
-    else:
-        c2rust_transpile_flags.extend(["--emit-build-files"])
-
-    return c2rust_transpile_flags
-
-
 def apply_behind_the_scenes_guidance_to(guidance: dict) -> dict:
     # Some bits of guidance are internal to Tenjin and not exposed to users.
 
@@ -228,7 +194,6 @@ def do_translate(
     resultsdir: Path,
     cratename: str,
     guidance_path_or_literal: str,
-    c_main_in: str | None = None,
     buildcmd: str | None = None,
 ):
     """
@@ -249,16 +214,40 @@ def do_translate(
 
     tracker = ingest_tracking.TimingRepo(stub_ingestion_record(codebase, guidance))
 
-    c2rust_transpile_flags = choose_c2rust_transpile_flags(codebase, c_main_in)
-
     skip_remainder_of_translation = False
     resultsdir.mkdir(parents=True, exist_ok=True)
 
     # Preparation passes may modify the guidance stored in XJ_GUIDANCE_FILENAME
-    final_prepared_codebase = run_preparation_passes(
+    final_prepared_codebase, cmake_exe_targets = run_preparation_passes(
         codebase, resultsdir, tracker, guidance, buildcmd
     )
     compdb = final_prepared_codebase / "compile_commands.json"
+
+    c2rust_transpile_flags = [
+        "--translate-const-macros",
+        "conservative",
+        "--reduce-type-annotations",
+        "--disable-refactoring",
+    ]
+
+    if False and cmake_exe_targets:
+        for target in cmake_exe_targets:
+            c2rust_transpile_flags.extend([
+                "--binary",
+                target,
+            ])
+    else:
+        ccs_with_main_funcs = find_main_translation_units(
+            compilation_database.CompileCommands.from_json_file(compdb)
+        )
+        if ccs_with_main_funcs:
+            for cmd in ccs_with_main_funcs:
+                c2rust_transpile_flags.extend([
+                    "--binary",
+                    cmd.absolute_file_path.stem,
+                ])
+        else:
+            c2rust_transpile_flags.extend(["--emit-build-files"])
 
     # Preparation passes can modify the guidance.
     xj_c2rust_transpile_flags = [
