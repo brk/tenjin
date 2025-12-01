@@ -364,7 +364,16 @@ pub fn transpile(tcfg: TranspilerConfig, cc_db: &Path, extra_clang_args: &[&str]
             }
         }
 
-        let results = cmds
+        let non_link_cmds = cmds
+            .iter()
+            .filter(|cmd| {
+                !cmd.abs_file()
+                    .to_str()
+                    .unwrap()
+                    .starts_with("/c2rust/link/")
+            })
+            .collect::<Vec<_>>();
+        let results = non_link_cmds
             .iter()
             .map(|cmd| {
                 transpile_single(

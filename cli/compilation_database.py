@@ -203,6 +203,8 @@ def extract_preprocessor_definitions_from_compile_commands(
         # command_info["directory"] is build directory, which can be
         # located anywhere; it has no relation to the source file path.
         resolved_file_path = cc.file_path.resolve()
+        if resolved_file_path.as_posix().startswith("/c2rust/link/"):
+            continue  # Skip fake "files" created during linking
         resolved_codebase_path = codebase.resolve()
         if resolved_file_path == resolved_codebase_path:
             chosen_path = cc.file_path
