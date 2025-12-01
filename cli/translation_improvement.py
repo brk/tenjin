@@ -21,6 +21,7 @@ from speculative_rewriters import (
     SpeculativeFileRewriter,
     SpeculativeSpansEraser,
 )
+import cargo_workspace_helpers
 import static_measurements_rust
 
 
@@ -665,7 +666,10 @@ def run_improvement_passes(
             # Use explicit toolchain for checks because c2rust may use extern_types which is unstable.
             quiet_cargo(["check"], cwd=newdir)
             # Clean up the target directory so the next pass starts fresh.
-            quiet_cargo(["clean", "-p", cratename], cwd=newdir)
+            quiet_cargo(
+                ["clean", *cargo_workspace_helpers.flags_for_all_cargo_workspace_packages(newdir)],
+                cwd=newdir,
+            )
             end_ns = time.perf_counter_ns()
 
             core_ms = round(elapsed_ms_of_ns(start_ns, mid_ns))
