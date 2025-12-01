@@ -10,6 +10,7 @@ import uuid
 from platform import platform
 import hashlib
 from os import environ
+import tomllib
 
 import click
 
@@ -287,6 +288,8 @@ def do_translate(
             tracker, "xj-c2rust", c2rust_bin, compdb, output, xj_c2rust_transpile_flags
         )
 
+        fixup_binary_crates_in_workspace(output, cratename)
+
         # Normalize the unmodified translation results to end up
         # in a directory with a project-independent name.
         output = output.rename(output.with_name("00_out"))
@@ -433,3 +436,41 @@ def find_highest_numbered_dir(base: Path) -> Path | None:
                     latest_dir = item
 
     return latest_dir if latest_dir else None
+
+
+def fixup_binary_crates_in_workspace(outdir: Path, workspace_cratename: str):
+    """
+    For a binary crate in a non-trivial workspace setup,
+    it ought to `use` the associated library crate name.
+    But `c2rust` hardcodes use of the workspace's crate name.
+    So we'll do some string munging and fix it up.
+    """
+
+    def fixup(rs_path: str, member_cratename: str):
+        rs_file = outdir / member_cratename / rs_path
+        content = rs_file.read_text(encoding="utf-8")
+        fixed_content = content.replace(
+            f"use ::{workspace_cratename}::",
+            f"use ::{member_cratename}::",
+        )
+        rs_file.write_text(fixed_content, encoding="utf-8")
+
+    cargo_toml_path = outdir / "Cargo.toml"
+    ct = tomllib.load(cargo_toml_path.open("rb"))
+    if "workspace" not in ct:
+        return
+    member_names = ct["workspace"].get("members", [])
+    if len(member_names) <= 1:
+        return
+
+    for member in member_names:
+        member_path = outdir / member
+        if not member_path.is_dir():
+            continue
+        member_ct_path = member_path / "Cargo.toml"
+        if not member_ct_path.is_file():
+            continue
+        member_ct = tomllib.load(member_ct_path.open("rb"))
+        if "bin" in member_ct:
+            for rcd in member_ct["bin"]:
+                fixup(rcd["path"], member)
