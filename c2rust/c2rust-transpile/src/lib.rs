@@ -152,6 +152,12 @@ impl TranspilerConfig {
     }
 }
 
+#[derive(Serialize)]
+struct WorkspaceCrateDetails {
+    name: String,
+    path: String,
+}
+
 #[derive(Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum ExternCrate {
     C2RustBitfields,

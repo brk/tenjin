@@ -11,10 +11,10 @@ use serde_json::json;
 
 use super::compile_cmds::LinkCmd;
 use super::TranspilerConfig;
-use crate::get_module_name;
 use crate::CrateSet;
 use crate::ExternCrateDetails;
 use crate::PragmaSet;
+use crate::{get_module_name, WorkspaceCrateDetails};
 
 #[derive(Debug, Copy, Clone)]
 pub enum BuildDirectoryContents {
@@ -271,12 +271,13 @@ fn emit_cargo_toml(
     crate_cfg: &Option<CrateConfig<'_>>,
     workspace_members: Option<Vec<String>>,
 ) {
+    let workspace_members_vec = workspace_members.unwrap_or_default();
     // rust_checks_path is gone because we don't want to refer to the source
     // path but instead want the cross-check libs to be installed via cargo.
     let mut json = json!({
-        "is_workspace": workspace_members.is_some(),
+        "is_workspace": workspace_members_vec.len() > 1,
         "is_crate": crate_cfg.is_some(),
-        "workspace_members": workspace_members.unwrap_or_default(),
+        "workspace_members": workspace_members_vec,
     });
     if let Some(ccfg) = crate_cfg {
         let binaries = convert_module_list(
@@ -286,6 +287,21 @@ fn emit_cargo_toml(
             ModuleSubset::Binaries,
         );
         let dependencies = convert_dependencies_list(ccfg.crates.clone());
+        let mut cdylib_path_dependencies = vec![];
+        for input in ccfg.link_cmd.inputs.iter() {
+            if input.ends_with(".so") {
+                let module_name = Path::new(input)
+                    .file_stem()
+                    .unwrap()
+                    .to_str()
+                    .unwrap()
+                    .to_string();
+                cdylib_path_dependencies.push(WorkspaceCrateDetails {
+                    name: module_name.clone(),
+                    path: format!("../{}", module_name),
+                });
+            }
+        }
         let crate_json = json!({
             "crate_name": ccfg.crate_name,
             "crate_rust_name": ccfg.crate_name.replace('-', "_"),
@@ -294,6 +310,7 @@ fn emit_cargo_toml(
             "lib_rs_file": get_lib_rs_file_name(tcfg),
             "binaries": binaries,
             "dependencies": dependencies,
+            "cdylib_path_dependencies": cdylib_path_dependencies,
         });
         json.as_object_mut().unwrap().extend(
             crate_json

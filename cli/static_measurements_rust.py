@@ -111,7 +111,7 @@ def get_clippy_messages_json(
     and the `subprocess.CompletedProcess` object."""
     assert cargo_project_dir.is_dir(), "The provided path must be a directory"
 
-    res = hermetic.run_cargo_in(
+    res = hermetic.run_cargo_on_translated_code(
         [
             hermetic.tenjin_multitool_toolchain_specifier(),
             "clippy",
