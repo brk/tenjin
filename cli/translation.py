@@ -277,6 +277,7 @@ def do_translate(
     # We must explicitly pass c2rust our sysroot
     compilation_database.munge_compile_commands_for_hermetic_translation(compdb)
 
+    click.echo("Running upstream c2rust translation...")
     # First run the upstream c2rust tool to get a baseline translation.
     run_upstream_c2rust(tracker, c2rust_transpile_flags, compdb, output)
 
@@ -292,6 +293,7 @@ def do_translate(
     target_subdir = environ.get("XJ_BUILD_RS_PROFILE", "debug")
     c2rust_bin = root / "c2rust" / "target" / target_subdir / "c2rust"
     try:
+        click.echo("Running Tenjin's c2rust translation...")
         _xj_cp = run_c2rust(
             tracker, "xj-c2rust", c2rust_bin, compdb, output, xj_c2rust_transpile_flags
         )
