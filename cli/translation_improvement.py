@@ -21,6 +21,7 @@ from speculative_rewriters import (
     SpeculativeFileRewriter,
     SpeculativeSpansEraser,
 )
+import cargo_workspace_helpers
 import static_measurements_rust
 
 
@@ -598,12 +599,30 @@ def run_improvement_passes(
     root: Path, output: Path, resultsdir: Path, cratename: str, tracker: ingest_tracking.TimingRepo
 ):
     def run_cargo_fmt(_root: Path, dir: Path) -> CompletedProcess:
-        return hermetic.run_cargo_on_translated_code(
+        cp1 = hermetic.run_cargo_in(
             ["fmt"],
             cwd=dir,
             check=False,  # formatting failure is not a fatal error
             capture_output=True,
         )
+        if cp1.returncode != 0:
+            if b"left behind trailing whitespace" in cp1.stderr:
+                for rs_file in dir.rglob("*.rs"):
+                    if not rs_file.is_file():
+                        continue
+                    with rs_file.open("r", encoding="utf-8") as f:
+                        lines = f.readlines()
+                    with rs_file.open("w", encoding="utf-8") as f:
+                        for line in lines:
+                            f.write(line.rstrip() + "\n")
+                cp2 = hermetic.run_cargo_on_translated_code(
+                    ["fmt"],
+                    cwd=dir,
+                    check=False,
+                    capture_output=True,
+                )
+                return cp2
+        return cp1
 
     def run_cargo_fix(_root: Path, dir: Path) -> CompletedProcess:
         return hermetic.run_cargo_on_translated_code(
@@ -665,7 +684,10 @@ def run_improvement_passes(
             # Use explicit toolchain for checks because c2rust may use extern_types which is unstable.
             quiet_cargo(["check"], cwd=newdir)
             # Clean up the target directory so the next pass starts fresh.
-            quiet_cargo(["clean", "-p", cratename], cwd=newdir)
+            quiet_cargo(
+                ["clean", *cargo_workspace_helpers.flags_for_all_cargo_workspace_packages(newdir)],
+                cwd=newdir,
+            )
             end_ns = time.perf_counter_ns()
 
             core_ms = round(elapsed_ms_of_ns(start_ns, mid_ns))

@@ -18,19 +18,8 @@ def do_check_py_fmt():
 def do_check_py():
     root = repo_root.find_repo_root_dir_Path()
     hermetic.check_call_uv("run ruff check --quiet".split(), cwd=root)
-    hermetic.check_call_uv(
-        [
-            "run",
-            "mypy",
-            root / "cli" / "main.py",
-            root / "cli" / "repo_root.py",
-            root / "cli" / "constants.py",
-            root / "cli" / "sha256sum.py",
-            root / "cli" / "provisioning.py",
-            root / "cli" / "translation.py",
-        ],
-        cwd=root,
-    )
+    cli_py_files = (root / "cli").glob("*.py")
+    hermetic.check_call_uv(["run", "mypy", *cli_py_files], cwd=root)
     do_check_py_fmt()
 
 
@@ -111,4 +100,64 @@ def do_test_unit_rs():
         cwd=root / "c2rust",
         check=True,
         env_ext=env_ext,
+    )
+
+
+def do_build_star():
+    do_build_xj_prepare_findfnptrdecls()
+    do_build_xj_prepare_locatejoineddecls()
+    do_build_rs(repo_root.find_repo_root_dir_Path())
+
+
+def do_build_xj_prepare_findfnptrdecls(capture_output: bool = False):
+    root = repo_root.find_repo_root_dir_Path()
+    builddir = hermetic.xj_prepare_findfnptrdecls_build_dir(repo_root.localdir())
+
+    if not builddir.exists():
+        hermetic.run(
+            [
+                "cmake",
+                "-GNinja",
+                "-S",
+                (root / "xj-prepare-findfnptrdecls").as_posix(),
+                "-B",
+                builddir.as_posix(),
+            ],
+            cwd=root,
+            check=True,
+            capture_output=capture_output,
+        )
+
+    hermetic.run(
+        ["cmake", "--build", builddir.as_posix()],
+        cwd=root,
+        capture_output=capture_output,
+        check=True,
+    )
+
+
+def do_build_xj_prepare_locatejoineddecls(capture_output: bool = False):
+    root = repo_root.find_repo_root_dir_Path()
+    builddir = hermetic.xj_prepare_locatejoineddecls_build_dir(repo_root.localdir())
+
+    if not builddir.exists():
+        hermetic.run(
+            [
+                "cmake",
+                "-GNinja",
+                "-S",
+                (root / "xj-prepare-printdecllocs").as_posix(),
+                "-B",
+                builddir.as_posix(),
+            ],
+            cwd=root,
+            check=True,
+            capture_output=capture_output,
+        )
+
+    hermetic.run(
+        ["cmake", "--build", builddir.as_posix()],
+        cwd=root,
+        check=True,
+        capture_output=capture_output,
     )

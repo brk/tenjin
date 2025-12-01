@@ -86,10 +86,6 @@ def cli():
     help="Name of the crate to generate (default: 'tenjinized').",
 )
 @click.option(
-    "--c_main_in",
-    help="Relative path to the main C file to translate.",
-)
-@click.option(
     "--guidance",
     help="Guidance for the translation process. Path or JSON literal.",
 )
@@ -102,9 +98,9 @@ def cli():
     help="If the results directory already exists, delete its contents.",
     is_flag=True,
 )
-def translate(codebase, resultsdir, cratename, c_main_in, guidance, buildcmd, reset_resultsdir):
+def translate(codebase, resultsdir, cratename, guidance, buildcmd, reset_resultsdir):
     root = repo_root.find_repo_root_dir_Path()
-    cli_subcommands.do_build_rs(root)
+    cli_subcommands.do_build_star()
 
     if Path(codebase).is_dir() and list(Path(codebase).glob("*.*")) == []:
         click.echo(
@@ -125,9 +121,7 @@ def translate(codebase, resultsdir, cratename, c_main_in, guidance, buildcmd, re
             else:
                 item.unlink()
 
-    translation.do_translate(
-        root, Path(codebase), resultsdir, cratename, guidance, c_main_in, buildcmd
-    )
+    translation.do_translate(root, Path(codebase), resultsdir, cratename, guidance, buildcmd)
 
 
 @cli.command()
@@ -135,6 +129,7 @@ def translate(codebase, resultsdir, cratename, c_main_in, guidance, buildcmd, re
 def translate_and_run(c_file_or_codebase):
     root = repo_root.find_repo_root_dir_Path()
     cli_subcommands.do_build_rs(root, capture_output=True)
+    cli_subcommands.do_build_xj_prepare_findfnptrdecls(capture_output=True)
 
     with tempfile.TemporaryDirectory() as tempdir:
         tempdir_path = Path(tempdir)
@@ -375,6 +370,18 @@ def check_e2e_smoke_tests(testnames):
         fn()
 
 
+@cli.command(hidden=True)
+def synthesize_compilation_database_for(file: Path):
+    """Emit a trivial compilation database JSON for the given C file to stdout."""
+    import compilation_database  # noqa: PLC0415
+
+    compilation_database.write_synthetic_compile_commands_to(
+        compdb_path=Path("/dev/stdout"),
+        c_file=file,
+        builddir=file.parent,
+    )
+
+
 if __name__ == "__main__":
     # Per its own documentation, Click does not support losslessly forwarding
     # command line arguments. So when we want to do that, we bypass Click.
@@ -408,6 +415,32 @@ if __name__ == "__main__":
                 click.echo(f"Error occurred while running uv: {e}", err=True)
                 sys.exit(1)
             sys.exit(0)
+        # if sys.argv[1] == "convert-build-commands":
+        #     in_dir = sys.argv[2]
+        #     out_file = sys.argv[3]
+        #     out_dir = os.path.dirname(os.path.realpath(out_file))
+
+        #     import glob
+        #     import json
+
+        #     entries = []
+        #     for json_file in glob.glob(os.path.join(in_dir, "*.json")):
+        #         with open(json_file, "r", encoding="utf-8") as f:
+        #             entry = json.load(f)
+        #             # if entry["type"] != "cc":
+        #             #     continue  # FIXME
+        #             entries.append(entry)
+
+        #     import targets_from_cmake
+
+        #     parsed_entries = targets_from_cmake.convert_json_entries(entries)
+        #     new_entries = targets_from_cmake.extract_link_compile_commands(
+        #         parsed_entries, codebase=Path(out_dir), builddir=Path(builddir)
+        #     )
+        #     link_entries = [e for e in new_entries if "_c2rust_link" in e]
+        #     print(json.dumps(link_entries, indent=2))
+        #     sys.exit(0)
+
         if sys.argv[1] == "clang-ast-xml":
             sys.exit(
                 hermetic.run_shell_cmd([
@@ -418,5 +451,11 @@ if __name__ == "__main__":
                     *sys.argv[2:],
                 ]).returncode
             )
+        if sys.argv[1] == "intercept-exec" and len(sys.argv) >= 5:
+            import intercept_exec
+
+            category = sys.argv[2]
+            binary = sys.argv[3]
+            sys.exit(intercept_exec.intercept_exec(category, binary, sys.argv[4:]))
 
     cli()

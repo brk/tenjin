@@ -225,10 +225,7 @@ fn trim_dead_items(tcx: TyCtxt, args: XjImproveMultitoolPluginArgs) {
     for def in crate_dead {
         if let Some(def_span) = defspans.get(&def) {
             span_eraser.add_span(*def_span);
-
-            if extracted.top_item_defs.contains(&def) {
-                span_eraser.mark_top_item_span_for_attribute_erasure(*def_span);
-            }
+            span_eraser.mark_item_span_for_attribute_erasure(*def_span);
         }
     }
 

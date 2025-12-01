@@ -5075,7 +5075,22 @@ impl<'c> Translation<'c> {
             }
 
             Unary(type_id, op, arg, lrvalue) => {
-                self.convert_unary_operator(ctx, op, override_ty.unwrap_or(type_id), arg, lrvalue)
+                let val = self.convert_unary_operator(
+                    ctx,
+                    op,
+                    override_ty.unwrap_or(type_id),
+                    arg,
+                    lrvalue,
+                )?;
+
+                // if the context wants a different type, add a cast
+                if let Some(expected_ty) = override_ty {
+                    if expected_ty != type_id {
+                        let ty = self.convert_type(expected_ty.ctype)?;
+                        return Ok(val.map(|val| mk().cast_expr(val, ty)));
+                    }
+                }
+                Ok(val)
             }
 
             Conditional(ty, cond, lhs, rhs) => {
@@ -5166,7 +5181,7 @@ impl<'c> Translation<'c> {
                 )
                 .map_err(|e| e.add_loc(self.ast_context.display_loc(src_loc))),
 
-            ArraySubscript(_, ref lhs, ref rhs, _) => {
+            ArraySubscript(type_id, ref lhs, ref rhs, _) => {
                 let lhs_node = &self.ast_context.index(*lhs).kind;
                 let rhs_node = &self.ast_context.index(*rhs).kind;
 
@@ -5200,7 +5215,7 @@ impl<'c> Translation<'c> {
                 }
 
                 let rhs = self.convert_expr(ctx.used(), *rhs, None)?;
-                rhs.and_then(|rhs| {
+                let result: Result<WithStmts<Box<Expr>>, _> = rhs.and_then(|rhs| {
                     let simple_index_array = if ctx.needs_address() {
                         // We can't necessarily index into an array if we're using
                         // that element to compute an address.
@@ -5307,7 +5322,17 @@ impl<'c> Translation<'c> {
                             Ok(self.pointer_offset(Some(arr), lhs, rhs, mul, false, true))
                         })
                     }
-                })
+                });
+
+                // if the context wants a different type, add a cast
+                if let Some(expected_ty) = override_ty {
+                    if expected_ty != type_id {
+                        let ty = self.convert_type(expected_ty.ctype)?;
+                        return result.map(|with_val| with_val.map(|val| mk().cast_expr(val, ty)));
+                    }
+                }
+
+                result
             }
 
             Call(call_expr_ty, func_id, ref args) => {
@@ -5653,6 +5678,18 @@ impl<'c> Translation<'c> {
 
                 if target_guided_type.is_exclusive_borrow() && !expr_guided_type.is_borrow() {
                     return mk().mutbl().addr_of_expr(expr);
+                }
+            } else {
+                // Have target guided type, but no expr guided type.
+                // If target is a borrow, we assume expr was a pointer.
+                if target_guided_type.is_shared_borrow() {
+                    // Coerce to `.as_ref().unwrap()`
+                    let opt = mk().method_call_expr(expr, "as_ref", Vec::<Box<Expr>>::new());
+                    return mk().method_call_expr(opt, "unwrap", Vec::<Box<Expr>>::new());
+                } else if target_guided_type.is_exclusive_borrow() {
+                    // Coerce to `.as_mut().unwrap()`
+                    let opt = mk().method_call_expr(expr, "as_mut", Vec::<Box<Expr>>::new());
+                    return mk().method_call_expr(opt, "unwrap", Vec::<Box<Expr>>::new());
                 }
             }
         }

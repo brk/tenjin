@@ -11,10 +11,10 @@ use serde_json::json;
 
 use super::compile_cmds::LinkCmd;
 use super::TranspilerConfig;
-use crate::get_module_name;
 use crate::CrateSet;
 use crate::ExternCrateDetails;
 use crate::PragmaSet;
+use crate::{get_module_name, WorkspaceCrateDetails};
 
 #[derive(Debug, Copy, Clone)]
 pub enum BuildDirectoryContents {
@@ -93,14 +93,7 @@ pub fn emit_build_files(
     }
     crate_cfg.and_then(|ccfg| {
         emit_build_rs(tcfg, &reg, build_dir, ccfg.link_cmd);
-        emit_lib_rs(
-            tcfg,
-            &reg,
-            build_dir,
-            ccfg.modules,
-            ccfg.pragmas,
-            &ccfg.crates,
-        )
+        emit_lib_rs(tcfg, &reg, build_dir, &ccfg)
     })
 }
 
@@ -234,20 +227,25 @@ fn emit_lib_rs(
     tcfg: &TranspilerConfig,
     reg: &Handlebars,
     build_dir: &Path,
-    modules: Vec<PathBuf>,
-    pragmas: PragmaSet,
-    crates: &CrateSet,
+    ccfg: &CrateConfig<'_>,
 ) -> Option<PathBuf> {
-    let modules = convert_module_list(tcfg, build_dir, modules, ModuleSubset::Libraries);
-    let crates = convert_dependencies_list(crates.clone());
+    let modules = convert_module_list(
+        tcfg,
+        build_dir,
+        ccfg.modules.to_owned(),
+        ModuleSubset::Libraries,
+    );
+    let crates = convert_dependencies_list(ccfg.crates.clone());
+    let cdylib_crate_names = compute_cdylib_crate_names(ccfg.link_cmd);
     let file_name = get_lib_rs_file_name(tcfg);
     let json = json!({
         "lib_rs_file": file_name,
         "reorganize_definitions": tcfg.reorganize_definitions,
         "translate_valist": tcfg.translate_valist,
         "modules": modules,
-        "pragmas": pragmas,
+        "pragmas": ccfg.pragmas,
         "crates": crates,
+        "cdylib_crate_names": cdylib_crate_names,
     });
 
     let output_path = build_dir.join(file_name);
@@ -271,12 +269,15 @@ fn emit_cargo_toml(
     crate_cfg: &Option<CrateConfig<'_>>,
     workspace_members: Option<Vec<String>>,
 ) {
+    let is_workspace = workspace_members.is_some();
+    let workspace_members_vec = workspace_members.unwrap_or_default();
     // rust_checks_path is gone because we don't want to refer to the source
     // path but instead want the cross-check libs to be installed via cargo.
+
     let mut json = json!({
-        "is_workspace": workspace_members.is_some(),
-        "is_crate": crate_cfg.is_some(),
-        "workspace_members": workspace_members.unwrap_or_default(),
+        "is_workspace": is_workspace,
+        "is_crate": crate_cfg.is_some() || !is_workspace,
+        "workspace_members": workspace_members_vec,
     });
     if let Some(ccfg) = crate_cfg {
         let binaries = convert_module_list(
@@ -286,14 +287,23 @@ fn emit_cargo_toml(
             ModuleSubset::Binaries,
         );
         let dependencies = convert_dependencies_list(ccfg.crates.clone());
+        let cdylib_crate_names = compute_cdylib_crate_names(ccfg.link_cmd);
+        let cdylib_path_dependencies: Vec<WorkspaceCrateDetails> = cdylib_crate_names
+            .iter()
+            .map(|module_name| WorkspaceCrateDetails {
+                name: module_name.clone(),
+                path: format!("../{}", module_name),
+            })
+            .collect();
         let crate_json = json!({
             "crate_name": ccfg.crate_name,
             "crate_rust_name": ccfg.crate_name.replace('-', "_"),
             "crate_types": ccfg.link_cmd.r#type.as_cargo_types(),
-            "is_library": ccfg.link_cmd.r#type.is_library(),
+            "is_library": "true", // ccfg.link_cmd.r#type.is_library(),
             "lib_rs_file": get_lib_rs_file_name(tcfg),
             "binaries": binaries,
             "dependencies": dependencies,
+            "cdylib_path_dependencies": cdylib_path_dependencies,
         });
         json.as_object_mut().unwrap().extend(
             crate_json
@@ -307,6 +317,22 @@ fn emit_cargo_toml(
     let output_path = build_dir.join(file_name);
     let output = reg.render(file_name, &json).unwrap();
     maybe_write_to_file(&output_path, output, tcfg.overwrite_existing);
+}
+
+fn compute_cdylib_crate_names(link_cmd: &LinkCmd) -> Vec<String> {
+    let mut res = vec![];
+    for input in link_cmd.inputs.iter() {
+        if input.ends_with(".so") {
+            let module_name = Path::new(input)
+                .file_stem()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .to_string();
+            res.push(module_name);
+        }
+    }
+    res
 }
 
 fn maybe_write_to_file(output_path: &Path, output: String, overwrite: bool) -> Option<PathBuf> {

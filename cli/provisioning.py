@@ -68,7 +68,7 @@ class TrackingWhatWeHave:
         return self._have.get(name)
 
     def compatible(self, name: str) -> InstallationState:
-        assert name in WANT
+        assert name in WANT, f"Unknown wanted item '{name}'"
         wanted_spec: str = WANT[name]
 
         if name not in self._have:
@@ -302,9 +302,16 @@ def want_ocaml():
     want("10j-ocaml", "ocaml", "OCaml", provision_ocaml_with)
 
 
+def xj_llvm_dir(keyname: str) -> Path:
+    if keyname == "10j-llvm14":
+        return hermetic.xj_llvm14_root(HAVE.localdir)
+    return hermetic.xj_llvm_root(HAVE.localdir)
+
+
 def want_10j_llvm():
-    want("10j-llvm", "llvm", "LLVM", provision_10j_llvm_with)
-    want_10j_sysroot_extras()
+    for keyname in ["10j-llvm", "10j-llvm14"]:
+        want(keyname, "llvm", "LLVM", provision_10j_llvm_with)
+        want_10j_sysroot_extras(xj_llvm_dir(keyname))
 
 
 def want_10j_rust_toolchains():
@@ -551,7 +558,7 @@ def want_codehawk_c():
     )
 
 
-def want_10j_sysroot_extras():
+def want_10j_sysroot_extras(xj_llvm_root: Path):
     if platform.system() != "Linux":
         return
 
@@ -561,12 +568,11 @@ def want_10j_sysroot_extras():
     ):
         filename = f"xj-bullseye-sysroot-extras_{machine_normalized()}.tar.xz"
         url = f"https://github.com/Aarno-Labs/tenjin-build-deps/releases/download/{version}/{filename}"
-        localdir = HAVE.localdir
 
-        tarball = hermetic.xj_llvm_root(localdir) / filename
+        tarball = xj_llvm_root / filename
         download(url, tarball)
 
-        tmp_dest = hermetic.xj_llvm_root(localdir) / "tmp"
+        tmp_dest = xj_llvm_root / "tmp"
         tmp_dest.mkdir()
 
         shutil.unpack_archive(tarball, tmp_dest, filter="tar")
@@ -577,14 +583,14 @@ def want_10j_sysroot_extras():
         triple = f"{platform.machine()}-linux-gnu"
         shutil.copytree(
             tmp_dest / "debian-bullseye_gcc_glibc" / machine_normalized() / "usr_lib",
-            hermetic.xj_llvm_root(localdir) / "sysroot" / "usr" / "lib" / triple,
+            xj_llvm_root / "sysroot" / "usr" / "lib" / triple,
             dirs_exist_ok=True,
         )
 
         # We need the .a files to enable static linking for our hermetic clang.
         shutil.copytree(
             tmp_dest / "debian-bullseye_gcc_glibc" / machine_normalized() / "usr_lib_gcc",
-            hermetic.xj_llvm_root(localdir) / "sysroot" / "usr" / "lib" / "gcc" / triple / "10",
+            xj_llvm_root / "sysroot" / "usr" / "lib" / "gcc" / triple / "10",
             dirs_exist_ok=True,
         )
 
@@ -624,8 +630,26 @@ def want_10j_more_deps():
                 "install_name_tool",
                 "-add_rpath",
                 "@executable_path/../../xj-llvm/lib",
-                str(target / "bin" / "cc2json"),
+                str(target / "bin" / "cc2json-llvm14"),
             ])
+
+        z3_pc = target / "lib" / "pkgconfig" / "z3.pc"
+        if z3_pc.is_file():
+            content = z3_pc.read_text(encoding="utf-8")
+            content = content.replace("/outputs", str(target))
+            z3_pc.write_text(content, encoding="utf-8")
+
+        gmp_dir = hermetic.xj_gmp_root(HAVE.localdir)
+        gmp_files_to_cook = [
+            gmp_dir / "lib" / "pkgconfig" / "gmp.pc",
+            gmp_dir / "lib" / "libgmp.la",
+        ]
+        for f in gmp_files_to_cook:
+            if f.is_file():
+                content = f.read_text(encoding="utf-8")
+                # file has /outputs/gmp-6.3.0 and gmp_dir ends with gmp-6.3.0
+                content = content.replace("/outputs", str(gmp_dir.parent))
+                f.write_text(content, encoding="utf-8")
 
         HAVE.note_we_have(keyname, specifier=version)
 
@@ -788,9 +812,9 @@ def provision_debian_bullseye_sysroot_with(dest_sysroot: Path):
     # These don't go in WANT because they're quite stable;
     # we don't expect to need a new version, ever.
     DEBIAN_BULLSEYE_SYSROOT_SHA256SUMS = {
-        "x86_64": "36a164623d03f525e3dfb783a5e9b8a00e98e1ddd2b5cff4e449bd016dd27e50",
-        "aarch64": "2f915d821eec27515c0c6d21b69898e23762908d8d7ccc1aa2a8f5f25e8b7e18",
-        "armhf": "47b3a0b161ca011b2b33d4fc1ef6ef269b8208a0b7e4c900700c345acdfd1814",
+        "x86_64": "dec7a3a0fc5b83b909cba1b6d119077e0429a138eadef6bf5a0f2e03b1904631",
+        "aarch64": "308e23faba3174bd01accfe358467b8a40fad4db4c49ef629da30219f65a275f",
+        "armhf": "fe81e7114b97440262bce004caf02c1514732e2fa7f99693b2836932ad1c4626",
     }
     tarball_sha256sum = DEBIAN_BULLSEYE_SYSROOT_SHA256SUMS[machine_normalized()]
 
@@ -807,6 +831,119 @@ def provision_debian_bullseye_sysroot_with(dest_sysroot: Path):
         raise ProvisioningError("Sysroot hash verification failed!")
     shutil.unpack_archive(tarball, dest_sysroot, filter="tar")
     tarball.unlink()
+
+    quarantine_surplus_sysroot_files(dest_sysroot)
+
+
+def quarantine_surplus_sysroot_files(debian_bullseye_sysroot: Path):
+    """The sysroot provides an assortment of system and third-party libraries.
+    We don't want to end up with conflicting system libraries, especially
+    libstdc++.so.6. So we'll use `find` to find where the host stores its
+    copy of that library, then set aside any libraries in the sysroot which
+    conflict with it or its siblings."""
+
+    def say(msg: str):
+        sez(msg, ctx="(sysroot) ")
+
+    # Find where the host stores libstdc++.so.6
+    try:
+        result = subprocess.run(
+            [
+                "find",
+                "/usr",
+                "-name",
+                "libstdc++.so.6",
+                "-type",
+                "f",
+                "-o",
+                "-name",
+                "libstdc++.so.6",
+                "-type",
+                "l",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        host_libstdcpp_paths = [p for p in result.stdout.strip().split("\n") if p]
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        say("Could not locate host libstdc++.so.6, skipping sysroot quarantine.")
+        return
+
+    if not host_libstdcpp_paths:
+        say("Host libstdc++.so.6 not found, skipping sysroot quarantine.")
+        return
+
+    # Get the directory containing the host's libstdc++.so.6
+    host_lib_dir = Path(host_libstdcpp_paths[0]).parent
+
+    # Collect all sibling library names from the host directory
+    host_lib_names: set[str] = set()
+    if host_lib_dir.is_dir():
+        for item in host_lib_dir.iterdir():
+            host_lib_names.add(item.name)
+
+    # This file is referenced by the linker script `libm.so` in some
+    # implementations, so we must not quarantine it.
+    host_lib_names.discard("libmvec.so")
+
+    if not host_lib_names:
+        say("No host libraries found, skipping sysroot quarantine.")
+        return
+
+    # Determine the sysroot library directory
+    triple = f"{platform.machine()}-linux-gnu"
+    sysroot_lib_dir = debian_bullseye_sysroot / "usr" / "lib" / triple
+
+    if not sysroot_lib_dir.is_dir():
+        return
+
+    # Create the quarantine directory
+    quarantine_dir = debian_bullseye_sysroot / "tenjin-surplus"
+    quarantine_dir.mkdir(exist_ok=True)
+
+    def move_to_quarantine(path: Path):
+        """Move a file or symlink to the quarantine directory."""
+        dest = quarantine_dir / path.name
+        if dest.exists() or dest.is_symlink():
+            # Already quarantined
+            return
+        shutil.move(str(path), str(dest))
+
+    say(f"Quarantining surplus/conflicting sysroot libraries into {quarantine_dir}...")
+
+    # If the host has a symlink with the same name, set aside
+    # both the symlink and the file it points to.
+    symlinks_to_process = [p for p in sysroot_lib_dir.iterdir() if p.is_symlink()]
+    targets_to_quarantine: set[Path] = set()
+
+    for symlink in symlinks_to_process:
+        if symlink.name in host_lib_names:
+            # The host has a file/symlink with this name
+            # Get the target of the symlink before moving it
+            try:
+                target_name = os.readlink(symlink)
+                # The target is typically a relative path
+                target_path = sysroot_lib_dir / target_name
+                if target_path.exists() or target_path.is_symlink():
+                    targets_to_quarantine.add(target_path)
+            except OSError:
+                pass
+
+            move_to_quarantine(symlink)
+
+    # Move the targets of quarantined symlinks
+    for target in targets_to_quarantine:
+        if target.exists() or target.is_symlink():
+            move_to_quarantine(target)
+
+    # # Phase 2: Process remaining non-symlink files
+    # remaining_files = [p for p in sysroot_lib_dir.iterdir() if not p.is_symlink() and p.is_file()]
+
+    # for filepath in remaining_files:
+    #     if filepath.name in host_lib_names:
+    #         move_to_quarantine(filepath)
 
 
 def provision_opam_binary_with(opam_version: str) -> None:
@@ -1041,7 +1178,7 @@ def validate_actual_cmake_version(expected_version: str):
 
 
 def provision_10j_llvm_with(version: str, keyname: str):
-    localdir = HAVE.localdir
+    xj_llvm_root = xj_llvm_dir(keyname)
 
     assert "@" in version, "Expected version of the form 'LLVM_VERSION@tenjin-build-deps-release'"
     llvm_version, release = version.split("@", 1)
@@ -1071,9 +1208,7 @@ def provision_10j_llvm_with(version: str, keyname: str):
 
         # Write config files to make sure that the sysroot is used by default.
         for name in ("clang", "clang++", "cc", "c++"):
-            with open(
-                hermetic.xj_llvm_root(localdir) / "bin" / f"{name}.cfg", "w", encoding="utf-8"
-            ) as f:
+            with open(xj_llvm_root / "bin" / f"{name}.cfg", "w", encoding="utf-8") as f:
                 f.write(
                     textwrap.dedent(f"""\
                         --sysroot {sysroot_path}
@@ -1082,7 +1217,7 @@ def provision_10j_llvm_with(version: str, keyname: str):
                 )
 
     def provision_debian_sysroot():
-        provision_debian_bullseye_sysroot_with(hermetic.xj_llvm_root(localdir) / SYSROOT_NAME)
+        provision_debian_bullseye_sysroot_with(xj_llvm_root / SYSROOT_NAME)
 
     def create_goblint_gcc_wrapper():
         #                   COMMENTARY(goblint-cil-gcc-wrapper)
@@ -1093,7 +1228,7 @@ def provision_10j_llvm_with(version: str, keyname: str):
         # do here is write out a wrapper script for goblint-cil to find, which will
         # intercept the GCC-specific stuff in the code it compiles and patch it out
         # before passing it on to Clang. Hurk!
-        sadness = hermetic.xj_llvm_root(HAVE.localdir) / "goblint-sadness"
+        sadness = xj_llvm_root / "goblint-sadness"
         sadness.mkdir(exist_ok=True)
         gcc_wrapper_path = sadness / "gcc"
         with open(gcc_wrapper_path, "w", encoding="utf-8") as f:
@@ -1135,8 +1270,8 @@ def provision_10j_llvm_with(version: str, keyname: str):
         #   because `llvm-as` is for assembling LLVM IR, not platform assembly.
         binutils_names = ["ar", "nm", "objcopy", "objdump", "readelf", "strings", "strip"]
         for name in binutils_names:
-            src = hermetic.xj_llvm_root(localdir) / "bin" / f"llvm-{name}"
-            dst = hermetic.xj_llvm_root(localdir) / "bin" / f"{name}"
+            src = xj_llvm_root / "bin" / f"llvm-{name}"
+            dst = xj_llvm_root / "bin" / f"{name}"
             if not dst.is_symlink():
                 os.symlink(src, dst)
 
@@ -1144,7 +1279,7 @@ def provision_10j_llvm_with(version: str, keyname: str):
         # which diverge from `llvm-mc`. So instead of trying to filter those out,
         # we deactivate the `as` wrapper on macOS.
         if platform.system() == "Darwin":
-            as_wrapper_path = hermetic.xj_llvm_root(localdir) / "bin" / "as"
+            as_wrapper_path = xj_llvm_root / "bin" / "as"
             as_wrapper_path.rename(as_wrapper_path.with_name("xj-as-wrapper-disabled"))
 
         # These symbolic links follow a different naming pattern.
@@ -1156,25 +1291,24 @@ def provision_10j_llvm_with(version: str, keyname: str):
             # system's ld64 (non-LLD).
             symlinks.append(("lld", "ld"))
         for src, dst in symlinks:
-            src = hermetic.xj_llvm_root(localdir) / "bin" / src
-            dst = hermetic.xj_llvm_root(localdir) / "bin" / dst
+            src = xj_llvm_root / "bin" / src
+            dst = xj_llvm_root / "bin" / dst
             if not dst.is_symlink():
                 os.symlink(src, dst)
 
-    target = hermetic.xj_llvm_root(localdir)
-    target_dir_existed = target.is_dir()
-    if target.is_dir():
-        shutil.rmtree(target)
+    target_dir_existed = xj_llvm_root.is_dir()
+    if xj_llvm_root.is_dir():
+        shutil.rmtree(xj_llvm_root)
         # In nuking the prior LLVM installation, we also lose the prior sysroot's extras.
         HAVE.note_removed("10j-bullseye-sysroot-extras")
 
     tarball_name = f"LLVM-{llvm_version}-{platform.system()}-{machine_normalized()}.tar.xz"
     if Path(tarball_name).is_file():
         # A local tarball was likely manually downloaded. Use it if we've got it.
-        extract_tarball(Path(tarball_name), target, ctx="(llvm) ")
+        extract_tarball(Path(tarball_name), xj_llvm_root, ctx="(llvm) ")
     else:
         url = f"https://github.com/Aarno-Labs/tenjin-build-deps/releases/download/{release}/{tarball_name}"
-        download_and_extract_tarball(url, target, ctx="(llvm) ")
+        download_and_extract_tarball(url, xj_llvm_root, ctx="(llvm) ")
 
     match platform.system():
         case "Linux":
@@ -1188,27 +1322,30 @@ def provision_10j_llvm_with(version: str, keyname: str):
 
     add_binutils_alike_symbolic_links()
 
-    if target_dir_existed:
+    if target_dir_existed and not llvm_version.startswith("14."):
         # We must clean up any executables that dynamically linked against the old LLVM.
-        # Tenjin's c2rust binary will be rebuilt on demand.
         sez("Cleaning up binaries linked against the prior LLVM version...", ctx="(c2rust) ")
+
+        # Tenjin's c2rust binary will be rebuilt on demand.
         hermetic.run_cargo_in(["clean"], repo_root.find_repo_root_dir_Path() / "c2rust")
 
+        # So will xj-prepare-find-fn-ptr-decls, so we can just delete its build dir.
+        dirty = hermetic.xj_prepare_findfnptrdecls_build_dir(HAVE.localdir)
+        if dirty.is_dir():
+            shutil.rmtree(dirty, ignore_errors=False)
+
         # Upstream c2rust is not rebuilt automatically, so we need to do it here.
-        upstream_c2rust_dir = hermetic.xj_upstream_c2rust(localdir)
+        upstream_c2rust_dir = hermetic.xj_upstream_c2rust(HAVE.localdir)
         if upstream_c2rust_dir.is_dir():
             hermetic.run_cargo_in(["clean"], upstream_c2rust_dir)
             rebuild_10j_upstream_c2rust(upstream_c2rust_dir)
 
     create_goblint_gcc_wrapper()
-    update_10j_llvm_have(keyname, version, llvm_version)
+    update_10j_llvm_have(keyname, version, llvm_version, xj_llvm_root)
 
 
-def update_10j_llvm_have(keyname: str, version: str, llvm_version: str):
-    out = subprocess.check_output([
-        hermetic.xj_llvm_root(HAVE.localdir) / "bin" / "llvm-config",
-        "--version",
-    ])
+def update_10j_llvm_have(keyname: str, version: str, llvm_version: str, xj_llvm_root: Path):
+    out = subprocess.check_output([xj_llvm_root / "bin" / "llvm-config", "--version"])
     # If our requested LLVM version looks like "X.Y.Z+foo", we'll compare the tool's reported
     # version against the X.Y.Z part only.
     comparable_llvm_version = llvm_version.split("+")[0]
@@ -1268,6 +1405,8 @@ def cook_pkg_config_within():
         # Read the file into memory
         data = f.read()
 
+        # Note that these paths need not exist on the filesystem yet,
+        # we're just baking them into the binary.
         sysroot_usr = hermetic.xj_llvm_root(HAVE.localdir) / "sysroot" / "usr"
         newpcpath_lib = sysroot_usr / "lib" / "pkgconfig"
         newpcpath_shr = sysroot_usr / "share" / "pkgconfig"

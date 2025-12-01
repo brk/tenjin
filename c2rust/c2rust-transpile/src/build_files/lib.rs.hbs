@@ -9,6 +9,10 @@
 extern crate {{this.ident}};
 {{~/each}}
 
+{{#each cdylib_crate_names~}}
+pub use {{this}};
+{{~/each}}
+
 {{#each modules~}}
 {{~#if this.path~}}
 #[path = "{{this.path}}"]

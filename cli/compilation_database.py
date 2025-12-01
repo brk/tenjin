@@ -12,7 +12,7 @@ import ingest
 # See https://clang.llvm.org/docs/JSONCompilationDatabase.html
 
 
-@dataclass
+@dataclass(frozen=True)
 class CompileCommand:
     """Represents a single compile command entry from compile_commands.json"""
 
@@ -51,6 +51,11 @@ class CompileCommand:
             return Path(self.file)
         return self.directory_path / self.file
 
+    @property
+    def is_fake_link_thingy(self) -> bool:
+        """Check if this compile command corresponds to a fake link thingy created during linking."""
+        return self.file.startswith("/c2rust/link/")
+
     def get_command_parts(self) -> list[str]:
         """Get command as a list of arguments, regardless of original format"""
         if self.arguments:
@@ -60,12 +65,22 @@ class CompileCommand:
             return shlex.split(self.command)
         return []
 
-    def set_command_parts(self, parts: list[str]):
-        """Set command as a list of arguments, regardless of original format"""
-        if self.arguments:
-            self.arguments = parts
-        elif self.command:
-            self.command = " ".join(parts)
+    def with_command_parts(self, new_parts: list[str]) -> CompileCommand:
+        """Return a copy of this CompileCommand with the command/arguments replaced."""
+        if self.arguments is not None:
+            return CompileCommand(
+                directory=self.directory,
+                file=self.file,
+                arguments=new_parts,
+                output=self.output,
+            )
+        else:
+            return CompileCommand(
+                directory=self.directory,
+                file=self.file,
+                command=" ".join(new_parts),
+                output=self.output,
+            )
 
 
 @dataclass
@@ -108,11 +123,13 @@ class CompileCommands:
 
     def get_source_files(self) -> list[Path]:
         """Get all unique source files (as absolute paths)"""
-        return list(set(cmd.absolute_file_path for cmd in self.commands))
+        return list(
+            set(cmd.absolute_file_path for cmd in self.commands if not cmd.is_fake_link_thingy)
+        )
 
     def get_directories(self) -> list[Path]:
         """Get all unique directories"""
-        return list(set(cmd.directory_path for cmd in self.commands))
+        return list(set(cmd.directory_path for cmd in self.commands if not cmd.is_fake_link_thingy))
 
     def get_commands_for_path(self, path: Path) -> list[CompileCommand]:
         """Get all commands for a specific source file, which should be an absolute path."""
@@ -138,6 +155,49 @@ def write_synthetic_compile_commands_to(compdb_path: Path, c_file: Path, builddi
     ]).to_json_file(compdb_path)
 
 
+def extract_macro_args_affecting_content_from_compile_command(cc: CompileCommand) -> list[str]:
+    """Extract -D and -U arguments which can affect the compiler-visible
+    contents of the given file after preprocessing.
+
+    Normalizes ["-D", "KEY"] and ["-DKEY"] forms into ["-DKEY=1"].
+
+    Currently does not handle --include or -nostdinc.
+
+    Returns a list of strings each of which starts with "-D" or "-U".
+    """
+    args_affecting_content: list[str] = []
+    args = cc.get_command_parts()
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        i += 1
+        if arg in ("-D", "--define-macro") and i + 1 < len(args):
+            # If we find a bare -D, the next argument is a definition.
+            key, _, value = args[i + 1].partition("=")
+            i += 1  # Skip the value
+            args_affecting_content.append(f"-D{key}={value}")
+        elif arg.startswith("-D") and "=" in arg:
+            # Handle -Dkey=value style definitions.
+            key, _, value = arg[2:].partition("=")
+            args_affecting_content.append(f"-D{key}={value}")
+        elif arg.startswith("-D"):
+            # Handle -Dkey style definitions.
+            args_affecting_content.append(f"{arg}=1")
+        elif arg.startswith("--define-macro") and "=" in arg:
+            _, _, key = arg[2:].partition("=")
+            args_affecting_content.append(f"-D{key}=1")
+        elif arg in ("-U", "--undefine-macro") and i + 1 < len(args):
+            # Handle -U key style undefinitions.
+            args_affecting_content.append(f"-U{args[i + 1]}")
+        elif arg.startswith("-U"):
+            # Handle -Ukey style undefinitions.
+            args_affecting_content.append(arg)
+        elif arg.startswith("--undefine-macro") and "=" in arg:
+            _, _, key = arg[2:].partition("=")
+            args_affecting_content.append(f"-U{key}")
+    return args_affecting_content
+
+
 def extract_preprocessor_definitions_from_compile_commands(
     compile_commands_path: Path,
     codebase: Path,
@@ -150,6 +210,8 @@ def extract_preprocessor_definitions_from_compile_commands(
         # command_info["directory"] is build directory, which can be
         # located anywhere; it has no relation to the source file path.
         resolved_file_path = cc.file_path.resolve()
+        if resolved_file_path.as_posix().startswith("/c2rust/link/"):
+            continue  # Skip fake "files" created during linking
         resolved_codebase_path = codebase.resolve()
         if resolved_file_path == resolved_codebase_path:
             chosen_path = cc.file_path
@@ -188,41 +250,47 @@ def rebase_compile_commands_from_to(compile_commands_path: Path, from_dir: Path,
     def update(p: str) -> str:
         return p.replace(from_dir.as_posix(), to_dir.as_posix())
 
-    ccs = CompileCommands.from_json_file(compile_commands_path)
-    for cc in ccs.commands:
-        cc.directory = update(cc.directory)
-        cc.file = update(cc.file)
-        cc.set_command_parts([update(arg) for arg in cc.get_command_parts()])
-
-    ccs.to_json_file(compile_commands_path)
+    ccs_orig = CompileCommands.from_json_file(compile_commands_path)
+    ccs: list[CompileCommand] = []
+    for cc in ccs_orig.commands:
+        parts = [update(arg) for arg in cc.get_command_parts()]
+        ccs.append(
+            CompileCommand(
+                directory=update(cc.directory),
+                file=update(cc.file),
+                command=" ".join(parts) if cc.command is not None else None,
+                arguments=parts if cc.arguments is not None else None,
+                output=cc.output,
+            )
+        )
+    CompileCommands(commands=ccs).to_json_file(compile_commands_path)
 
 
 def munge_compile_commands_for_hermetic_translation(compile_commands_path: Path):
     """Modify compile_commands.json to explicitly provide Tenjin's sysroot.
     The clang driver automatically gets this via .cfg files, but c2rust doesn't."""
-    ccs = CompileCommands.from_json_file(compile_commands_path)
-    for cc in ccs.commands:
+
+    ccs_orig = CompileCommands.from_json_file(compile_commands_path)
+    ccs: list[CompileCommand] = []
+    for cc in ccs_orig.commands:
         args = cc.get_command_parts()
-        if not args:
-            continue
-        if Path(args[0]).name in ("clang", "cc") and "-c" in args:
+        if args and Path(args[0]).name in ("clang", "cc") and "-c" in args:
             args.append("--sysroot")
             args.append(str(hermetic.xj_llvm_root(repo_root.localdir()) / "sysroot"))
 
-        cc.set_command_parts(args)
-
-    ccs.to_json_file(compile_commands_path)
+        ccs.append(cc.with_command_parts(args))
+    CompileCommands(commands=ccs).to_json_file(compile_commands_path)
 
 
 def munge_compile_commands_for_tenjin_translation(compile_commands_path: Path):
     """Modify compile_commands.json to include Tenjin-specific declarations
     and block expansion of macros that Tenjin gives special treatment."""
-    ccs = CompileCommands.from_json_file(compile_commands_path)
-    for cc in ccs.commands:
+
+    ccs_orig = CompileCommands.from_json_file(compile_commands_path)
+    ccs: list[CompileCommand] = []
+    for cc in ccs_orig.commands:
         args = cc.get_command_parts()
-        if not args:
-            continue
-        if Path(args[0]).name in ("clang", "cc") and "-c" in args:
+        if args and Path(args[0]).name in ("clang", "cc") and "-c" in args:
             args.append("-include")
             args.append(
                 str(repo_root.find_repo_root_dir_Path() / "cli" / "autoincluded_tenjin_decls.h")
@@ -236,6 +304,5 @@ def munge_compile_commands_for_tenjin_translation(compile_commands_path: Path):
             args.append("--block-macros-file=" + macros_file.as_posix())
             # See https://github.com/Aarno-Labs/llvm-project/commit/4256d14834810a78a1a61679316441172e0f0dd2
 
-        cc.set_command_parts(args)
-
-    ccs.to_json_file(compile_commands_path)
+        ccs.append(cc.with_command_parts(args))
+    CompileCommands(commands=ccs).to_json_file(compile_commands_path)

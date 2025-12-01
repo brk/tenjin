@@ -6,6 +6,7 @@ from pathlib import Path
 import tomllib
 import os
 from typing import Sequence
+import platform
 
 import click
 
@@ -39,8 +40,16 @@ def xj_more_deps(localdir: Path) -> Path:
     return localdir / "xj-more-deps"
 
 
+def xj_gmp_root(localdir: Path) -> Path:
+    return xj_more_deps(localdir) / "gmp-6.3.0"
+
+
 def xj_llvm_root(localdir: Path) -> Path:
     return localdir / "xj-llvm"
+
+
+def xj_llvm14_root(localdir: Path) -> Path:
+    return localdir / "xj-llvm-14"
 
 
 def xj_upstream_c2rust(localdir: Path) -> Path:
@@ -55,7 +64,20 @@ def xj_codehawk_c(localdir: Path) -> Path:
     return localdir / "codehawk-c"
 
 
+def xj_prepare_findfnptrdecls_build_dir(localdir: Path) -> Path:
+    return localdir / "_build_findfnptrdecls"
+
+
+def xj_prepare_locatejoineddecls_build_dir(localdir: Path) -> Path:
+    return localdir / "_build_locatejoineddecls"
+
+
 def mk_env_for(localdir: Path, with_tenjin_deps=True, env_ext=None, **kwargs) -> dict[str, str]:
+    if isinstance(env_ext, dict) and env_ext.get("XJ_USE_LLVM14", "") == "1":
+        llvm_root = xj_llvm14_root(localdir)
+    else:
+        llvm_root = xj_llvm_root(localdir)
+
     if "env" in kwargs:
         env = kwargs["env"]
         del kwargs["env"]  # we'll pass it explicitly, so not via kwargs
@@ -67,18 +89,37 @@ def mk_env_for(localdir: Path, with_tenjin_deps=True, env_ext=None, **kwargs) ->
 
     if with_tenjin_deps:
         # We define LLVM_LIB_DIR for c2rust (unconditionally).
-        env["LLVM_LIB_DIR"] = str(xj_llvm_root(localdir) / "lib")
+        env["LLVM_LIB_DIR"] = str(llvm_root / "lib")
         env["PATH"] = os.pathsep.join([
             str(xj_build_deps(localdir) / "bin"),
             str(xj_more_deps(localdir) / "bin"),
-            str(xj_llvm_root(localdir) / "bin"),
+            str(llvm_root / "bin"),
             str(localdir / "cmake" / "bin"),
             env["PATH"],
         ])
-        env["LD_LIBRARY_PATH"] = os.pathsep.join([
-            str(xj_llvm_root(localdir) / "lib"),
-            env.get("LD_LIBRARY_PATH", ""),
+
+        pkg_config_path = env.get("PKG_CONFIG_PATH", "")
+        env["PKG_CONFIG_PATH"] = os.pathsep.join([
+            str(xj_more_deps(localdir) / "lib" / "pkgconfig"),
+            str(xj_gmp_root(localdir) / "lib" / "pkgconfig"),
+            *([pkg_config_path] if pkg_config_path else []),
         ])
+
+        ld_lib_paths = [str(llvm_root / "lib")]
+        if platform.system() == "Linux" and not running_in_ci():
+            triple = f"{platform.machine()}-linux-gnu"
+            ld_lib_paths.append(str(llvm_root / "sysroot" / "usr" / "lib" / triple))
+
+        # LD_LIBRARY_PATH gives subtle meaning to a trailing colon, namely by
+        # adding the current directory to the search path. Quite undesirable,
+        # because it permits contamination of the loaded library set with the
+        # current directory's contents. The user might set up LD_LIBRARY_PATH
+        # that way themselves, and if so we should preserve it, but we should
+        # not do it ourselves.
+        existing_ld_lib_path = env.get("LD_LIBRARY_PATH", "")
+        if existing_ld_lib_path:
+            ld_lib_paths.append(existing_ld_lib_path)
+        env["LD_LIBRARY_PATH"] = os.pathsep.join(ld_lib_paths)
 
     return env
 
@@ -171,7 +212,11 @@ def run(
     return subprocess.run(
         cmd,
         check=check,
-        env=mk_env_for(repo_root.localdir(), with_tenjin_deps, env_ext),
+        env=mk_env_for(
+            repo_root.localdir(),
+            with_tenjin_deps=with_tenjin_deps,
+            env_ext=env_ext,
+        ),
         **kwargs,
     )
 

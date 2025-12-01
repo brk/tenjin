@@ -71,7 +71,6 @@ def e2e_smoke_test_1():
             results_dir.relative_to(tempdir_path),
             cratename="smoke_test_1",
             guidance_path_or_literal="{}",
-            c_main_in="main.c",
         )
         os.chdir(cwd)
 
@@ -240,7 +239,6 @@ int b_help() { return helper(); }
             results_dir,
             cratename="smoke_test_3",
             guidance_path_or_literal="{}",
-            c_main_in="main.c",
         )
 
         elapsed_s = int((time.time() - start_time))

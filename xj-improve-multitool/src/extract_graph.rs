@@ -23,7 +23,6 @@ pub fn extract_def_graph(tcx: TyCtxt<'_>) -> ExtractedGraphData {
         is_binary,
         graf: DefGraph::new(),
         defspans: HashMap::new(),
-        top_item_defs: HashSet::new(),
         all_fn_defs: HashSet::new(),
         scope: Vec::new(),
     };
@@ -33,7 +32,6 @@ pub fn extract_def_graph(tcx: TyCtxt<'_>) -> ExtractedGraphData {
         graf: visitor.graf,
         defspans: visitor.defspans,
         all_fn_defs: visitor.all_fn_defs,
-        top_item_defs: visitor.top_item_defs,
     }
 }
 
@@ -41,7 +39,6 @@ pub struct ExtractedGraphData {
     pub graf: DefGraph,
     pub defspans: HashMap<DefId, rustc_span::Span>,
     pub all_fn_defs: HashSet<DefId>,
-    pub top_item_defs: HashSet<DefId>,
 }
 
 pub struct DefGraph {
@@ -99,7 +96,6 @@ struct GraphExtractionVisitor<'c> {
     is_binary: bool,
     graf: DefGraph,
     defspans: HashMap<DefId, rustc_span::Span>,
-    top_item_defs: HashSet<DefId>,
     all_fn_defs: HashSet<DefId>,
     scope: Vec<hir::OwnerId>,
 }
@@ -135,8 +131,6 @@ impl GraphExtractionVisitor<'_> {
                 // We explicitly add nodes for items so that the graph contains nodes
                 // even for items with no incoming or outgoing edges.
                 let _ = self.graf.add_node(GNode::Def(item_def));
-
-                self.top_item_defs.insert(item_def);
             }
         }
 
@@ -162,6 +156,29 @@ impl GraphExtractionVisitor<'_> {
             if src_map.span_to_snippet(vis_span) == Ok("pub".to_string()) {
                 self.graf
                     .update_edge(GNode::VirtualRoot, GNode::Def(item_def), GEdge::Mentions);
+            }
+        }
+
+        // In either crate type, items marked `#[used]` must be considered live.
+        if let Ok(line_info) = src_map.lookup_line(item_span.lo())
+            && line_info.line > 0
+        {
+            let mut check_line = line_info.line - 1;
+            while check_line > 0
+                && let Some(preceding_line) = line_info.sf.get_line(check_line)
+            {
+                let trimmed = preceding_line.trim_start();
+                if !trimmed.starts_with("#[") {
+                    break;
+                }
+                if trimmed.starts_with("#[used]") {
+                    self.graf.update_edge(
+                        GNode::VirtualRoot,
+                        GNode::Def(item_def),
+                        GEdge::Mentions,
+                    );
+                }
+                check_line -= 1;
             }
         }
     }

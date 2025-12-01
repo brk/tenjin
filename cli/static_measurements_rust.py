@@ -47,7 +47,7 @@ def compute_caveman_safety_metrics(cargo_project_dir: Path) -> dict[str, int | f
                         # be accounted for elsewhere.
                         continue
                     total_fns_count += 1
-                    print(f"Found function in {file_path}:", line)
+                    # print(f"Found function in {file_path}:", line)
                     if "unsafe " in line:
                         total_unsafe_fns_count += 1
 
@@ -111,7 +111,7 @@ def get_clippy_messages_json(
     and the `subprocess.CompletedProcess` object."""
     assert cargo_project_dir.is_dir(), "The provided path must be a directory"
 
-    res = hermetic.run_cargo_in(
+    res = hermetic.run_cargo_on_translated_code(
         [
             hermetic.tenjin_multitool_toolchain_specifier(),
             "clippy",

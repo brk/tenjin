@@ -10,6 +10,7 @@ import uuid
 from platform import platform
 import hashlib
 from os import environ
+import tomllib
 
 import click
 
@@ -20,9 +21,12 @@ import ingest
 import ingest_tracking
 import hermetic
 import vcs_helpers
+import cargo_workspace_helpers
 import static_measurements_rust
+from c_refact_identify_mains import find_main_translation_units
 from translation_preparation import run_preparation_passes
 from translation_improvement import run_improvement_passes
+from constants import XJ_GUIDANCE_FILENAME
 
 
 def stub_ingestion_record(codebase: Path, guidance: dict) -> ingest.TranslationRecord | None:
@@ -36,6 +40,8 @@ def stub_ingestion_record(codebase: Path, guidance: dict) -> ingest.TranslationR
         return None
 
     codebase_wcs = vcs_helpers.vcs_working_copy_status(codebase_vcs_dir)
+    if codebase_wcs.origin is None or codebase_wcs.commit is None:
+        return None
 
     tenjin_vcs_dir = vcs_helpers.find_containing_vcs_dir(find_repo_root_dir_Path())
     assert tenjin_vcs_dir is not None, "No VCS directory found for Tenjin?!?!"
@@ -174,36 +180,14 @@ def create_translation_snapshot(
     return results_snapshot
 
 
-def choose_c_main_filename(codebase: Path, c_main_in: str | None) -> str | None:
-    if not c_main_in and codebase.is_file() and codebase.suffix == ".c":
-        if b"main(" in codebase.read_bytes():
-            c_main_in = codebase.name
+def apply_behind_the_scenes_guidance_to(guidance: dict) -> dict:
+    # Some bits of guidance are internal to Tenjin and not exposed to users.
 
-    if not c_main_in and (codebase / "main.c").is_file():
-        c_main_in = "main.c"
+    if "vars_of_type" not in guidance:
+        guidance["vars_of_type"] = {}
 
-    if not c_main_in and (codebase / "src" / "main.c").is_file():
-        c_main_in = "main.c"
-
-    return c_main_in
-
-
-def choose_c2rust_transpile_flags(codebase: Path, c_main_in: str | None) -> list[str]:
-    c2rust_transpile_flags = [
-        "--translate-const-macros",
-        "conservative",
-        "--reduce-type-annotations",
-        "--disable-refactoring",
-    ]
-
-    c_main_filename = choose_c_main_filename(codebase, c_main_in)
-
-    if c_main_filename:
-        c2rust_transpile_flags.extend(["--binary", c_main_filename.removesuffix(".c")])
-    else:
-        c2rust_transpile_flags.extend(["--emit-build-files"])
-
-    return c2rust_transpile_flags
+    guidance["vars_of_type"]["&mut XjGlobals"] = ["*:xjg"]
+    return guidance
 
 
 def do_translate(
@@ -212,7 +196,6 @@ def do_translate(
     resultsdir: Path,
     cratename: str,
     guidance_path_or_literal: str,
-    c_main_in: str | None = None,
     buildcmd: str | None = None,
 ):
     """
@@ -233,22 +216,49 @@ def do_translate(
 
     tracker = ingest_tracking.TimingRepo(stub_ingestion_record(codebase, guidance))
 
-    c2rust_transpile_flags = choose_c2rust_transpile_flags(codebase, c_main_in)
+    skip_remainder_of_translation = False
+    resultsdir.mkdir(parents=True, exist_ok=True)
 
+    # Preparation passes may modify the guidance stored in XJ_GUIDANCE_FILENAME
+    final_prepared_codebase, cmake_exe_targets = run_preparation_passes(
+        codebase, resultsdir, tracker, guidance, buildcmd
+    )
+    compdb = final_prepared_codebase / "compile_commands.json"
+
+    c2rust_transpile_flags = [
+        "--translate-const-macros",
+        "conservative",
+        "--reduce-type-annotations",
+        "--disable-refactoring",
+    ]
+
+    if False and cmake_exe_targets:
+        for target in cmake_exe_targets:
+            c2rust_transpile_flags.extend([
+                "--binary",
+                target,
+            ])
+    else:
+        ccs_with_main_funcs = find_main_translation_units(
+            compilation_database.CompileCommands.from_json_file(compdb)
+        )
+        if ccs_with_main_funcs:
+            for cmd in ccs_with_main_funcs:
+                c2rust_transpile_flags.extend([
+                    "--binary",
+                    cmd.absolute_file_path.stem,
+                ])
+        else:
+            c2rust_transpile_flags.extend(["--emit-build-files"])
+
+    # Preparation passes can modify the guidance.
     xj_c2rust_transpile_flags = [
         *c2rust_transpile_flags,
         "--log-level",
         "INFO",
         "--guidance",
-        json.dumps(guidance),
+        json.dumps(json.load((final_prepared_codebase / XJ_GUIDANCE_FILENAME).open())),
     ]
-
-    skip_remainder_of_translation = False
-    resultsdir.mkdir(parents=True, exist_ok=True)
-
-    # We might want to pass guidance to preparation passes.
-    final_prepared_codebase = run_preparation_passes(codebase, resultsdir, tracker, buildcmd)
-    compdb = final_prepared_codebase / "compile_commands.json"
 
     # The crate name that c2rust uses is based on the directory stem,
     # so we (temporarily) create a subdirectory with the desired crate name.
@@ -258,6 +268,7 @@ def do_translate(
     # We must explicitly pass c2rust our sysroot
     compilation_database.munge_compile_commands_for_hermetic_translation(compdb)
 
+    click.echo("Running upstream c2rust translation...")
     # First run the upstream c2rust tool to get a baseline translation.
     run_upstream_c2rust(tracker, c2rust_transpile_flags, compdb, output)
 
@@ -273,9 +284,12 @@ def do_translate(
     target_subdir = environ.get("XJ_BUILD_RS_PROFILE", "debug")
     c2rust_bin = root / "c2rust" / "target" / target_subdir / "c2rust"
     try:
+        click.echo("Running Tenjin's c2rust translation...")
         _xj_cp = run_c2rust(
             tracker, "xj-c2rust", c2rust_bin, compdb, output, xj_c2rust_transpile_flags
         )
+
+        fixup_binary_crates_in_workspace(output, cratename)
 
         # Normalize the unmodified translation results to end up
         # in a directory with a project-independent name.
@@ -307,7 +321,9 @@ def do_translate(
         initial_cp = hermetic.run_cargo_on_translated_code(["check"], cwd=output, check=False)
         # Ensure that subsequent passes start with a clean slate.
         clean_p_cp = hermetic.run_cargo_on_translated_code(
-            ["clean", "-p", cratename], cwd=output, check=False
+            ["clean", *cargo_workspace_helpers.flags_for_all_cargo_workspace_packages(output)],
+            cwd=output,
+            check=False,
         )
 
         if initial_cp.returncode == 0 and clean_p_cp.returncode == 0:
@@ -389,7 +405,7 @@ def run_upstream_c2rust(tracker, c2rust_transpile_flags, compdb, output):
         sys.exit(1)
 
 
-def load_and_parse_guidance(guidance_path_or_literal):
+def load_and_parse_guidance(guidance_path_or_literal: str) -> dict:
     try:
         if guidance_path_or_literal == "":
             guidance = {}
@@ -423,3 +439,41 @@ def find_highest_numbered_dir(base: Path) -> Path | None:
                     latest_dir = item
 
     return latest_dir if latest_dir else None
+
+
+def fixup_binary_crates_in_workspace(outdir: Path, workspace_cratename: str):
+    """
+    For a binary crate in a non-trivial workspace setup,
+    it ought to `use` the associated library crate name.
+    But `c2rust` hardcodes use of the workspace's crate name.
+    So we'll do some string munging and fix it up.
+    """
+
+    def fixup(rs_path: str, member_cratename: str):
+        rs_file = outdir / member_cratename / rs_path
+        content = rs_file.read_text(encoding="utf-8")
+        fixed_content = content.replace(
+            f"use ::{workspace_cratename}::",
+            f"use ::{member_cratename}::",
+        )
+        rs_file.write_text(fixed_content, encoding="utf-8")
+
+    cargo_toml_path = outdir / "Cargo.toml"
+    ct = tomllib.load(cargo_toml_path.open("rb"))
+    if "workspace" not in ct:
+        return
+    member_names = ct["workspace"].get("members", [])
+    if len(member_names) <= 1:
+        return
+
+    for member in member_names:
+        member_path = outdir / member
+        if not member_path.is_dir():
+            continue
+        member_ct_path = member_path / "Cargo.toml"
+        if not member_ct_path.is_file():
+            continue
+        member_ct = tomllib.load(member_ct_path.open("rb"))
+        if "bin" in member_ct:
+            for rcd in member_ct["bin"]:
+                fixup(rcd["path"], member)

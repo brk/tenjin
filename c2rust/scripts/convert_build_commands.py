@@ -87,7 +87,7 @@ def convert_entries(entries: List[Dict[str, Any]],
     new_entries = []
     for ei in entry_infos:
         for inp in ei.c_inputs:
-            inp_path = os.path.join(entry["directory"], inp)
+            inp_path = os.path.join(ei.entry["directory"], inp)
             inp_path = os.path.realpath(inp_path)
 
             # TODO: handle duplicates
@@ -115,7 +115,7 @@ def convert_entries(entries: List[Dict[str, Any]],
             "type": "shared" if ei.shared_lib else "exe",
             # TODO: parse and add in other linker flags
             # for now, we don't do this because rustc doesn't use them
-            })
+            }).decode('utf-8')
         new_entry["output"] = ei.output or "a.out"
         del new_entry["type"]
         new_entries.append(new_entry)
