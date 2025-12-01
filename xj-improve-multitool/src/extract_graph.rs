@@ -23,7 +23,6 @@ pub fn extract_def_graph(tcx: TyCtxt<'_>) -> ExtractedGraphData {
         is_binary,
         graf: DefGraph::new(),
         defspans: HashMap::new(),
-        top_item_defs: HashSet::new(),
         all_fn_defs: HashSet::new(),
         scope: Vec::new(),
     };
@@ -33,7 +32,6 @@ pub fn extract_def_graph(tcx: TyCtxt<'_>) -> ExtractedGraphData {
         graf: visitor.graf,
         defspans: visitor.defspans,
         all_fn_defs: visitor.all_fn_defs,
-        top_item_defs: visitor.top_item_defs,
     }
 }
 
@@ -41,7 +39,6 @@ pub struct ExtractedGraphData {
     pub graf: DefGraph,
     pub defspans: HashMap<DefId, rustc_span::Span>,
     pub all_fn_defs: HashSet<DefId>,
-    pub top_item_defs: HashSet<DefId>,
 }
 
 pub struct DefGraph {
@@ -99,7 +96,6 @@ struct GraphExtractionVisitor<'c> {
     is_binary: bool,
     graf: DefGraph,
     defspans: HashMap<DefId, rustc_span::Span>,
-    top_item_defs: HashSet<DefId>,
     all_fn_defs: HashSet<DefId>,
     scope: Vec<hir::OwnerId>,
 }
@@ -135,8 +131,6 @@ impl GraphExtractionVisitor<'_> {
                 // We explicitly add nodes for items so that the graph contains nodes
                 // even for items with no incoming or outgoing edges.
                 let _ = self.graf.add_node(GNode::Def(item_def));
-
-                self.top_item_defs.insert(item_def);
             }
         }
 

@@ -34,7 +34,7 @@ impl SpanEraser {
     /// Therefore we do something very dumb!
     /// For top level items, we look at the first character of preceding lines,
     /// as long as we see a `#` or a space, we assume it's an attribute.
-    pub fn mark_top_item_span_for_attribute_erasure(&mut self, span: Span) {
+    pub fn mark_item_span_for_attribute_erasure(&mut self, span: Span) {
         self.spans_to_erase.for_attributes.push(span);
     }
 
@@ -65,9 +65,13 @@ impl SpanEraser {
                 if line.len() < 2 {
                     return false;
                 }
-                let mut chars = line.chars();
-                let first_char = chars.next().unwrap();
-                let second_char = chars.next().unwrap();
+                let mut chars = line.chars().filter(|c| !c.is_whitespace());
+                let Some(first_char) = chars.next() else {
+                    return false;
+                };
+                let Some(second_char) = chars.next() else {
+                    return false;
+                };
 
                 first_char == '#' && second_char == '['
             }
