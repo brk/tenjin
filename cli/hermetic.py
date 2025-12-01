@@ -94,16 +94,20 @@ def mk_env_for(localdir: Path, with_tenjin_deps=True, env_ext=None, **kwargs) ->
             env["PATH"],
         ])
 
-        sysroot_plat_lib_path = []
+        ld_lib_paths = [str(llvm_root / "lib")]
         if platform.system() == "Linux":
             triple = f"{platform.machine()}-linux-gnu"
-            sysroot_plat_lib_path = [str(llvm_root / "sysroot" / "usr" / "lib" / triple)]
+            ld_lib_paths.append(str(llvm_root / "sysroot" / "usr" / "lib" / triple))
 
-        ld_lib_paths = [
-            str(llvm_root / "lib"),
-            *sysroot_plat_lib_path,
-            env.get("LD_LIBRARY_PATH", ""),
-        ]
+        # LD_LIBRARY_PATH gives subtle meaning to a trailing colon, namely by
+        # adding the current directory to the search path. Quite undesirable,
+        # because it permits contamination of the loaded library set with the
+        # current directory's contents. The user might set up LD_LIBRARY_PATH
+        # that way themselves, and if so we should preserve it, but we should
+        # not do it ourselves.
+        existing_ld_lib_path = env.get("LD_LIBRARY_PATH", "")
+        if existing_ld_lib_path:
+            ld_lib_paths.append(existing_ld_lib_path)
         env["LD_LIBRARY_PATH"] = os.pathsep.join(ld_lib_paths)
 
     return env
