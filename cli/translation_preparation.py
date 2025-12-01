@@ -1,3 +1,4 @@
+import os
 import json
 import shutil
 import time
@@ -66,6 +67,7 @@ def materialize_compilation_database_in(
         ld_launcher = str(
             repo_root.find_repo_root_dir_Path() / "cli" / "sh" / "cc-ld-intercept" / "ld"
         )
+        cmake_preset = os.environ.get("XJ_CMAKE_PRESET", "")
         cp = hermetic.run(
             [
                 "cmake",
@@ -76,6 +78,7 @@ def materialize_compilation_database_in(
                 "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON",
                 f"-DCMAKE_C_COMPILER_LAUNCHER={cc_launcher}",
                 f"-DCMAKE_C_LINKER_LAUNCHER={ld_launcher}",
+                *(["--preset", cmake_preset] if cmake_preset else []),
             ],
             check=True,
             # capture_output=True,
