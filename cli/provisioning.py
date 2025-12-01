@@ -633,6 +633,12 @@ def want_10j_more_deps():
                 str(target / "bin" / "cc2json-llvm14"),
             ])
 
+        z3_pc = target / "lib" / "pkgconfig" / "z3.pc"
+        if z3_pc.is_file():
+            content = z3_pc.read_text(encoding="utf-8")
+            content = content.replace("/outputs", str(target))
+            z3_pc.write_text(content, encoding="utf-8")
+
         HAVE.note_we_have(keyname, specifier=version)
 
     want(
