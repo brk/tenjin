@@ -65,7 +65,7 @@ impl LinkType {
     pub fn as_cargo_types(&self) -> &str {
         match self {
             LinkType::Exe => "\"rlib\"",
-            LinkType::Shared => "\"cdylib\"",
+            LinkType::Shared => "\"cdylib\", \"rlib\"",
             LinkType::Static => "\"staticlib\", \"rlib\"",
         }
     }
