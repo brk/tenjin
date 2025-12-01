@@ -269,12 +269,14 @@ fn emit_cargo_toml(
     crate_cfg: &Option<CrateConfig<'_>>,
     workspace_members: Option<Vec<String>>,
 ) {
+    let is_workspace = workspace_members.is_some();
     let workspace_members_vec = workspace_members.unwrap_or_default();
     // rust_checks_path is gone because we don't want to refer to the source
     // path but instead want the cross-check libs to be installed via cargo.
+
     let mut json = json!({
-        "is_workspace": workspace_members_vec.len() > 1,
-        "is_crate": crate_cfg.is_some(),
+        "is_workspace": is_workspace,
+        "is_crate": crate_cfg.is_some() || !is_workspace,
         "workspace_members": workspace_members_vec,
     });
     if let Some(ccfg) = crate_cfg {

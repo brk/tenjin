@@ -206,7 +206,8 @@ def extract_link_compile_commands(
         return fake_ctr
 
     object_map = {}
-    new_entries = []
+    new_cc_entries = []
+    new_link_entries = []
     for ei in entry_infos:
         for inp in ei.c_inputs:
             inp_path = Path(inp)
@@ -234,7 +235,7 @@ def extract_link_compile_commands(
             new_entry["file"] = inp_path.as_posix()  # .relative_to(codebase).as_posix()
             new_entry["output"] = c_object
             del new_entry["type"]
-            new_entries.append(new_entry)
+            new_cc_entries.append(new_entry)
 
     for ei in filter(lambda ei: not ei.compile_only, entry_infos):
         new_entry = ei.entry.copy()
@@ -260,6 +261,7 @@ def extract_link_compile_commands(
             # TODO: parse and add in other linker flags
             # for now, we don't do this because rustc doesn't use them
         }
+        print("Link info:", link_info)
         # new_entry["_c2rust_link"] = link_info  # delay bencoding, to allow editing of paths
         new_entry["file"] = "/c2rust/link/" + bencodepy.encode(link_info).decode("utf-8")
         # new_entry["file"] = "/c2rust/link"
@@ -268,9 +270,13 @@ def extract_link_compile_commands(
         # even when the "directory" is a subdirectory of the build directory.
         new_entry["output"] = resolve_in_ei_directory(ei, output, builddir)
         del new_entry["type"]
-        new_entries.append(new_entry)
+        new_link_entries.append(new_entry)
 
-    return sorted(new_entries, key=lambda e: e["file"])
+    # With one link command, we won't want to create a workspace.
+    if len(new_link_entries) == 1:
+        return new_cc_entries
+
+    return sorted(new_cc_entries + new_link_entries, key=lambda e: e["file"])
 
 
 def resolve_in_ei_directory(ei: EntryInfo, pathbuf: str, builddir: Path) -> str:
