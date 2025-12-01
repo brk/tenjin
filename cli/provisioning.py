@@ -618,9 +618,10 @@ def want_10j_more_deps():
 
         z3_pc = target / "lib" / "pkgconfig" / "z3.pc"
         if z3_pc.is_file():
-            content = z3_pc.read_text(encoding="utf-8")
-            content = content.replace("/outputs", str(target))
-            z3_pc.write_text(content, encoding="utf-8")
+            lines = z3_pc.read_text(encoding="utf-8").splitlines()
+            lines[0] = f"prefix={target}"
+            lines[1] = "exec_prefix=${prefix}"
+            z3_pc.write_text("\n".join(lines), encoding="utf-8")
 
         gmp_dir = hermetic.xj_gmp_root(HAVE.localdir)
         gmp_files_to_cook = [
@@ -629,10 +630,9 @@ def want_10j_more_deps():
         ]
         for f in gmp_files_to_cook:
             if f.is_file():
-                content = f.read_text(encoding="utf-8")
-                # file has /outputs/gmp-6.3.0 and gmp_dir ends with gmp-6.3.0
-                content = content.replace("/outputs", str(gmp_dir.parent))
-                f.write_text(content, encoding="utf-8")
+                lines = f.read_text(encoding="utf-8").splitlines()
+                lines[0] = f"prefix={gmp_dir}"
+                f.write_text("\n".join(lines), encoding="utf-8")
 
         HAVE.note_we_have(keyname, specifier=version)
 
