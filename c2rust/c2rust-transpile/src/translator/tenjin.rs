@@ -457,6 +457,8 @@ fn recognize_scanf_and_fscanf_of_stdin(
                         if cargs_after_fmt
                             .iter()
                             .all(|&carg| t.c_expr_get_addr_of(carg).is_some())
+                            && args.len() == 999
+                        // disable without triggering dead code
                         {
                             // If all directives are simple, and all arguments are address-taken,
                             // we can use the scanf macro.
@@ -487,6 +489,8 @@ fn recognize_scanf_and_fscanf_of_stdin(
                         if cargs_after_fmt
                             .iter()
                             .all(|&carg| t.c_expr_get_addr_of(carg).is_some())
+                            && args.len() == 999
+                        // disable without triggering dead code
                         {
                             // If all directives are simple, and all arguments are address-taken,
                             // we can use the scanf macro.
