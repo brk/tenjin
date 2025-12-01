@@ -47,6 +47,12 @@ automatic improvements are not yet applied to workspaces.
     set the `XJ_SHOW_CMDS=1` environment variable.
 * For CMake projects, setting `XJ_CMAKE_PRESET=foo` will pass `--preset=foo`
     during configuration.
+* For translating single executables (not libraries), try setting
+`XJ_EXTRA_PREPARATION_PASSES=1`. Tenjin will expand preprocessor
+directives & macros, run static analysis over the resulting code,
+and use the results of static analysis to drive localization of
+mutable global variables.
+
 
 ## Guidance
 
