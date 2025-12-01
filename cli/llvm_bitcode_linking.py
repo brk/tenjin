@@ -43,7 +43,8 @@ def compile_and_link_bitcode(
         bitcode_files: list[Path] = []
 
         # Compile each translation unit to bitcode
-        for i, cmd in enumerate(compile_commands.commands):
+        sorted_commands = sorted(compile_commands.commands, key=lambda c: c.absolute_file_path)
+        for i, cmd in enumerate(sorted_commands):
             # Get the command parts
             args = cmd.get_command_parts()
 
