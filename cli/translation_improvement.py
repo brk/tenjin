@@ -599,12 +599,30 @@ def run_improvement_passes(
     root: Path, output: Path, resultsdir: Path, cratename: str, tracker: ingest_tracking.TimingRepo
 ):
     def run_cargo_fmt(_root: Path, dir: Path) -> CompletedProcess:
-        return hermetic.run_cargo_on_translated_code(
+        cp1 = hermetic.run_cargo_in(
             ["fmt"],
             cwd=dir,
             check=False,  # formatting failure is not a fatal error
             capture_output=True,
         )
+        if cp1.returncode != 0:
+            if b"left behind trailing whitespace" in cp1.stderr:
+                for rs_file in dir.rglob("*.rs"):
+                    if not rs_file.is_file():
+                        continue
+                    with rs_file.open("r", encoding="utf-8") as f:
+                        lines = f.readlines()
+                    with rs_file.open("w", encoding="utf-8") as f:
+                        for line in lines:
+                            f.write(line.rstrip() + "\n")
+                cp2 = hermetic.run_cargo_on_translated_code(
+                    ["fmt"],
+                    cwd=dir,
+                    check=False,
+                    capture_output=True,
+                )
+                return cp2
+        return cp1
 
     def run_cargo_fix(_root: Path, dir: Path) -> CompletedProcess:
         return hermetic.run_cargo_on_translated_code(
