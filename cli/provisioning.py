@@ -639,6 +639,18 @@ def want_10j_more_deps():
             content = content.replace("/outputs", str(target))
             z3_pc.write_text(content, encoding="utf-8")
 
+        gmp_dir = hermetic.xj_gmp_root(HAVE.localdir)
+        gmp_files_to_cook = [
+            gmp_dir / "lib" / "pkgconfig" / "gmp.pc",
+            gmp_dir / "lib" / "libgmp.la",
+        ]
+        for f in gmp_files_to_cook:
+            if f.is_file():
+                content = f.read_text(encoding="utf-8")
+                # file has /outputs/gmp-6.3.0 and gmp_dir ends with gmp-6.3.0
+                content = content.replace("/outputs", str(gmp_dir.parent))
+                f.write_text(content, encoding="utf-8")
+
         HAVE.note_we_have(keyname, specifier=version)
 
     want(

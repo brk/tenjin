@@ -40,6 +40,10 @@ def xj_more_deps(localdir: Path) -> Path:
     return localdir / "xj-more-deps"
 
 
+def xj_gmp_root(localdir: Path) -> Path:
+    return xj_more_deps(localdir) / "gmp-6.3.0"
+
+
 def xj_llvm_root(localdir: Path) -> Path:
     return localdir / "xj-llvm"
 
