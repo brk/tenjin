@@ -21,6 +21,8 @@ def packages_for_cargo_workspace(
     ct = tomllib.load(cargo_toml_path.open("rb"))
 
     if "workspace" not in ct:
+        if "package" not in ct:
+            return []
         return [ct["package"]["name"]]
 
     member_names = ct["workspace"].get("members", [])
