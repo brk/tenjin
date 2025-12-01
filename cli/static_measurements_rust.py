@@ -47,7 +47,7 @@ def compute_caveman_safety_metrics(cargo_project_dir: Path) -> dict[str, int | f
                         # be accounted for elsewhere.
                         continue
                     total_fns_count += 1
-                    print(f"Found function in {file_path}:", line)
+                    # print(f"Found function in {file_path}:", line)
                     if "unsafe " in line:
                         total_unsafe_fns_count += 1
 
