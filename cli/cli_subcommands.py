@@ -114,7 +114,7 @@ def do_build_xj_prepare_findfnptrdecls(capture_output: bool = False):
     builddir = hermetic.xj_prepare_findfnptrdecls_build_dir(repo_root.localdir())
 
     if not builddir.exists():
-        hermetic.run(
+        cp = hermetic.run(
             [
                 "cmake",
                 "-GNinja",
@@ -127,6 +127,7 @@ def do_build_xj_prepare_findfnptrdecls(capture_output: bool = False):
             check=True,
             capture_output=capture_output,
         )
+        assert builddir.exists(), f"cmake config returned {cp.returncode}"
 
     hermetic.run(
         ["cmake", "--build", builddir.as_posix()],

@@ -488,6 +488,23 @@ def run_trivial_numeric_casts_improvement(root: Path, dir: Path) -> None:
                 content = file_contents[str(file_path)]
                 span_text = content[span["byte_start"] : span["byte_end"]]
 
+                if span["byte_start"] > 60:
+                    # Quick hack: type-inferred variable initializers are not safe to remove
+                    # annotations from, because the type of a constant may change when
+                    # the cast is removed, changing the meaning of the code.
+                    preceding_text = content[span["byte_start"] - 60 : span["byte_start"]]
+                    if ";" in preceding_text:
+                        preceding_text = preceding_text.split(";")[-1]
+                    if " let " in preceding_text or "const " in preceding_text:
+                        let_idx = preceding_text.rfind(" let ")
+                        col_idx = preceding_text.rfind(": ")
+                        eql_idx = preceding_text.rfind("=")
+                        if let_idx != -1 and let_idx < col_idx < eql_idx:
+                            # This is a let binding with an explicit type annotation; safe to remove.
+                            pass
+                        else:
+                            continue
+
                 if " as " in span_text:
                     val_part = span_text.split(" as ")[0].strip()
                     cleaned_val = val_part.replace("_", "")

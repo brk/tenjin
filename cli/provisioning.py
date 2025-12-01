@@ -145,6 +145,41 @@ def download(url: str, filename: Path, first_attempt=True) -> None:
 # platform.system() in ["Linux", "Darwin"]
 
 
+def clone_or_fetch_git_repo(
+    repo_url: str,
+    target_dir: Path,
+    version: str,
+    log_prefix: str,
+    display_name: str,
+    ctx: str,
+) -> None:
+    """Clone a git repo if not present, or fetch and reset to the given version.
+
+    Args:
+        repo_url: The URL of the git repository to clone.
+        target_dir: The directory to clone into or update.
+        version: The git ref (tag, branch, commit) to checkout.
+        log_prefix: Prefix for log files, e.g., "xj-c2rust" -> "xj-c2rust-clone.log".
+        display_name: Human-readable name for messages, e.g., "C2Rust".
+        ctx: Context string for sez(), e.g., "(c2rust) ".
+    """
+    localdir = HAVE.localdir
+    if target_dir.is_dir():
+        sez(f"Fetching and resetting {display_name} to version {version} ...", ctx)
+        subprocess.check_call(["git", "fetch", "--all"], cwd=str(target_dir))
+        subprocess.check_call(["git", "switch", "--detach", version], cwd=str(target_dir))
+    else:
+        sez(f"Cloning {display_name} {version} ...", ctx)
+        stdout_path = Path(localdir, f"{log_prefix}-clone.log")
+        stderr_path = Path(localdir, f"{log_prefix}-clone.err")
+        hermetic.run_command_with_progress(
+            ["git", "clone", repo_url, str(target_dir)],
+            stdout_file=stdout_path,
+            stderr_file=stderr_path,
+        )
+        subprocess.check_call(["git", "switch", "--detach", version], cwd=str(target_dir))
+
+
 # See https://stackoverflow.com/questions/45125516/possible-values-for-uname-m
 # See https://gist.github.com/skyzyx/d82b7d9ba05523dd1a9301fd282b32c4
 def machine_normalized(aarch64="aarch64") -> str:
@@ -325,34 +360,14 @@ def want_10j_reference_c2rust_tag():
         version: str,
         xj_upstream_c2rust: Path,
     ):
-        def say(msg: str):
-            sez(msg, ctx="(c2rust) ")
-
-        localdir = HAVE.localdir
-        if xj_upstream_c2rust.is_dir():
-            say(f"Fetching and resetting C2Rust to version {version} ...")
-            subprocess.check_call(["git", "fetch", "--all"], cwd=str(xj_upstream_c2rust))
-            subprocess.check_call(
-                ["git", "switch", "--detach", version], cwd=str(xj_upstream_c2rust)
-            )
-        else:
-            say(f"Cloning C2Rust {version} ...")
-
-            stdout_path = Path(localdir, "xj-c2rust-clone.log")
-            stderr_path = Path(localdir, "xj-c2rust-clone.err")
-            hermetic.run_command_with_progress(
-                [
-                    "git",
-                    "clone",
-                    "https://github.com/immunant/c2rust.git",
-                    str(xj_upstream_c2rust),
-                ],
-                stdout_file=stdout_path,
-                stderr_file=stderr_path,
-            )
-            subprocess.check_call(
-                ["git", "switch", "--detach", version], cwd=str(xj_upstream_c2rust)
-            )
+        clone_or_fetch_git_repo(
+            repo_url="https://github.com/immunant/c2rust.git",
+            target_dir=xj_upstream_c2rust,
+            version=version,
+            log_prefix="xj-c2rust",
+            display_name="C2Rust",
+            ctx="(c2rust) ",
+        )
 
     def provision_10j_reference_c2rust_tag_with(
         version: str,
@@ -439,30 +454,14 @@ def want_codehawk():
         version: str,
         xj_codehawk: Path,
     ):
-        def say(msg: str):
-            sez(msg, ctx="(codehawk) ")
-
-        localdir = HAVE.localdir
-        if xj_codehawk.is_dir():
-            say(f"Fetching and resetting CodeHawk to version {version} ...")
-            subprocess.check_call(["git", "fetch", "--all"], cwd=str(xj_codehawk))
-            subprocess.check_call(["git", "switch", "--detach", version], cwd=str(xj_codehawk))
-        else:
-            say(f"Cloning CodeHawk {version} ...")
-
-            stdout_path = Path(localdir, "xj-codehawk-clone.log")
-            stderr_path = Path(localdir, "xj-codehawk-clone.err")
-            hermetic.run_command_with_progress(
-                [
-                    "git",
-                    "clone",
-                    "https://github.com/static-analysis-engineering/codehawk.git",
-                    str(xj_codehawk),
-                ],
-                stdout_file=stdout_path,
-                stderr_file=stderr_path,
-            )
-            subprocess.check_call(["git", "switch", "--detach", version], cwd=str(xj_codehawk))
+        clone_or_fetch_git_repo(
+            repo_url="https://github.com/static-analysis-engineering/codehawk.git",
+            target_dir=xj_codehawk,
+            version=version,
+            log_prefix="xj-codehawk",
+            display_name="CodeHawk",
+            ctx="(codehawk) ",
+        )
 
     def provision_codehawk_with(
         version: str,
@@ -515,30 +514,14 @@ def want_codehawk_c():
         version: str,
         xj_codehawk: Path,
     ):
-        def say(msg: str):
-            sez(msg, ctx="(codehawk) ")
-
-        localdir = HAVE.localdir
-        if xj_codehawk.is_dir():
-            say(f"Fetching and resetting CodeHawk-C to version {version} ...")
-            subprocess.check_call(["git", "fetch", "--all"], cwd=str(xj_codehawk))
-            subprocess.check_call(["git", "switch", "--detach", version], cwd=str(xj_codehawk))
-        else:
-            say(f"Cloning CodeHawk-C {version} ...")
-
-            stdout_path = Path(localdir, "xj-codehawk-c-clone.log")
-            stderr_path = Path(localdir, "xj-codehawk-c-clone.err")
-            hermetic.run_command_with_progress(
-                [
-                    "git",
-                    "clone",
-                    "https://github.com/static-analysis-engineering/CodeHawk-C.git",
-                    str(xj_codehawk),
-                ],
-                stdout_file=stdout_path,
-                stderr_file=stderr_path,
-            )
-            subprocess.check_call(["git", "switch", "--detach", version], cwd=str(xj_codehawk))
+        clone_or_fetch_git_repo(
+            repo_url="https://github.com/static-analysis-engineering/CodeHawk-C.git",
+            target_dir=xj_codehawk,
+            version=version,
+            log_prefix="xj-codehawk-c",
+            display_name="CodeHawk-C",
+            ctx="(codehawk) ",
+        )
 
     def provision_codehawk_c_with(
         version: str,
@@ -633,11 +616,19 @@ def want_10j_more_deps():
                 str(target / "bin" / "cc2json-llvm14"),
             ])
 
+            subprocess.check_call([
+                "install_name_tool",
+                "-id",
+                str(target / "gmp-6.3.0" / "lib" / "libgmp.10.dylib"),
+                str(target / "gmp-6.3.0" / "lib" / "libgmp.10.dylib"),
+            ])
+
         z3_pc = target / "lib" / "pkgconfig" / "z3.pc"
         if z3_pc.is_file():
-            content = z3_pc.read_text(encoding="utf-8")
-            content = content.replace("/outputs", str(target))
-            z3_pc.write_text(content, encoding="utf-8")
+            lines = z3_pc.read_text(encoding="utf-8").splitlines()
+            lines[0] = f"prefix={target}"
+            lines[1] = "exec_prefix=${prefix}"
+            z3_pc.write_text("\n".join(lines), encoding="utf-8")
 
         gmp_dir = hermetic.xj_gmp_root(HAVE.localdir)
         gmp_files_to_cook = [
@@ -646,10 +637,9 @@ def want_10j_more_deps():
         ]
         for f in gmp_files_to_cook:
             if f.is_file():
-                content = f.read_text(encoding="utf-8")
-                # file has /outputs/gmp-6.3.0 and gmp_dir ends with gmp-6.3.0
-                content = content.replace("/outputs", str(gmp_dir.parent))
-                f.write_text(content, encoding="utf-8")
+                lines = f.read_text(encoding="utf-8").splitlines()
+                lines[0] = f"prefix={gmp_dir}"
+                f.write_text("\n".join(lines), encoding="utf-8")
 
         HAVE.note_we_have(keyname, specifier=version)
 
@@ -1356,6 +1346,13 @@ def update_10j_llvm_have(keyname: str, version: str, llvm_version: str, xj_llvm_
     HAVE.note_we_have(keyname, specifier=version)
 
 
+def get_path_of_unusual_size() -> bytes:
+    fifty = b"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    rilly = b"thisverylongpathistogiveusroomtooverwriteitlaterok"
+    twohundredfifty = fifty + fifty + fifty + fifty + rilly
+    return b"/tmp/" + twohundredfifty + b"/" + twohundredfifty
+
+
 #                COMMENTARY(pkg-config-paths)
 # pkg-config embeds various configured paths into the binary.
 # In particular, it embeds, via compiler flags during compilation,
@@ -1371,10 +1368,7 @@ def cook_pkg_config_within():
     def say(msg: str):
         sez(msg, ctx="(pkg-config) ")
 
-    fifty = b"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-    rilly = b"thisverylongpathistogiveusroomtooverwriteitlaterok"
-    twohundredfifty = fifty + fifty + fifty + fifty + rilly
-    path_of_unusual_size = b"/tmp/" + twohundredfifty + b"/" + twohundredfifty
+    path_of_unusual_size = get_path_of_unusual_size()
     libdir = path_of_unusual_size + b"/prefix/lib"
     sysinc = path_of_unusual_size + b"/sysinc:/usr/include"
     syslib = path_of_unusual_size + b"/syslib:/usr/lib:/lib"
@@ -1395,7 +1389,7 @@ def cook_pkg_config_within():
         assert len(newstuff) <= len(needle)
         if len(newstuff) < len(needle):
             # Pad the newstuff with null bytes to match the length of needle.
-            newstuff += b"\0" * (len(needle) - len(newstuff))
+            newstuff += nullbyte * (len(needle) - len(newstuff))
 
         assert len(newstuff) == len(needle)
         return haystack.replace(needle, newstuff)
@@ -1440,6 +1434,114 @@ def cook_pkg_config_within():
     assert path_of_unusual_size not in data, "Oops, pkg-config was left undercooked!"
 
 
+def cook_m4_within():
+    def say(msg: str):
+        sez(msg, ctx="(m4) ")
+
+    path_of_unusual_size = get_path_of_unusual_size()
+    localedir = path_of_unusual_size + b"/share/locale"
+    nullbyte = b"\0"
+
+    bindir = hermetic.xj_build_deps(HAVE.localdir) / "bin"
+
+    uncooked = bindir / "m4.uncooked"
+    if not uncooked.is_file():
+        # m4.uncooked may not be present in older tarballs; skip cooking if absent.
+        return
+    cooked = bindir / "m4"
+    shutil.copy(uncooked, cooked)
+
+    def replace_null_terminated_needle_in(haystack: bytes, needle: bytes, newstuff: bytes) -> bytes:
+        # Make sure it has the embedded path/data we are expecting it to have.
+        assert (needle + nullbyte) in haystack
+
+        assert len(newstuff) <= len(needle)
+        if len(newstuff) < len(needle):
+            # Pad the newstuff with null bytes to match the length of needle.
+            newstuff += nullbyte * (len(needle) - len(newstuff))
+
+        assert len(newstuff) == len(needle)
+        return haystack.replace(needle, newstuff)
+
+    say("Cooking m4...")
+    with open(cooked, "r+b") as f:
+        # Read the file into memory
+        data = f.read()
+
+        # Replace the placeholder pkgdatadir with the actual path.
+        data = replace_null_terminated_needle_in(
+            data,
+            localedir,
+            bytes(hermetic.xj_build_deps(HAVE.localdir) / "share" / "locale"),
+        )
+
+        # Write the modified data back to the file
+        f.seek(0)
+        f.write(data)
+        f.truncate()
+    say("... done cooking m4.")
+
+    assert path_of_unusual_size not in data, "Oops, m4 was left undercooked!"
+
+
+def cook_automake_and_autoconf_within() -> None:
+    """Cook automake/aclocal/autoconf scripts and Config.pm to use actual paths.
+
+    These are text files (Perl scripts and modules) that have '/outputs'
+    embedded as a placeholder prefix. We replace it with the actual
+    xj-build-deps path.
+    """
+
+    def say(msg: str):
+        sez(msg, ctx="(automake) ")
+
+    xj_build_deps = hermetic.xj_build_deps(HAVE.localdir)
+    placeholder = b"/outputs"  # XREF(tenjin-build-deps-automake-path)
+    replacement = bytes(xj_build_deps)
+
+    # Collect all the text files that need cooking
+    files_to_cook: list[Path] = []
+
+    config_pm = xj_build_deps / "share" / "automake-1.17" / "Automake" / "Config.pm"
+    assert config_pm.is_file()
+    files_to_cook.append(config_pm)
+
+    autom4te_cfg = xj_build_deps / "share" / "autoconf" / "autom4te.cfg"
+    assert autom4te_cfg.is_file()
+    files_to_cook.append(autom4te_cfg)
+
+    # automake, aclocal, and autoconf scripts (including versioned variants)
+    bindir = xj_build_deps / "bin"
+    for pattern in ["automake*", "aclocal*"]:
+        files_to_cook.extend(bindir.glob(pattern))
+    for name in [
+        "autoconf",
+        "autoreconf",
+        "autoheader",
+        "autom4te",
+        "autoscan",
+        "autoupdate",
+        "ifnames",
+    ]:
+        files_to_cook.append(bindir / name)
+
+    say("Cooking automake/aclocal/autoconf...")
+    for filepath in files_to_cook:
+        with open(filepath, "rb") as f:
+            data = f.read()
+
+        if placeholder not in data:
+            # This file doesn't need cooking (or was already cooked)
+            continue
+
+        data = data.replace(placeholder, replacement)
+
+        with open(filepath, "wb") as ftc:
+            ftc.write(data)
+
+    say("... done cooking automake/aclocal.")
+
+
 def provision_10j_deps_with(version: str, keyname: str):
     match platform.system():
         case "Linux":
@@ -1450,6 +1552,8 @@ def provision_10j_deps_with(version: str, keyname: str):
                 shutil.rmtree(target)
             download_and_extract_tarball(url, target, ctx="(builddeps) ")
             cook_pkg_config_within()
+            cook_m4_within()
+            cook_automake_and_autoconf_within()
 
         case "Darwin":
             # For macOS, we don't do hermetic build deps; instead, we rely on homebrew.
