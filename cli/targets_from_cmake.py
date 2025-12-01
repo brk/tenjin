@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from pathlib import Path
 import os.path
 
-import bencodepy
+import bencodepy  # type: ignore
 from cmake_file_api import CMakeProject, ObjectKind
 from cmake_file_api.kinds.codemodel.v2 import CodemodelV2
 from cmake_file_api.kinds.codemodel.target.v2 import (
@@ -166,28 +166,28 @@ def cmake_project_to_entry_infos(cmake_project: CMakeProject) -> list[EntryInfo]
                     ei.new_args.append(f"-D{define.define}")
 
                 # Add compile command fragments
-                for frag in compile_group.compileCommandFragments:
-                    ei.new_args.append(frag.fragment)
+                for compfrag in compile_group.compileCommandFragments:
+                    ei.new_args.append(compfrag.fragment)
 
             # Extract link info
             if target.link:
-                for frag in target.link.commandFragments:
-                    if frag.role == LinkFragmentRole.LINK_LIBRARIES:
-                        lib = frag.fragment.strip()
+                for linkfrag in target.link.commandFragments:
+                    if linkfrag.role == LinkFragmentRole.LINK_LIBRARIES:
+                        lib = linkfrag.fragment.strip()
                         if lib.startswith("-l"):
                             ei.libs.append(lib[2:])
                         elif lib:
                             ei.rest_inputs.append(lib)
-                    elif frag.role == LinkFragmentRole.LIBRARY_PATHS:
-                        lib_dir = frag.fragment.strip()
+                    elif linkfrag.role == LinkFragmentRole.LIBRARY_PATHS:
+                        lib_dir = linkfrag.fragment.strip()
                         if lib_dir.startswith("-L"):
                             ei.lib_dirs.append(lib_dir[2:])
                         elif lib_dir:
                             ei.lib_dirs.append(lib_dir)
-                    elif frag.role == LinkFragmentRole.LINK_FLAGS:
-                        linkfrag = frag.fragment.strip()
-                        if linkfrag:
-                            ei.new_args.append(linkfrag)
+                    elif linkfrag.role == LinkFragmentRole.LINK_FLAGS:
+                        frag = linkfrag.fragment.strip()
+                        if frag:
+                            ei.new_args.append(frag)
 
             entry_infos.append(ei)
 
@@ -245,19 +245,15 @@ def extract_link_compile_commands(
         # print("c_files:", c_files)
         # print()
         assert not ei.c_inputs
-        mapped_c_objects = []
-        c_files = []
 
         new_entry["arguments"] = ei.new_args
         # Hacky solution: c2rust-tranpile needs an absolute path here,
         # so we add a path-like prefix so that the transpiler can both
         # parse it correctly and recognize it as a bencoded link command
-        inputs = mapped_c_objects + [
-            resolve_in_ei_directory(ei, x, builddir) for x in ei.rest_inputs
-        ]
+        inputs = [resolve_in_ei_directory(ei, x, builddir) for x in ei.rest_inputs]
         link_info = {
             "inputs": inputs,  # FIXME: wrong order???
-            "c_files": c_files,
+            "c_files": [],
             "libs": ei.libs,
             "lib_dirs": ei.lib_dirs,
             "type": "shared" if ei.shared_lib else "exe",
@@ -287,6 +283,7 @@ def resolve_in_ei_directory(ei: EntryInfo, pathbuf: str, builddir: Path) -> str:
             return pathbuf
         assert p.is_relative_to(builddir)
         return p.relative_to(builddir).as_posix()
+    return pathbuf
 
 
 def collect_executable_target_names(

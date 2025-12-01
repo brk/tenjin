@@ -10,7 +10,7 @@ import hashlib
 from dataclasses import dataclass
 from enum import Enum
 
-from clang.cindex import CursorKind
+from clang.cindex import CursorKind  # type: ignore
 from cmake_file_api import CMakeProject
 
 import compilation_database
@@ -317,7 +317,7 @@ def organize_decls_by_headers(
     # We want to construct a mapping indexed by header file path,
     # containing entries for declarations that are consistent across all TUs
     # (in which those decls appear, at least).
-    every_quss = set()
+    every_quss: set[QUSS] = set()
     for rel_tu_path, tu_decls in decls_by_rel_tu.items():
         tu_quss = set(tu_decls.keys())
         every_quss = every_quss.union(tu_quss)
@@ -372,7 +372,9 @@ def expand_overlapping_decl_header_entries(
     if len(entries_set) <= 1:
         return entries_set
 
-    by_header = {h: [] for h in set(e[0] for e in entries_set)}
+    by_header: dict[FilePathStr, list[tuple[FilePathStr, int, int, FileContentsStr]]] = {
+        h: [] for h in set(e[0] for e in entries_set)
+    }
     for entry in entries_set:
         by_header[entry[0]].append(entry)
 
@@ -830,7 +832,7 @@ def run_preparation_passes(
             #     (start_offset, end_offset, source_text) = header_decl
             #     quss_to_expanded_src[q] = source_text
 
-            tu_file_contents = Path(tu_path).read_text(encoding="utf-8")
+            tu_file_contents_str = Path(tu_path).read_text(encoding="utf-8")
             for cursor in tu.cursor.get_children():
                 if cursor.kind.is_declaration():
                     if cursor.kind == CursorKind.FUNCTION_DECL and cursor.is_definition():
@@ -854,7 +856,7 @@ def run_preparation_passes(
                     if q in quss_to_header_src:
                         start_offset = cursor.extent.start.offset
                         end_offset = cursor.extent.end.offset
-                        newest_tu_src = tu_file_contents[start_offset:end_offset]
+                        newest_tu_src = tu_file_contents_str[start_offset:end_offset]
                         decls_src_by_tu.setdefault(tu_path, {})[q] = newest_tu_src
                         defn_offsets_by_tu.setdefault(tu_path, {})[q] = (start_offset, end_offset)
 
