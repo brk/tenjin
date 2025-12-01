@@ -98,6 +98,13 @@ def mk_env_for(localdir: Path, with_tenjin_deps=True, env_ext=None, **kwargs) ->
             env["PATH"],
         ])
 
+        pkg_config_path = env.get("PKG_CONFIG_PATH", "")
+        env["PKG_CONFIG_PATH"] = os.pathsep.join([
+            str(xj_more_deps(localdir) / "lib" / "pkgconfig"),
+            str(xj_gmp_root(localdir) / "lib" / "pkgconfig"),
+            *([pkg_config_path] if pkg_config_path else []),
+        ])
+
         ld_lib_paths = [str(llvm_root / "lib")]
         if platform.system() == "Linux" and not running_in_ci():
             triple = f"{platform.machine()}-linux-gnu"
