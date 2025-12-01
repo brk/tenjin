@@ -616,6 +616,13 @@ def want_10j_more_deps():
                 str(target / "bin" / "cc2json-llvm14"),
             ])
 
+            subprocess.check_call([
+                "install_name_tool",
+                "-id",
+                str(target / "gmp-6.3.0" / "lib" / "libgmp.10.dylib"),
+                str(target / "gmp-6.3.0" / "lib" / "libgmp.10.dylib"),
+            ])
+
         z3_pc = target / "lib" / "pkgconfig" / "z3.pc"
         if z3_pc.is_file():
             lines = z3_pc.read_text(encoding="utf-8").splitlines()

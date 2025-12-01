@@ -8,7 +8,7 @@ WANT = {
     "10j-ocaml": "5.2.0",
     "10j-cmake": "3.31.7",
     "10j-bullseye-sysroot-extras": "rev-b578a0937",
-    "10j-build-deps": "rev-b578a0937",
+    "10j-build-deps": "rev-d915905d0",
     # Note that 10j-more-deps builds against a specific version of LLVM, so before
     # upgrading the major version of 10j-llvm, update 10j-more-deps first.
     "10j-more-deps": "rev-d915905d0",
