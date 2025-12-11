@@ -388,7 +388,7 @@ def run_whiteout_clippy_no_effect_paths(root: Path, dir: Path) -> None:
                 continue
 
             # clippy file_name is relative to the crate root (`dir`)
-            abs_path = (dir / file_name).resolve()
+            abs_path = (dir / file_name).resolve()  # TODO test-resolve
             abs_path_str = str(abs_path)
 
             if abs_path_str not in files_map:

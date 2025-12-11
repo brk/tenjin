@@ -280,16 +280,16 @@ def extract_link_compile_commands(
 
 
 def resolve_in_ei_directory(ei: EntryInfo, pathbuf: str, builddir: Path) -> str:
-    if not Path(pathbuf).is_absolute():
-        # Compute a ".."-free path without calling Path.resolve(),
-        # since (especially on macOS) the builddir may be a symlink.
-        out_abs = combine(ei.entry["directory"], pathbuf)
-        p = Path(out_abs)
-        if not p.exists():
-            return pathbuf
-        assert p.is_relative_to(builddir)
-        return p.relative_to(builddir).as_posix()
-    return pathbuf
+    if Path(pathbuf).is_absolute():
+        return pathbuf
+
+    p = Path(ei.entry["directory"], pathbuf)
+    if not p.exists():
+        return pathbuf
+    p = p.resolve()
+    builddir = builddir.resolve()
+    assert p.is_relative_to(builddir)
+    return p.relative_to(builddir).as_posix()
 
 
 def collect_executable_target_names(

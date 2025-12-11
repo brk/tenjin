@@ -118,7 +118,7 @@ def get_clippy_messages_json(
             "--message-format",
             "json",
             "--manifest-path",
-            (cargo_project_dir / "Cargo.toml").resolve().as_posix(),
+            (cargo_project_dir / "Cargo.toml").absolute().as_posix(),
             "--",
             "-Aclippy::missing_safety_doc",  # TRACTOR does not involve code comments.
             "-Aclippy::too_many_arguments",  # Robust automated conversion > clippy's ideas about style
