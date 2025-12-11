@@ -248,7 +248,17 @@ def rebase_compile_commands_from_to(compile_commands_path: Path, from_dir: Path,
     assert to_dir.is_absolute()
 
     def update(p: str) -> str:
-        return p.replace(from_dir.as_posix(), to_dir.as_posix())
+        # The from_dir can appear in the haystack in resolved or unresolved form.
+        # Since either may be a subpath of the other, we replace the longer one first.
+        unresolved = from_dir.as_posix()
+        resolved = from_dir.resolve().as_posix()
+        if len(resolved) > len(unresolved):
+            first, second = resolved, unresolved
+        else:
+            first, second = unresolved, resolved
+        p = p.replace(first, to_dir.as_posix())
+        p = p.replace(second, to_dir.as_posix())
+        return p
 
     ccs_orig = CompileCommands.from_json_file(compile_commands_path)
     ccs: list[CompileCommand] = []
