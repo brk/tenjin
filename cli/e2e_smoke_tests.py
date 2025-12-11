@@ -21,6 +21,7 @@ def query_selected_tests(testnames: list[str]):
         "1": e2e_smoke_test_1,
         "2": e2e_smoke_test_2,
         "3": e2e_smoke_test_3,
+        "4": e2e_smoke_test_4,
     }
 
     if not testnames or testnames == ["all"]:
@@ -262,3 +263,81 @@ int b_help() { return helper(); }
 
         print("TENJIN_SMOKE_TEST_SUMMARY: e2e_smoke_test_3 output matches for C and Rust")
         print(f"TENJIN_SMOKE_TEST_SUMMARY: e2e_smoke_test_3 took {elapsed_s} seconds to translate")
+
+
+def e2e_smoke_test_4():
+    """A simple end-to-end CMake-based smoke test for Tenjin translation."""
+    if hermetic.running_in_ci():
+        print("::group::")
+    root = repo_root.find_repo_root_dir_Path()
+    cli_subcommands.do_build_rs(root)
+
+    with tempfile.TemporaryDirectory() as tempdir:
+        tempdir_path = Path(tempdir)
+        build_dir = tempdir_path / "build"
+        codebase_dir = tempdir_path / "codebase"
+        results_dir = tempdir_path / "results"
+
+        # Create a simple C codebase
+        codebase_dir.mkdir()
+        (codebase_dir / "main.c").write_text(
+            """
+            #include <stdio.h>
+
+            int main() {
+                printf("Hello, Tenjin!\\n");
+                return 0;
+            }
+            """
+        )
+
+        (codebase_dir / "CMakeLists.txt").write_text(
+            """
+            cmake_minimum_required(VERSION 3.10)
+            project(TenjinSmokeTest4 C)
+            add_executable(tenjin_smoke_test_4 main.c)
+            """
+        )
+
+        # Ensure it compiles and runs as expected
+        hermetic.run(["cmake", "-B", str(build_dir), "-S", str(codebase_dir)], check=True)
+        hermetic.run(["cmake", "--build", str(build_dir)], check=True, capture_output=True)
+        c_prog_output = hermetic.run(
+            [str(build_dir / "tenjin_smoke_test_4")], check=True, capture_output=True
+        )
+        assert c_prog_output.stdout == b"Hello, Tenjin!\n", f"Got: {c_prog_output.stdout!r}"
+
+        start_time = time.time()
+        # Run translation
+        cwd = Path.cwd()
+        os.chdir(tempdir)
+        translation.do_translate(
+            root,
+            codebase_dir.relative_to(tempdir_path),
+            results_dir.relative_to(tempdir_path),
+            cratename="smoke_test_4",
+            guidance_path_or_literal="{}",
+        )
+        os.chdir(cwd)
+
+        elapsed_s = int((time.time() - start_time))
+
+        assert (results_dir / "final" / "Cargo.toml").exists()
+
+        def run_cargo_on_final(args: list[str], capture_output: bool = False):
+            return hermetic.run_cargo_on_translated_code(
+                args,
+                cwd=results_dir / "final",
+                check=True,
+                capture_output=capture_output,
+            )
+
+        run_cargo_on_final(["build"])
+        rs_prog_output = run_cargo_on_final(["run"], capture_output=True)
+
+        assert rs_prog_output.stdout == c_prog_output.stdout
+        if hermetic.running_in_ci():
+            print("::endgroup::")
+
+        print("TENJIN_SMOKE_TEST_SUMMARY: e2e_smoke_test_4 output matches for C and Rust")
+        print(f"TENJIN_SMOKE_TEST_SUMMARY: e2e_smoke_test_4 took {elapsed_s} seconds to translate")
