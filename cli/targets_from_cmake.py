@@ -91,11 +91,11 @@ def convert_json_entries(entries: list[dict[str, Any]]) -> list[EntryInfo]:
             elif arg == "-shared":
                 ei.shared_lib = True
 
-            elif arg[0] != "-" and arg[0] != "-":
-                if arg[-2:] == ".c":
-                    ei.c_inputs.append(arg)
-                else:
-                    ei.rest_inputs.append(arg)
+            elif arg[-2:] == ".c":
+                ei.c_inputs.append(arg)
+
+            elif arg[-2:] == ".o":
+                ei.rest_inputs.append(arg)
 
             else:
                 ei.new_args.append(arg)
