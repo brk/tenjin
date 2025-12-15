@@ -24,7 +24,8 @@ import hermetic
 import repo_root
 import ingest_tracking
 import llvm_bitcode_linking
-import targets_from_cmake
+import targets_from_intercept
+from targets import BuildInfo, BuildTarget, TargetType
 from caching_file_contents import FilePathStr, CachingFileContents
 from constants import WANT, XJ_GUIDANCE_FILENAME
 
@@ -39,7 +40,7 @@ def materialize_compilation_database_in(
     codebase: Path,
     buildcmd: str | None,
     tracker: ingest_tracking.TimingRepo,
-    mut_cmake_exe_targets: list[str] | None = None,
+    mut_build_info: BuildInfo,
 ):
     """Leaves a copy of a provided-or-generated compile_commands.json file
     in the given build directory.
@@ -109,21 +110,13 @@ def materialize_compilation_database_in(
                 # if entry["type"] != "cc":
                 #     continue  # FIXME
                 entries.append(entry)
-        parsed_entries = targets_from_cmake.convert_json_entries(entries)
-        # print("parsed entries:")
-        # pprint(parsed_entries)
+        intercepted_commands = targets_from_intercept.convert_json_entries(entries)
 
-        # entry_infos = targets_from_cmake.cmake_project_to_entry_infos(cmake_project)
-        # print("entry infos:")
-        # pprint(entry_infos)
+        mut_build_info.set_intercepted_commands(intercepted_commands, None, builddir)
 
-        targets_from_cmake.collect_executable_target_names(cmake_project, mut_cmake_exe_targets)
-
-        new_commands = targets_from_cmake.extract_link_compile_commands(
-            parsed_entries, codebase, builddir
+        new_commands = targets_from_intercept.extract_link_compile_commands(
+            intercepted_commands, codebase, builddir
         )
-        # print("link commands:")
-        # pprint(new_commands)
 
         shutil.copyfile(
             builddir / "compile_commands.json", codebase / "compile_commands.cmake.json"
@@ -149,6 +142,8 @@ def materialize_compilation_database_in(
         # If we have a build command, use it to generate a compile_commands.json file
         # by invoking the build command from a temporary directory with a copy of the
         # input codebase.
+        #
+        # Note that (for now) we only support trivial build structures with non-CMake builds.
         shutil.copytree(codebase, builddir, dirs_exist_ok=True)
         hermetic.run(f"intercept-build {buildcmd}", cwd=builddir, shell=True, check=True)
         copy_new_source_files_back(codebase, builddir)
@@ -181,6 +176,13 @@ def materialize_compilation_database_in(
                 f"No compile_commands.json found in {codebase}, "
                 "and unable to generate one automatically."
             )
+
+    # Load the compilation database into the BuildInfo structure
+    # (if it does not already have information from intercepted commands).
+    mut_build_info.with_compilation_database(
+        builddir / "compile_commands.json",
+        BuildTarget(name="implicit", type=TargetType.EXECUTABLE, stem="implicit"),
+    )
 
 
 def compdb_path_in(dir: Path) -> Path:
@@ -445,7 +447,7 @@ class PrepPassResultStore:
     decls_defined_after_pp: dict[
         RelativeFilePathStr, dict[QUSS, tuple[FilePathStr, int, int, FileContentsStr]]
     ]
-    cmake_exe_targets: list[str]
+    build_info: BuildInfo
 
 
 def run_preparation_passes(
@@ -454,9 +456,9 @@ def run_preparation_passes(
     tracker: ingest_tracking.TimingRepo,
     guidance: dict,
     buildcmd: str | None = None,
-) -> tuple[Path, list[str]]:
+) -> tuple[Path, BuildInfo]:
     """Returns the path to the final prepared codebase directory,
-    along with a list of CMake executable targets (if applicable)."""
+    along with information about the build structure."""
 
     def prep_00_copy_pristine_codebase(pristine: Path, newdir: Path, store: PrepPassResultStore):
         copy_codebase(pristine, newdir)
@@ -465,7 +467,7 @@ def run_preparation_passes(
         with tempfile.TemporaryDirectory() as builddirname:
             builddir = Path(builddirname)
             materialize_compilation_database_in(
-                builddir, current_codebase, buildcmd, tracker, store.cmake_exe_targets
+                builddir, current_codebase, buildcmd, tracker, store.build_info
             )
             # The generated compile_commands.json is in builddir and refers to current_codebase.
 
@@ -1031,7 +1033,7 @@ def run_preparation_passes(
     resultsdir_abs = resultsdir.absolute()
 
     store = PrepPassResultStore(
-        decls_defined_by_headers={}, decls_defined_after_pp={}, cmake_exe_targets=[]
+        decls_defined_by_headers={}, decls_defined_after_pp={}, build_info=BuildInfo()
     )
 
     # Note: the original codebase may be a file or directory,
@@ -1052,4 +1054,4 @@ def run_preparation_passes(
 
             prev = newdir
 
-    return prev, store.cmake_exe_targets
+    return prev, store.build_info

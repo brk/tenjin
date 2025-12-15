@@ -222,7 +222,7 @@ def do_translate(
     resultsdir.mkdir(parents=True, exist_ok=True)
 
     # Preparation passes may modify the guidance stored in XJ_GUIDANCE_FILENAME
-    final_prepared_codebase, cmake_exe_targets = run_preparation_passes(
+    final_prepared_codebase, build_info = run_preparation_passes(
         codebase, resultsdir, tracker, guidance, buildcmd
     )
     compdb = final_prepared_codebase / "compile_commands.json"
@@ -234,12 +234,13 @@ def do_translate(
         "--disable-refactoring",
     ]
 
-    if False and cmake_exe_targets:
-        for target in cmake_exe_targets:
-            c2rust_transpile_flags.extend([
-                "--binary",
-                target,
-            ])
+    if False:  # and cmake_exe_targets:
+        # for target in cmake_exe_targets:
+        #     c2rust_transpile_flags.extend([
+        #         "--binary",
+        #         target,
+        #     ])
+        pass
     else:
         ccs_with_main_funcs = find_main_translation_units(
             compilation_database.CompileCommands.from_json_file(compdb)

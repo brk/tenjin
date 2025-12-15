@@ -3,18 +3,31 @@ import hashlib
 import json
 import subprocess
 from pathlib import Path
+from typing import Literal, TypedDict
+
+type InterceptedBuildType = Literal["cc", "ld"]
+
+
+class InterceptedCommandInfo(TypedDict):
+    type: InterceptedBuildType
+    directory: str
+    arguments: list[str]
+    file: str | None
+    output: str | None
 
 
 # Integrated functionality from c2rust/scripts/cc-wrappers/common.py
 # which does not require Python to be installed outside the hermetic environment.
-def intercept_exec(build_type: str, command: str, args: list[str]) -> int:
+def intercept_exec(build_type: InterceptedBuildType, command: str, args: list[str]) -> int:
     build_commands_dir = os.environ.get("BUILD_COMMANDS_DIRECTORY", "/tmp/build_commands")
     # Ensure the build commands directory exists (concurrency-safe)
     Path(build_commands_dir).mkdir(parents=True, exist_ok=True)
-    build_info = {
+    build_info: InterceptedCommandInfo = {
         "type": build_type,
         "directory": os.getcwd(),
         "arguments": [command, *args],
+        "file": None,
+        "output": None,
     }
     build_json = json.dumps(build_info, indent=4)
 
@@ -29,5 +42,9 @@ def intercept_exec(build_type: str, command: str, args: list[str]) -> int:
         f.write(build_json)
 
     script_dir = os.path.dirname(os.path.realpath(__file__))
+    # The -B flag tells gcc/clang to look in the given directory
+    # for compiler executables before looking in the system paths.
+    # This ensures that when a build script uses "clang" to do linking,
+    # clang will use our `ld.lld` wrapper script.
     b_arg = ["-B" + script_dir] if build_type == "cc" else []
     return subprocess.call([command, *b_arg, *args])
