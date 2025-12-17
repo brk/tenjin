@@ -13,7 +13,6 @@ import provisioning
 import hermetic
 import translation
 import cli_subcommands
-import e2e_smoke_tests
 
 
 def do_check_repo_file_sizes() -> bool:
@@ -251,6 +250,12 @@ def clang():
     pass  # placeholder command
 
 
+@cli.command()
+def pytest():
+    "Alias for `10j exec pytest`"
+    pass  # placeholder command
+
+
 # placeholder command
 @cli.command()
 def exec():
@@ -354,22 +359,6 @@ def upload_results(directory: Path, host_port: str):
         sys.exit(1)
 
 
-@cli.command()
-@click.argument("testnames", nargs=-1)
-def check_e2e_smoke_tests(testnames):
-    selected = e2e_smoke_tests.query_selected_tests(testnames)
-    for name, fn in selected.items():
-        if not fn:
-            click.echo(f"Test case {name} unknown", err=True)
-            sys.exit(1)
-
-    # Execute each selected test; if a mapping entry is None, treat as unimplemented
-    for name in sorted(selected.keys()):
-        fn = selected.get(name)
-        assert fn is not None
-        fn()
-
-
 @cli.command(hidden=True)
 def synthesize_compilation_database_for(file: Path):
     """Emit a trivial compilation database JSON for the given C file to stdout."""
@@ -401,6 +390,8 @@ if __name__ == "__main__":
         if sys.argv[1] == "cargo":
             sys.exit(hermetic.run_cargo_in(sys.argv[2:], cwd=Path.cwd(), check=False).returncode)
         if sys.argv[1] == "clang":
+            sys.exit(hermetic.run_shell_cmd(sys.argv[1:]).returncode)
+        if sys.argv[1] == "pytest":
             sys.exit(hermetic.run_shell_cmd(sys.argv[1:]).returncode)
         if sys.argv[1] == "chkc":
             sys.exit(hermetic.run_chkc(sys.argv[2:]).returncode)
