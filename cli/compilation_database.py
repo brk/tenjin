@@ -247,6 +247,13 @@ def extract_preprocessor_definitions_from_compile_commands(
 
 def rebase_compile_commands_from_to(compile_commands_path: Path, from_dir: Path, to_dir: Path):
     """Rebase all paths in the given compile_commands.json file from `from_dir` to `to_dir`."""
+    ccs_orig = CompileCommands.from_json_file(compile_commands_path)
+    rebase_parsed_compile_commands_from_to(ccs_orig, from_dir, to_dir).to_json_file(
+        compile_commands_path
+    )
+
+
+def rebase_parsed_compile_commands_from_to(ccs_orig: CompileCommands, from_dir: Path, to_dir: Path):
     # TODO maybe we need to handle relative paths more explicitly?
     assert from_dir.is_absolute()
     assert to_dir.is_absolute()
@@ -264,7 +271,6 @@ def rebase_compile_commands_from_to(compile_commands_path: Path, from_dir: Path,
         p = p.replace(second, to_dir.as_posix())
         return p
 
-    ccs_orig = CompileCommands.from_json_file(compile_commands_path)
     ccs: list[CompileCommand] = []
     for cc in ccs_orig.commands:
         parts = [update(arg) for arg in cc.get_command_parts()]
@@ -277,7 +283,7 @@ def rebase_compile_commands_from_to(compile_commands_path: Path, from_dir: Path,
                 output=cc.output,
             )
         )
-    CompileCommands(commands=ccs).to_json_file(compile_commands_path)
+    return CompileCommands(commands=ccs)
 
 
 def munge_compile_commands_for_hermetic_translation(compile_commands_path: Path):
