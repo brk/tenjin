@@ -422,6 +422,7 @@ if __name__ == "__main__":
 
             category = sys.argv[2]
             binary = sys.argv[3]
+            assert category in ("cc", "ld")
             sys.exit(intercept_exec.intercept_exec(category, binary, sys.argv[4:]))
 
     cli()
