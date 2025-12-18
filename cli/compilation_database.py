@@ -203,12 +203,11 @@ def extract_macro_args_affecting_content_from_compile_command(cc: CompileCommand
 
 
 def extract_preprocessor_definitions_from_compile_commands(
-    compile_commands_path: Path,
+    ccs: CompileCommands,
     codebase: Path,
 ) -> ingest.PerFilePreprocessorDefinitions:
     """Extract preprocessor definitions from `compile_commands.json`"""
     definitions = {}
-    ccs = CompileCommands.from_json_file(compile_commands_path)
     for cc in ccs.commands:
         args = cc.get_command_parts()
         # command_info["directory"] is build directory, which can be
@@ -254,6 +253,9 @@ def rebase_compile_commands_from_to(compile_commands_path: Path, from_dir: Path,
 
 
 def rebase_parsed_compile_commands_from_to(ccs_orig: CompileCommands, from_dir: Path, to_dir: Path):
+    if from_dir == to_dir:
+        return ccs_orig
+
     # TODO maybe we need to handle relative paths more explicitly?
     assert from_dir.is_absolute()
     assert to_dir.is_absolute()
@@ -282,6 +284,9 @@ def rebase_parsed_compile_commands_from_to(ccs_orig: CompileCommands, from_dir: 
                 arguments=parts if cc.arguments is not None else None,
                 output=cc.output,
             )
+        )
+        assert update(cc.directory) != cc.directory, (
+            f"Rebasing did not change directory path! {from_dir=}, {to_dir=}, {cc.directory=}"
         )
     return CompileCommands(commands=ccs)
 

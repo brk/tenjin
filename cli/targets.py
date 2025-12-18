@@ -62,17 +62,27 @@ class BuildTarget:
 
 
 class BuildInfo:
-    def __init__(self):
-        # self._files: dict[BuildTargetName, list[Path]] = {}
-        # self._commands: dict[BuildTargetName, list[list[str]]] = {}
+    def __init__(self) -> None:
         self._intercepted_commands: list[targets_from_intercept.InterceptedCommand] = []
         self._implicit_target: BuildTarget | None = None
         self._basedir: Path | None = None
 
-    def with_compilation_database(self, compdb: Path, implicit_target: BuildTarget) -> None:
+    def for_single_file(self, c_file: Path, target: BuildTarget) -> None:
+        self._implicit_target = target
+        self._with_parsed_compile_commands(
+            compilation_database.synthetic_compile_commands_for_c_file(c_file, c_file.parent),
+            c_file.parent,
+        )
+
+    def _with_parsed_compile_commands(
+        self,
+        ccmds: compilation_database.CompileCommands,
+        directory: Path,
+    ) -> None:
         def to_intercepted(
             cmd: compilation_database.CompileCommand,
         ) -> targets_from_intercept.InterceptedCommand:
+            assert cmd.directory == directory.as_posix()
             entry: InterceptedCommandInfo = {
                 "type": "cc",
                 "directory": cmd.directory,
@@ -82,24 +92,22 @@ class BuildInfo:
             }
             return targets_from_intercept.convert_intercepted_entry(entry)
 
-        ccmds = compilation_database.CompileCommands.from_json_file(compdb)
         cmd_infos = [to_intercepted(c) for c in ccmds.commands]
-        self.set_intercepted_commands(cmd_infos, implicit_target, compdb.parent)
+        self.set_intercepted_commands(cmd_infos, directory)
 
     def set_intercepted_commands(
         self,
         intercepted_commands: list[targets_from_intercept.InterceptedCommand],
-        implicit_target: BuildTarget | None,
         builddir: Path,
     ):
         self._intercepted_commands = intercepted_commands
-        self._implicit_target = implicit_target
         self._basedir = builddir
 
-        d = self._process_targets()
-        import pprint
-
-        pprint.pprint(d)
+        for cmd in intercepted_commands:
+            assert cmd.entry["directory"] == builddir.resolve().as_posix(), (
+                f"Intercepted command directory {cmd.entry['directory']} does not match "
+                f"BuildInfo basedir {builddir}"
+            )
 
     def _process_targets(
         self,
@@ -152,11 +160,6 @@ class BuildInfo:
             target = BuildTarget(name=target_name, type=target_type, stem=target_stem)
             targets[target_name] = target
 
-            import pprint
-
-            pprint.pprint("link_cmd:")
-            pprint.pprint(link_cmd)
-
         target_to_cmds = {}
         for link_cmd in link_commands:
             target = targets[cmd_target_name(link_cmd)]
@@ -169,14 +172,77 @@ class BuildInfo:
 
         return target_to_cmds
 
-    # def targets(self) -> list[BuildTarget]:
-    #     """Return the list of build targets."""
-    #     return self._targets
+    def compdb_for_all_targets_within(
+        self, current_codebase: Path, include_link_cmds=False
+    ) -> compilation_database.CompileCommands:
+        """Return a compilation database for all targets combined."""
+        if self._basedir is None:
+            raise ValueError("BuildInfo has no basedir set")
 
-    # def source_files_for_target(self, target: BuildTarget) -> list[Path]:
-    #     """Return the list of source files for the given target."""
-    #     return self._files.get(target.name, [])
+        cc_cmds = [
+            _CompileCommand_from_intercepted_command(c, self._basedir)
+            for c in self._intercepted_commands
+            if c.compile_only or include_link_cmds
+        ]
 
-    # def commands_for_target(self, target: BuildTarget) -> list[list[str]]:
-    #     """Return the list of build commands for the given target."""
-    #     return self._commands.get(target.name, [])
+        return compilation_database.rebase_parsed_compile_commands_from_to(
+            compilation_database.CompileCommands(cc_cmds),
+            self._basedir,
+            current_codebase,
+        )
+
+    def get_all_targets(self) -> list[BuildTarget]:
+        """Return all build targets found in this BuildInfo."""
+        target_map = self._process_targets()
+        return [tup[0] for tup in target_map.values()]
+
+    def compdb_for_target_within(
+        self, target_name: BuildTargetName, current_codebase: Path, include_link_cmds=False
+    ) -> compilation_database.CompileCommands:
+        """Return a compilation database for the given target."""
+        if self._basedir is None:
+            raise ValueError("BuildInfo has no basedir set")
+
+        target_map = self._process_targets()
+        if target_name not in target_map:
+            raise ValueError(f"Target {target_name} not found in BuildInfo")
+
+        _, cmds = target_map[target_name]
+        cc_cmds = [
+            _CompileCommand_from_intercepted_command(c, self._basedir)
+            for c in cmds
+            if c.compile_only or include_link_cmds
+        ]
+
+        return compilation_database.rebase_parsed_compile_commands_from_to(
+            compilation_database.CompileCommands(cc_cmds),
+            self._basedir,
+            current_codebase,
+        )
+
+    def is_empty(self) -> bool:
+        """Return True if there are no intercepted commands."""
+        return len(self._intercepted_commands) == 0
+
+
+def _CompileCommand_from_intercepted_command(
+    icmd: targets_from_intercept.InterceptedCommand, basedir: Path
+) -> compilation_database.CompileCommand:
+    """Convert an InterceptedCommand to a CompileCommand."""
+    output = icmd.output
+    if output is not None and not Path(output).is_absolute():
+        output = (basedir / output).as_posix()
+
+    filename = icmd.entry["file"]
+    if not filename and icmd.compile_only and len(icmd.c_inputs) == 1:
+        filename = icmd.c_inputs[0]
+
+    assert filename, f"InterceptedCommand has no identified input file, {icmd}"
+    assert output, "InterceptedCommand has no identified output"
+
+    return compilation_database.CompileCommand(
+        directory=icmd.entry["directory"],
+        file=filename,
+        arguments=icmd.entry["arguments"],
+        output=output,
+    )

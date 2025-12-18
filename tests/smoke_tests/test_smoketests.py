@@ -53,45 +53,6 @@ def test_smoketest1(test_dir, tmp_codebase):
     hermetic.run_chkc(["c-file", "report", str(target)], check=True)
 
 
-def test_smoketest2(root, test_dir, tmp_codebase, tmp_resultsdir):
-    codebase = test_dir / "test_2"
-    translation_preparation.copy_codebase(codebase, tmp_codebase)
-    # For reasons I don't understand yet, intercept-build sometimes creates an empty
-    # compile_commands.json on macOS.
-    hermetic.run(
-        ["clang", "-c", "a.c", "b.c", "main.c", "-MJ", "compile_commands.json"],
-        cwd=tmp_codebase,
-        check=True,
-    )
-    # -MJ produces a comma-terminated list; fix it to be valid JSON
-    compdb_path = tmp_codebase / "compile_commands.json"
-    compdb_path.write_text("[\n" + compdb_path.read_text().rstrip(",\n") + "\n]\n")
-    hermetic.run(["make"], cwd=tmp_codebase, check=True)
-    assert (tmp_codebase / "compile_commands.json").exists()
-
-    # Build and run the C program
-    c_prog_output = hermetic.run(
-        [str(tmp_codebase / "made_main")],
-        check=True,
-        capture_output=True,
-    )
-
-    translation.do_translate(
-        root,
-        tmp_codebase,
-        tmp_resultsdir,
-        cratename="smoke_test_2",
-        guidance_path_or_literal="{}",
-    )
-
-    assert (tmp_resultsdir / "final" / "Cargo.toml").exists()
-
-    run_cargo_on_final(tmp_resultsdir / "final", ["build"])
-    rs_prog_output = run_cargo_on_final(tmp_resultsdir / "final", ["run"], capture_output=True)
-
-    assert rs_prog_output.stdout == c_prog_output.stdout
-
-
 def test_smoketest3(root, test_dir, test_tmp_dir, tmp_codebase, tmp_resultsdir):
     codebase = test_dir / "test_03"
     build_dir = test_tmp_dir / "build"
@@ -142,19 +103,8 @@ def test_triplicated_compilation(root, test_dir, tmp_codebase, tmp_resultsdir):
         f"Expected return code 40, got {c_prog_result.returncode}"
     )
 
-    # (B) Check the compilation databases
-    # Initial compilation database should mention source.c three times
-    compdb_initial_path = tmp_resultsdir / "c_01_materialize_compdb" / "compile_commands.json"
-    assert compdb_initial_path.exists(), f"Initial compdb not found at {compdb_initial_path}"
-
-    with open(compdb_initial_path, "r", encoding="utf-8") as f:
-        compdb_initial = json.load(f)
-
-    source_c_count = sum(1 for entry in compdb_initial if "source.c" in entry.get("file", ""))
-    assert source_c_count == 3, f"Expected source.c to appear 3 times, found {source_c_count}"
-
-    # Deduplicated compilation database should have three differently-named files
-    compdb_dedup_path = tmp_resultsdir / "c_02_uniquify_compdb" / "compile_commands.json"
+    # (B) Deduplicated compilation database should have three differently-named files
+    compdb_dedup_path = tmp_resultsdir / "c_02_uniquify_built" / "compile_commands.json"
     assert compdb_dedup_path.exists(), f"Deduplicated compdb not found at {compdb_dedup_path}"
 
     with open(compdb_dedup_path, "r", encoding="utf-8") as f:

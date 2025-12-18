@@ -17,14 +17,9 @@ will be contained in a subdirectory called `final/`.
 Currently, Tenjin requires either a project directory or a lone C file
 (which should contain a `main` function, and should be compilable without
 any preprocessor definitions or include flags). If providing a project
-directory, it should contain either a pre-generated `compile_commands.json`
-file, or a `CMakeLists.txt` file by which to generate one.
-
+directory, it should contain a `CMakeLists.txt` file.
 For other build systems, there is a `--buildcmd` flag which can, for example,
 invoke `make` on a particular target, or using a particular Makefile.
-Tenjin currently uses `intercept-build` to synthesize a compilation database
-from an unstructured build command. In the future we will switch to `bear`,
-which is more robust and reliable.
 
 Currently, Tenjin requires that the codebase being translated live in a
 Git or jj repository, with a remote named `origin`. Information about the
@@ -32,7 +27,6 @@ state of the translated repository is embedded into generated JSON metadata
 files in the `resultsdir`. This metadata is intended to allow Tenjin's
 developers to easily replicate the results of translation. Eventually this
 metadata will be made optional/opt-out.
-
 
 Tenjin has preliminary support for producing Cargo workspaces for projects
 which produce shared libraries for internal use. However, many of Tenjin's

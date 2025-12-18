@@ -2,7 +2,7 @@ from dataclasses import dataclass
 from pathlib import Path
 import os.path
 
-import bencodepy
+import bencodepy  # type: ignore
 
 import intercept_exec
 

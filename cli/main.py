@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import shutil
 import tempfile
+from typing import Literal, cast
 
 import click
 import requests
@@ -417,12 +418,16 @@ if __name__ == "__main__":
                     *sys.argv[2:],
                 ]).returncode
             )
-        if sys.argv[1] == "intercept-exec" and len(sys.argv) >= 5:
+        if sys.argv[1] == "intercept-exec" and len(sys.argv) >= 6:
             import intercept_exec
 
             category = sys.argv[2]
-            binary = sys.argv[3]
+            run_as = sys.argv[3]
             assert category in ("cc", "ld")
-            sys.exit(intercept_exec.intercept_exec(category, binary, sys.argv[4:]))
+            sys.exit(
+                intercept_exec.intercept_exec(
+                    cast(Literal["cc", "ld"], category), Path(run_as), sys.argv[4:]
+                )
+            )
 
     cli()
