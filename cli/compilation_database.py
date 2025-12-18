@@ -139,20 +139,24 @@ class CompileCommands:
         return [cmd for cmd in self.commands if cmd.absolute_file_path == path]
 
 
-def write_synthetic_compile_commands_to(compdb_path: Path, c_file: Path, builddir: Path):
-    """Write a synthetic compile_commands.json file for a single C file."""
-    assert compdb_path.parent.is_dir()
+def synthetic_compile_commands_for_c_file(c_file: Path, builddir: Path) -> CompileCommands:
     outname = c_file.with_suffix(".o").name
     cc = hermetic.xj_llvm_root(repo_root.localdir()) / "bin" / "clang"
     c_file_full_q = shlex.quote(c_file.resolve().as_posix())
-    CompileCommands([
+    return CompileCommands([
         CompileCommand(
             directory=builddir.as_posix(),
             file=c_file.resolve().as_posix(),
             command=f"{cc} -c {c_file_full_q} -o {shlex.quote(outname)}",
             output=outname,
         )
-    ]).to_json_file(compdb_path)
+    ])
+
+
+def write_synthetic_compile_commands_to(compdb_path: Path, c_file: Path, builddir: Path):
+    """Write a synthetic compile_commands.json file for a single C file."""
+    assert compdb_path.parent.is_dir()
+    synthetic_compile_commands_for_c_file(c_file, builddir).to_json_file(compdb_path)
 
 
 def extract_macro_args_affecting_content_from_compile_command(cc: CompileCommand) -> list[str]:
