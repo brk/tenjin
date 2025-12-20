@@ -244,53 +244,6 @@ def extract_preprocessor_definitions_from_compile_commands(
     return definitions
 
 
-def rebase_compile_commands_from_to(compile_commands_path: Path, from_dir: Path, to_dir: Path):
-    """Rebase all paths in the given compile_commands.json file from `from_dir` to `to_dir`."""
-    ccs_orig = CompileCommands.from_json_file(compile_commands_path)
-    rebase_parsed_compile_commands_from_to(ccs_orig, from_dir, to_dir).to_json_file(
-        compile_commands_path
-    )
-
-
-def rebase_parsed_compile_commands_from_to(ccs_orig: CompileCommands, from_dir: Path, to_dir: Path):
-    if from_dir == to_dir:
-        return ccs_orig
-
-    # TODO maybe we need to handle relative paths more explicitly?
-    assert from_dir.is_absolute()
-    assert to_dir.is_absolute()
-
-    def update(p: str) -> str:
-        # The from_dir can appear in the haystack in resolved or unresolved form.
-        # Since either may be a subpath of the other, we replace the longer one first.
-        unresolved = from_dir.as_posix()
-        resolved = from_dir.resolve().as_posix()
-        if len(resolved) > len(unresolved):
-            first, second = resolved, unresolved
-        else:
-            first, second = unresolved, resolved
-        p = p.replace(first, to_dir.as_posix())
-        p = p.replace(second, to_dir.as_posix())
-        return p
-
-    ccs: list[CompileCommand] = []
-    for cc in ccs_orig.commands:
-        parts = [update(arg) for arg in cc.get_command_parts()]
-        ccs.append(
-            CompileCommand(
-                directory=update(cc.directory),
-                file=update(cc.file),
-                command=" ".join(parts) if cc.command is not None else None,
-                arguments=parts if cc.arguments is not None else None,
-                output=cc.output,
-            )
-        )
-        assert update(cc.directory) != cc.directory, (
-            f"Rebasing did not change directory path! {from_dir=}, {to_dir=}, {cc.directory=}"
-        )
-    return CompileCommands(commands=ccs)
-
-
 def munge_compile_commands_for_hermetic_translation(compile_commands_path: Path):
     """Modify compile_commands.json to explicitly provide Tenjin's sysroot.
     The clang driver automatically gets this via .cfg files, but c2rust doesn't."""

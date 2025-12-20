@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
+import pprint
 
 import compilation_database
 import targets_from_intercept
@@ -65,7 +66,14 @@ class BuildInfo:
     def __init__(self) -> None:
         self._intercepted_commands: list[targets_from_intercept.InterceptedCommand] = []
         self._implicit_target: BuildTarget | None = None
-        self._basedir: Path | None = None
+        self._orig_builddir: Path | None = None
+
+    def __repr__(self) -> str:
+        return (
+            f"BuildInfo(implicit_target={self._implicit_target}, "
+            f"_orig_builddir={self._orig_builddir}, "
+            f"intercepted_commands={pprint.pformat(self._intercepted_commands)})"
+        )
 
     def for_single_file(self, c_file: Path, target: BuildTarget) -> None:
         self._implicit_target = target
@@ -93,21 +101,20 @@ class BuildInfo:
             return targets_from_intercept.convert_intercepted_entry(entry)
 
         cmd_infos = [to_intercepted(c) for c in ccmds.commands]
-        self.set_intercepted_commands(cmd_infos, directory)
+        self._orig_builddir = directory
+        self.set_intercepted_commands(cmd_infos)
 
     def set_intercepted_commands(
-        self,
-        intercepted_commands: list[targets_from_intercept.InterceptedCommand],
-        builddir: Path,
+        self, intercepted_commands: list[targets_from_intercept.InterceptedCommand]
     ):
         self._intercepted_commands = intercepted_commands
-        self._basedir = builddir
 
         for cmd in intercepted_commands:
-            assert cmd.entry["directory"] == builddir.resolve().as_posix(), (
-                f"Intercepted command directory {cmd.entry['directory']} does not match "
-                f"BuildInfo basedir {builddir}"
-            )
+            if self._orig_builddir is not None:
+                assert cmd.entry["directory"] == self._orig_builddir.resolve().as_posix(), (
+                    f"Intercepted command directory {cmd.entry['directory']} does not match "
+                    f"BuildInfo basedir {self._orig_builddir}"
+                )
 
     def _process_targets(
         self,
@@ -176,20 +183,16 @@ class BuildInfo:
         self, current_codebase: Path, include_link_cmds=False
     ) -> compilation_database.CompileCommands:
         """Return a compilation database for all targets combined."""
-        if self._basedir is None:
+        if self._orig_builddir is None:
             raise ValueError("BuildInfo has no basedir set")
 
         cc_cmds = [
-            _CompileCommand_from_intercepted_command(c, self._basedir)
+            _CompileCommand_from_intercepted_command(c, self._orig_builddir, current_codebase)
             for c in self._intercepted_commands
             if c.compile_only or include_link_cmds
         ]
 
-        return compilation_database.rebase_parsed_compile_commands_from_to(
-            compilation_database.CompileCommands(cc_cmds),
-            self._basedir,
-            current_codebase,
-        )
+        return compilation_database.CompileCommands(cc_cmds)
 
     def get_all_targets(self) -> list[BuildTarget]:
         """Return all build targets found in this BuildInfo."""
@@ -200,7 +203,7 @@ class BuildInfo:
         self, target_name: BuildTargetName, current_codebase: Path, include_link_cmds=False
     ) -> compilation_database.CompileCommands:
         """Return a compilation database for the given target."""
-        if self._basedir is None:
+        if self._orig_builddir is None:
             raise ValueError("BuildInfo has no basedir set")
 
         target_map = self._process_targets()
@@ -209,16 +212,12 @@ class BuildInfo:
 
         _, cmds = target_map[target_name]
         cc_cmds = [
-            _CompileCommand_from_intercepted_command(c, self._basedir)
+            _CompileCommand_from_intercepted_command(c, self._orig_builddir, current_codebase)
             for c in cmds
             if c.compile_only or include_link_cmds
         ]
 
-        return compilation_database.rebase_parsed_compile_commands_from_to(
-            compilation_database.CompileCommands(cc_cmds),
-            self._basedir,
-            current_codebase,
-        )
+        return compilation_database.CompileCommands(cc_cmds)
 
     def is_empty(self) -> bool:
         """Return True if there are no intercepted commands."""
@@ -226,12 +225,71 @@ class BuildInfo:
 
 
 def _CompileCommand_from_intercepted_command(
-    icmd: targets_from_intercept.InterceptedCommand, basedir: Path
+    icmd: targets_from_intercept.InterceptedCommand,
+    builddir: Path,
+    current_codebase: Path,
 ) -> compilation_database.CompileCommand:
     """Convert an InterceptedCommand to a CompileCommand."""
+
+    assert builddir.is_absolute()
+    assert current_codebase.is_absolute()
+
+    bd_res = builddir.resolve()
+    cc_res = current_codebase.resolve()
+
+    def update(p: str) -> str:
+        # `p` is assumed to either be a relative path (relative to builddir)
+        # or an absolute path, or a non-path argument.
+        #
+        # We want to convert all paths to be absolute, pointing within
+        # current_codebase when possible.
+        assert builddir.as_posix() == icmd.entry["directory"]
+
+        if Path(p).is_absolute():
+            pp = Path(p).resolve()
+            # Note: we do not return early for absolute paths
+            # that do not exist; we first try rewriting them.
+        else:
+            try:
+                pp = icmd.abs_path(Path(p)).resolve()
+                if not pp.exists():
+                    return p  # Non-path argument
+            except OSError:
+                return p  # Non-path argument
+
+        # pp is absolute and resolved here
+
+        # Paths within the current codebase remain as-is.
+        if pp.is_relative_to(cc_res):
+            return pp.as_posix()
+
+        # Paths within the builddir are redirected to
+        # current_codebase when possible.
+        if pp.is_relative_to(bd_res):
+            relp = pp.relative_to(bd_res)
+            newp = current_codebase / relp
+            if newp.exists():
+                return newp.as_posix()
+            return pp.as_posix()
+
+        # Paths within siblings of the current_codebase are redirected
+        # to current_codebase when possible.
+        if pp.is_relative_to(cc_res.parent):
+            index = len(cc_res.parent.parts)
+            redirected_parts = list(pp.parts)
+            redirected_parts[index] = cc_res.name
+            newp = Path(*redirected_parts)
+            if newp.exists():
+                return newp.as_posix()
+            return pp.as_posix()
+
+        # Absolute paths outside both codebase and builddir remain as-is.
+        return p
+
     output = icmd.output
-    if output is not None and not Path(output).is_absolute():
-        output = (basedir / output).as_posix()
+    assert output is not None, "InterceptedCommand has no output"
+    if not Path(output).is_absolute():
+        output = (current_codebase / output).as_posix()
 
     filename = icmd.entry["file"]
     if not filename and icmd.compile_only and len(icmd.c_inputs) == 1:
@@ -242,7 +300,7 @@ def _CompileCommand_from_intercepted_command(
 
     return compilation_database.CompileCommand(
         directory=icmd.entry["directory"],
-        file=filename,
-        arguments=icmd.entry["arguments"],
-        output=output,
+        file=update(filename),
+        arguments=[update(arg) for arg in icmd.entry["arguments"]],
+        output=update(output),
     )

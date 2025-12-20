@@ -62,7 +62,8 @@ def compute_build_info_in(
                 entries.append(entry)
         intercepted_commands = targets_from_intercept.convert_json_entries(entries)
 
-        mut_build_info.set_intercepted_commands(intercepted_commands, builddir)
+        mut_build_info._orig_builddir = builddir
+        mut_build_info.set_intercepted_commands(intercepted_commands)
 
     provided_compdb = codebase / "compile_commands.json"
     provided_cmakelists = codebase / "CMakeLists.txt"
@@ -185,6 +186,12 @@ def copy_codebase_dir(
     """Copy the original codebase (directory) to a new directory."""
     assert src.is_dir()
     shutil.copytree(src, dst)
+
+    # Remove stale compile_commands.json if present; they should be
+    # regenerated in the new location as needed.
+    compdb_path = dst / "compile_commands.json"
+    if compdb_path.exists():
+        compdb_path.unlink()
 
 
 type QUSS = str
@@ -425,9 +432,8 @@ def run_preparation_passes(
         copy_codebase(pristine, newdir)
 
     def prep_01_intercept_build(prev: Path, current_codebase: Path, store: PrepPassResultStore):
-        with tempfile.TemporaryDirectory() as builddirname:
-            builddir = Path(builddirname)
-            compute_build_info_in(builddir, current_codebase, buildcmd, tracker, store.build_info)
+        builddir = resultsdir / "_build_1"
+        compute_build_info_in(builddir, current_codebase, buildcmd, tracker, store.build_info)
 
         merged_defs = defaultdict(list)
 
@@ -460,8 +466,9 @@ def run_preparation_passes(
         outputs = [cmd.output for cmd in intercepted_commands if cmd.output is not None]
         assert len(outputs) == len(set(outputs)), f"Output files are not unique: {outputs}"
 
-        assert store.build_info._basedir is not None
+        assert store.build_info._orig_builddir is not None
 
+        # Step 1: Find files which are compiled multiple times
         cc_commands_for_path: defaultdict[Path, list[targets_from_intercept.InterceptedCommand]] = (
             defaultdict(list)
         )
@@ -471,75 +478,65 @@ def run_preparation_passes(
             inp = cmd.c_inputs[0] if len(cmd.c_inputs) == 1 else None
             assert inp, f"Expected single C input file for compilation command {cmd}"
 
-            abs_path = Path(inp)
-            if not abs_path.is_absolute():
-                abs_path = current_codebase / abs_path
-            cc_commands_for_path[abs_path].append(cmd)
+            stale_abs_path = cmd.abs_path(Path(inp))
+            cc_commands_for_path[stale_abs_path].append(cmd)
 
-        def update_cmd_entry_directory(
-            cmd: targets_from_intercept.InterceptedCommand,
-        ) -> targets_from_intercept.InterceptedCommand:
-            return dataclasses.replace(
-                cmd,
-                entry={
-                    **cmd.entry,
-                    "directory": current_codebase.as_posix(),
-                },
-            )
-
+        # Step 2: Duplicate files in current_codebase, duplicate commands (but with stale refs).
         new_commands = []
-        for abs_path, cmds in cc_commands_for_path.items():
-            abs_path = Path(abs_path)
+        for stale_abs_path, cmds in cc_commands_for_path.items():
+            stale_abs_path = Path(stale_abs_path)
             if len(cmds) == 1:
                 # Only one command for this file, keep as-is
-                new_commands.append(update_cmd_entry_directory(cmds[0]))
+                new_commands.append(cmds[0])
                 continue
 
             # Multiple commands for same file - need to duplicate all of them
             for idx, cmd in enumerate(cmds):
                 # Create unique file name: foo.c -> foo_xjdup_0.c, foo_xjdup_1.c, ...
-                stem = abs_path.stem
-                suffix = abs_path.suffix
+                stem = stale_abs_path.stem
+                suffix = stale_abs_path.suffix
                 new_filename = f"{stem}_xjdup_{idx}{suffix}"
-                new_file_path = abs_path.parent / new_filename
+                stale_dedup_path = stale_abs_path.parent / new_filename
+                curr_dedup_path = current_codebase / new_filename
 
-                # Copy the source file to the new file
-                shutil.copyfile(abs_path, new_file_path)
+                # Copy the source file to the new file.
+                # The stale path might be in a deleted tmp build dir.
+                # If so, we'll read from the original codebase instead.
+                if stale_abs_path.exists():
+                    shutil.copyfile(stale_abs_path, curr_dedup_path)
+                else:
+                    fallback_path = current_codebase / stale_abs_path.relative_to(
+                        store.build_info._orig_builddir
+                    )
+                    shutil.copyfile(fallback_path, curr_dedup_path)
 
-                # Update command arguments to reference new file
-                new_args = cmd.entry["arguments"].copy()
-                for i, arg in enumerate(new_args):
-                    arg_path = Path(arg)
-                    if not arg_path.is_absolute():
-                        arg_path = current_codebase / arg_path
+                # Cache this to reduce the number of repeated resolve() calls.
+                resolved_stale_path = stale_abs_path.resolve()
+
+                def update_arg(arg: str) -> str:
                     try:
-                        if arg_path.resolve() == abs_path.resolve():
-                            new_args[i] = str(new_file_path)
-                            break
+                        if cmd.abs_path(Path(arg)).resolve() == resolved_stale_path:
+                            return stale_dedup_path.as_posix()
                     except OSError:
                         # Path resolution can fail for non-existent paths
                         pass
+                    return arg
 
-                assert len(cmd.c_inputs) == 1, "Expected single C input file"
-
-                new_cmd = dataclasses.replace(
-                    cmd,
-                    entry={
-                        **cmd.entry,
-                        "arguments": new_args,
-                        "file": str(new_file_path),
-                    },
-                    c_inputs=[str(new_file_path)],
-                )
-                new_commands.append(update_cmd_entry_directory(new_cmd))
+                new_commands.append(cmd.fmap_input_paths(update_arg))
 
         # compile_commands_for_path omits fake link thingy commands,
         # so we need to add them back in.
         for cmd in intercepted_commands:
             if not cmd.compile_only:
-                new_commands.append(update_cmd_entry_directory(cmd))
+                new_commands.append(cmd)
 
-        store.build_info.set_intercepted_commands(new_commands, current_codebase)
+        store.build_info.set_intercepted_commands(new_commands)
+
+        # Synthesize new compile_commands.json in current_codebase.
+        # (this is mostly for debugging purposes, tested in the triplicated smoke test)
+        store.build_info.compdb_for_all_targets_within(current_codebase).to_json_file(
+            current_codebase / "compile_commands.json"
+        )
 
     def prep_localize_mutable_globals(
         prev: Path, current_codebase: Path, store: PrepPassResultStore

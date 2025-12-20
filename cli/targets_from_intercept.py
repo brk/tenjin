@@ -1,4 +1,5 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from typing import Callable
 from pathlib import Path
 import os.path
 
@@ -25,6 +26,22 @@ class InterceptedCommand:
     compile_only: bool
     shared_lib: bool
     output: str | None = None
+
+    def abs_path(self, p: Path) -> Path:
+        if p.is_absolute():
+            return p
+        return Path(self.entry["directory"]) / p
+
+    def fmap_input_paths(self, updater: Callable[[str], str]) -> "InterceptedCommand":
+        return replace(
+            self,
+            entry={
+                **self.entry,
+                "file": updater(self.entry["file"]) if self.entry["file"] else None,
+                "arguments": [updater(arg) for arg in self.entry["arguments"]],
+            },
+            c_inputs=[updater(arg) for arg in self.c_inputs],
+        )
 
 
 def convert_json_entries(
