@@ -206,7 +206,9 @@ def collect_decls_by_rel_tu(
 ) -> dict[RelativeFilePathStr, dict[QUSS, tuple[RelativeFilePathStr, int, int, FileContentsStr]]]:
     def path_of_interest(p: FilePathStr) -> bool:
         if not Path(p).is_relative_to(current_codebase):
-            assert not Path(p).is_relative_to(current_codebase.parent)
+            assert not Path(p).is_relative_to(current_codebase.parent), (
+                f"Unexpected path: {p} not relative to {current_codebase=}"
+            )
             return False
         return restricted_to_files is None or p in restricted_to_files
 
@@ -222,7 +224,9 @@ def collect_decls_by_rel_tu(
     index = c_refact.create_xj_clang_index()
     tus = c_refact.parse_project(index, compdb)
     for tu_path, tu in tus.items():
-        assert Path(tu_path).is_relative_to(current_codebase)
+        assert Path(tu_path).is_relative_to(current_codebase), (
+            f"Unexpected TU path: {tu_path} not relative to {current_codebase=}\n{compdb=}"
+        )
         rel_tu_path = Path(tu_path).relative_to(current_codebase).as_posix()
         for cursor in tu.cursor.get_children():
             # When we run this pass before expanding the preprocessor,
@@ -755,7 +759,7 @@ def run_preparation_passes(
             )
 
     def prep_split_joined_decls(prev: Path, current_codebase: Path, store: PrepPassResultStore):
-        j = c_refact.run_xj_locate_joined_decls(current_codebase)
+        j = c_refact.run_xj_locate_joined_decls(current_codebase, store.build_info)
         c_refact_decl_splitter.apply_decl_splitting_rewrites(current_codebase, j)
 
     def prep_pre_refold_consolidation(
@@ -1059,20 +1063,20 @@ def run_preparation_passes(
         ("copy_pristine_codebase", prep_00_copy_pristine_codebase),
         ("intercept_build", prep_01_intercept_build),
         ("uniquify_built", prep_uniquify_built_files),
+        ("uniquify_statics", prep_uniquify_statics),
+        ("split_joined_decls", prep_split_joined_decls),
+        ("expand_preprocessor", prep_expand_preprocessor),
+        ("run_cclzyerpp_analysis", prep_run_cclzyerpp_analysis),
+        ("localize_mutable_globals", prep_localize_mutable_globals),
+        ("lift_subfield_args", prep_lift_subfield_args),
     ]
 
     if os.environ.get("XJ_EXTRA_PREPARATION_PASSES") == "1":
         preparation_passes.extend([
-            ("uniquify_statics", prep_uniquify_statics),
-            ("split_joined_decls", prep_split_joined_decls),
-            ("expand_preprocessor", prep_expand_preprocessor),
-            ("run_cclzyerpp_analysis", prep_run_cclzyerpp_analysis),
-            ("localize_mutable_globals", prep_localize_mutable_globals),
-            ("lift_subfield_args", prep_lift_subfield_args),
-            # # Refolding and pre-refolding should always go together.
-            # # They are separate steps to allow inspection of the intermediate codebase.
-            # ("pre_refold_consolidation", prep_pre_refold_consolidation),
-            # ("refold_preprocessor", prep_refold_preprocessor),
+            # Refolding and pre-refolding should always go together.
+            # They are separate steps to allow inspection of the intermediate codebase.
+            ("pre_refold_consolidation", prep_pre_refold_consolidation),
+            ("refold_preprocessor", prep_refold_preprocessor),
         ])
 
     prev = original_codebase.absolute()
