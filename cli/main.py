@@ -128,8 +128,7 @@ def translate(codebase, resultsdir, cratename, guidance, buildcmd, reset_results
 @click.argument("c_file_or_codebase")
 def translate_and_run(c_file_or_codebase):
     root = repo_root.find_repo_root_dir_Path()
-    cli_subcommands.do_build_rs(root, capture_output=True)
-    cli_subcommands.do_build_xj_prepare_findfnptrdecls(capture_output=True)
+    cli_subcommands.do_build_star(capture_output=True)
 
     with tempfile.TemporaryDirectory() as tempdir:
         tempdir_path = Path(tempdir)
