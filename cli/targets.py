@@ -66,12 +66,10 @@ class BuildInfo:
     def __init__(self) -> None:
         self._intercepted_commands: list[targets_from_intercept.InterceptedCommand] = []
         self._implicit_target: BuildTarget | None = None
-        self._orig_builddir: Path | None = None
 
     def __repr__(self) -> str:
         return (
             f"BuildInfo(implicit_target={self._implicit_target}, "
-            f"_orig_builddir={self._orig_builddir}, "
             f"intercepted_commands={pprint.pformat(self._intercepted_commands)})"
         )
 
@@ -101,20 +99,12 @@ class BuildInfo:
             return targets_from_intercept.convert_intercepted_entry(entry)
 
         cmd_infos = [to_intercepted(c) for c in ccmds.commands]
-        self._orig_builddir = directory
         self.set_intercepted_commands(cmd_infos)
 
     def set_intercepted_commands(
         self, intercepted_commands: list[targets_from_intercept.InterceptedCommand]
     ):
         self._intercepted_commands = intercepted_commands
-
-        for cmd in intercepted_commands:
-            if self._orig_builddir is not None:
-                assert cmd.entry["directory"] == self._orig_builddir.resolve().as_posix(), (
-                    f"Intercepted command directory {cmd.entry['directory']} does not match "
-                    f"BuildInfo basedir {self._orig_builddir}"
-                )
 
     def _process_targets(
         self,
@@ -183,11 +173,8 @@ class BuildInfo:
         self, current_codebase: Path, include_link_cmds=False
     ) -> compilation_database.CompileCommands:
         """Return a compilation database for all targets combined."""
-        if self._orig_builddir is None:
-            raise ValueError("BuildInfo has no basedir set")
-
         cc_cmds = [
-            _CompileCommand_from_intercepted_command(c, self._orig_builddir, current_codebase)
+            _CompileCommand_from_intercepted_command(c, current_codebase)
             for c in self._intercepted_commands
             if c.compile_only or include_link_cmds
         ]
@@ -203,16 +190,13 @@ class BuildInfo:
         self, target_name: BuildTargetName, current_codebase: Path, include_link_cmds=False
     ) -> compilation_database.CompileCommands:
         """Return a compilation database for the given target."""
-        if self._orig_builddir is None:
-            raise ValueError("BuildInfo has no basedir set")
-
         target_map = self._process_targets()
         if target_name not in target_map:
             raise ValueError(f"Target {target_name} not found in BuildInfo")
 
         _, cmds = target_map[target_name]
         cc_cmds = [
-            _CompileCommand_from_intercepted_command(c, self._orig_builddir, current_codebase)
+            _CompileCommand_from_intercepted_command(c, current_codebase)
             for c in cmds
             if c.compile_only or include_link_cmds
         ]
@@ -226,15 +210,12 @@ class BuildInfo:
 
 def _CompileCommand_from_intercepted_command(
     icmd: targets_from_intercept.InterceptedCommand,
-    builddir: Path,
     current_codebase: Path,
 ) -> compilation_database.CompileCommand:
     """Convert an InterceptedCommand to a CompileCommand."""
 
-    assert builddir.is_absolute()
     assert current_codebase.is_absolute()
 
-    bd_res = builddir.resolve()
     cc_res = current_codebase.resolve()
 
     def update(p: str) -> str:
@@ -243,7 +224,6 @@ def _CompileCommand_from_intercepted_command(
         #
         # We want to convert all paths to be absolute, pointing within
         # current_codebase when possible.
-        assert builddir.as_posix() == icmd.entry["directory"]
 
         if Path(p).is_absolute():
             pp = Path(p).resolve()
@@ -261,15 +241,6 @@ def _CompileCommand_from_intercepted_command(
 
         # Paths within the current codebase remain as-is.
         if pp.is_relative_to(cc_res):
-            return pp.as_posix()
-
-        # Paths within the builddir are redirected to
-        # current_codebase when possible.
-        if pp.is_relative_to(bd_res):
-            relp = pp.relative_to(bd_res)
-            newp = current_codebase / relp
-            if newp.exists():
-                return newp.as_posix()
             return pp.as_posix()
 
         # Paths within siblings of the current_codebase are redirected

@@ -2,7 +2,6 @@ import os
 import json
 import shutil
 import time
-import tempfile
 from pathlib import Path
 from typing import Callable
 from subprocess import CompletedProcess
@@ -62,7 +61,6 @@ def compute_build_info_in(
                 entries.append(entry)
         intercepted_commands = targets_from_intercept.convert_json_entries(entries)
 
-        mut_build_info._orig_builddir = builddir
         mut_build_info.set_intercepted_commands(intercepted_commands)
 
     provided_compdb = codebase / "compile_commands.json"
@@ -466,8 +464,6 @@ def run_preparation_passes(
         outputs = [cmd.output for cmd in intercepted_commands if cmd.output is not None]
         assert len(outputs) == len(set(outputs)), f"Output files are not unique: {outputs}"
 
-        assert store.build_info._orig_builddir is not None
-
         # Step 1: Find files which are compiled multiple times
         cc_commands_for_path: defaultdict[Path, list[targets_from_intercept.InterceptedCommand]] = (
             defaultdict(list)
@@ -500,15 +496,8 @@ def run_preparation_passes(
                 curr_dedup_path = current_codebase / new_filename
 
                 # Copy the source file to the new file.
-                # The stale path might be in a deleted tmp build dir.
-                # If so, we'll read from the original codebase instead.
-                if stale_abs_path.exists():
-                    shutil.copyfile(stale_abs_path, curr_dedup_path)
-                else:
-                    fallback_path = current_codebase / stale_abs_path.relative_to(
-                        store.build_info._orig_builddir
-                    )
-                    shutil.copyfile(fallback_path, curr_dedup_path)
+                assert stale_abs_path.exists()
+                shutil.copyfile(stale_abs_path, curr_dedup_path)
 
                 # Cache this to reduce the number of repeated resolve() calls.
                 resolved_stale_path = stale_abs_path.resolve()
