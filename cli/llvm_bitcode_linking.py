@@ -83,6 +83,10 @@ def compile_and_link_bitcode(
             # going to run this code, or even use it for subsequent translation.
             clang_args.extend(["-emit-llvm", "-g", "-O0", "-c", "-o", str(bc_file)])
 
+            # For reasons I don't yet understand, while Clang 18 picks up our
+            # default config file automatically, Clang 14 needs it spelled out.
+            clang_args.extend(["--config", "clang.cfg"])
+
             # Run clang to produce bitcode
             try:
                 hermetic.run(
