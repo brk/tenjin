@@ -5,6 +5,7 @@ import zlib
 import bz2
 from pathlib import Path
 import tempfile
+import hashlib
 from typing import TypedDict, Union, Optional, Any, Literal, cast
 from typing_extensions import NotRequired
 
@@ -251,6 +252,162 @@ class CovSet:
         """Saves a covset to a JSON file."""
         with open(filepath, "w", encoding="utf-8") as f:
             json.dump(self.to_json_dict(), f, indent=2)
+
+
+def llvm_profdata_to_CovSetDict(
+    llvm_cov_export: dict[str, Any],
+    *,
+    codebase_path: Path,
+    compression: CompressionType = "zlib",
+    path_is_relative_to_codebase: bool = True,
+) -> CovSetDict:
+    """
+    Convert `llvm-cov export -format=text` JSON output to `CovSet`.
+
+    Notes:
+    - `llvm-cov export` is the JSON produced by `llvm-cov export ...`.
+    - This function marks a line as covered if any segment covering that
+        line has `Count > 0`.
+    - CovSet keys are SHA-256 hashes of the *original* source file bytes.
+
+    Parameters
+    ----------
+    llvm_cov_export:
+        Parsed JSON object from `llvm-cov export`.
+    codebase_path:
+        Directory to resolve source files for hashing and line counting.
+    compression:
+        Compression for the stored bitmap.
+    path_is_relative_to_codebase:
+        If true, file paths in the LLVM JSON are treated as relative to
+        `codebase_path`. If false, they are treated as absolute paths.
+    """
+    if not codebase_path.is_dir():
+        raise FileNotFoundError(f"Codebase path not found or not a directory: {codebase_path}")
+
+    # The JSON schema varies somewhat across LLVM versions and flags.
+    # We support the common shape:
+    #   {"data": [{"files": [{"filename": "...", "segments": [...]}, ...]}]}
+    data = llvm_cov_export.get("data")
+    if not isinstance(data, list):
+        raise TypeError("Invalid llvm-cov export JSON: missing/invalid 'data' array")
+
+    files_out: FilesDict = {}
+    # We don't currently reconstruct per-file compiler configurations from
+    # llvm-cov export; keep a single empty config to satisfy schema.
+    configs_out: ConfigsArray = [[]]
+
+    for datum in data:
+        if not isinstance(datum, dict):
+            continue
+        files = datum.get("files")
+        if not isinstance(files, list):
+            continue
+
+        for f in files:
+            if not isinstance(f, dict):
+                continue
+            filename = f.get("filename") or f.get("name")
+            if not isinstance(filename, str) or not filename:
+                continue
+
+            segments = f.get("segments")
+            if segments is None:
+                # Some versions nest under "segments": {"segments": ...}
+                seg_obj = f.get("segments")
+                segments = seg_obj.get("segments") if isinstance(seg_obj, dict) else None
+
+            # If no segments are available, we still record the file with an
+            # empty bitmap (useful for reporting).
+            covered_lines: set[int] = set()
+            if isinstance(segments, list):
+                covered_lines = _covered_lines_from_llvm_segments(segments)
+
+            if path_is_relative_to_codebase:
+                relative_path = filename
+                source_path = codebase_path / filename
+            else:
+                source_path = Path(filename)
+                try:
+                    relative_path = source_path.relative_to(codebase_path).as_posix()
+                except Exception:
+                    relative_path = source_path.as_posix()
+
+            # Hash original source bytes to produce CovSet file key.
+            source_bytes = source_path.read_bytes()
+            file_hash = hashlib.sha256(source_bytes).hexdigest()
+
+            # Determine number of lines to size the bitmap.
+            # Use utf-8 decode with errors='replace' to count lines robustly.
+            try:
+                line_count = source_bytes.decode("utf-8").count("\n") + 1
+            except Exception:
+                # Fallback: count newlines in raw bytes.
+                line_count = source_bytes.count(b"\n") + 1
+            if line_count < 1:
+                line_count = 1
+
+            bitmap_bytes = _lines_to_bitmap_bytes(covered_lines, line_count)
+
+            files_out[file_hash] = {
+                "filepath": {"utf8": relative_path, "hex": None},
+                "expandedhash": None,
+                "encodedcoverage": encode_bitmap(bitmap_bytes, compression),
+            }
+
+    return {"files": files_out, "configs": configs_out}
+
+
+def _covered_lines_from_llvm_segments(segments: list[Any]) -> set[int]:
+    """Extract 1-based covered line numbers from an llvm-cov export segments array."""
+    covered: set[int] = set()
+
+    # Common representation: each segment is a list/tuple
+    #   [Line, Col, Count, HasCount, IsRegionEntry, IsGapRegion]
+    # Some versions include more/less fields; we only depend on indices 0 and 2.
+    for seg in segments:
+        if not isinstance(seg, (list, tuple)) or len(seg) < 3:
+            continue
+        line = seg[0]
+        count = seg[2]
+
+        if not isinstance(line, int) or line <= 0:
+            continue
+        # Count may be int or string depending on exporter; accept numeric strings.
+        if isinstance(count, str):
+            try:
+                count_int = int(count)
+            except ValueError:
+                continue
+        elif isinstance(count, int):
+            count_int = count
+        else:
+            continue
+
+        if count_int > 0:
+            covered.add(line)
+
+    return covered
+
+
+def _lines_to_bitmap_bytes(covered_lines: set[int], line_count: int) -> bytes:
+    """
+    Convert 1-based covered line numbers into bitmap bytes.
+
+    Bit ordering matches `show()`: line 1 is MSB of byte 0.
+    """
+    nbytes = (line_count + 7) // 8
+    bitmap = bytearray(b"\x00" * nbytes)
+
+    for line in covered_lines:
+        if line < 1 or line > line_count:
+            continue
+        idx0 = line - 1
+        byte_index = idx0 // 8
+        bit_index = idx0 % 8
+        bitmap[byte_index] |= 1 << (7 - bit_index)
+
+    return bytes(bitmap)
 
 
 def decode_bitmap(encoded_data: EncodedCoverage) -> bytes:
