@@ -455,6 +455,58 @@ def run_preparation_passes(
             indent=2,
         )
 
+    def prep_02_build_coverage(prev: Path, current_codebase: Path, store: PrepPassResultStore):
+        # Rebuild all targets with coverage instrumentation flags.
+
+        profile_compdb = store.build_info.compdb_for_profiled_build(current_codebase)
+
+        seen_outputs = set()
+
+        def runcmd(cmd: compilation_database.CompileCommand):
+            assert cmd.arguments
+            hermetic.run(
+                cmd.arguments,
+                cwd=cmd.directory,
+                check=True,
+            )
+            seen_outputs.add(cmd.output)
+
+        # First, build all object files
+        for cmd in profile_compdb.commands:
+            if cmd.output is not None and cmd.output.endswith(".o"):
+                runcmd(cmd)
+
+        # Then, all shared libraries
+        for cmd in profile_compdb.commands:
+            if cmd.output is not None and (
+                cmd.output.endswith(".so")
+                or cmd.output.endswith(".dylib")
+                or cmd.output.endswith(".dll")
+            ):
+                runcmd(cmd)
+
+        # Then all remaining commands, which are assumed to be executables
+        for cmd in profile_compdb.commands:
+            if cmd.output is not None and cmd.output not in seen_outputs:
+                runcmd(cmd)
+
+        # TODO: run the above steps in parallel batches
+
+        cov_outputs = set(
+            cmd.output
+            for cmd in profile_compdb.commands
+            if cmd.output is not None and not cmd.output.endswith(".o")
+        )
+        cov_output_names = [Path(p).name for p in cov_outputs]
+        assert len(cov_output_names) == len(set(cov_output_names)), (
+            f"Expected unique exe/lib file names, got duplicates: {cov_output_names}"
+        )
+
+        built_cov = Path(current_codebase.parent / "_built_cov")
+        built_cov.mkdir(exist_ok=True)
+        for o in cov_outputs:
+            shutil.copyfile(o, built_cov / Path(o).name)
+
     def prep_uniquify_built_files(prev: Path, current_codebase: Path, store: PrepPassResultStore):
         # Some codebases will compile the same source file multiple times with different
         # flags. It's really convenient for us if each source file is only compiled once.
@@ -1051,6 +1103,7 @@ def run_preparation_passes(
     ] = [
         ("copy_pristine_codebase", prep_00_copy_pristine_codebase),
         ("intercept_build", prep_01_intercept_build),
+        ("build_coverage", prep_02_build_coverage),
         ("uniquify_built", prep_uniquify_built_files),
         ("uniquify_statics", prep_uniquify_statics),
         ("split_joined_decls", prep_split_joined_decls),
