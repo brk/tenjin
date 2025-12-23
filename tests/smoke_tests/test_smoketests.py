@@ -15,8 +15,8 @@ def run_cargo_on_final(cwd: Path, args: list[str], capture_output: bool = False)
     )
 
 
-def test_smoketest0(root, test_dir, test_tmp_dir, tmp_codebase, tmp_resultsdir):
-    codebase = test_dir / "test_0" / "main.c"
+def test_single_c_file(root, test_dir, test_tmp_dir, tmp_codebase, tmp_resultsdir):
+    codebase = test_dir / "single_c_file" / "main.c"
 
     translation_preparation.copy_codebase(codebase, tmp_codebase)
 
@@ -32,7 +32,7 @@ def test_smoketest0(root, test_dir, test_tmp_dir, tmp_codebase, tmp_resultsdir):
         root,
         tmp_codebase,
         tmp_resultsdir,
-        cratename="smoke_test_0",
+        cratename="single_c_file",
         guidance_path_or_literal="{}",
     )
 
@@ -44,8 +44,8 @@ def test_smoketest0(root, test_dir, test_tmp_dir, tmp_codebase, tmp_resultsdir):
     assert rs_prog_output.stdout == c_prog_output.stdout
 
 
-def test_smoketest1(test_dir, tmp_codebase):
-    codebase = test_dir / "test_1" / "main.c"
+def test_chkc_trivial(test_dir, tmp_codebase):
+    codebase = test_dir / "chkc_trivial" / "main.c"
     target = tmp_codebase / "main.c"
     translation_preparation.copy_codebase(codebase, tmp_codebase)
     hermetic.run_chkc(["c-file", "parse", str(target)], check=True)
@@ -53,8 +53,8 @@ def test_smoketest1(test_dir, tmp_codebase):
     hermetic.run_chkc(["c-file", "report", str(target)], check=True)
 
 
-def test_smoketest3(root, test_dir, test_tmp_dir, tmp_codebase, tmp_resultsdir):
-    codebase = test_dir / "test_03"
+def test_cmake_lone_exe(root, test_dir, test_tmp_dir, tmp_codebase, tmp_resultsdir):
+    codebase = test_dir / "cmake_lone_exe"
     build_dir = test_tmp_dir / "build"
 
     translation_preparation.copy_codebase(codebase, tmp_codebase)
@@ -63,7 +63,7 @@ def test_smoketest3(root, test_dir, test_tmp_dir, tmp_codebase, tmp_resultsdir):
     hermetic.run(["cmake", "-B", str(build_dir), "-S", str(tmp_codebase)], check=True)
     hermetic.run(["cmake", "--build", str(build_dir)], check=True, capture_output=True)
     c_prog_output = hermetic.run(
-        [str(build_dir / "tenjin_smoke_test_4")], check=True, capture_output=True
+        [str(build_dir / "tenjin_smoke_test_lone_exe")], check=True, capture_output=True
     )
     assert c_prog_output.stdout == b"Hello, Tenjin!\n", f"Got: {c_prog_output.stdout!r}"
 
@@ -72,7 +72,7 @@ def test_smoketest3(root, test_dir, test_tmp_dir, tmp_codebase, tmp_resultsdir):
         root,
         tmp_codebase,
         tmp_resultsdir,
-        cratename="smoke_test_3",
+        cratename=codebase.name,
         guidance_path_or_literal="{}",
     )
     run_cargo_on_final(tmp_resultsdir / "final", ["build"])
