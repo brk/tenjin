@@ -407,6 +407,14 @@ def covset_eval(expression: str, output: str | None, on_mismatch: str, compressi
         raise click.exceptions.Exit(code=int(e.code) if e.code is not None else 1)
 
 
+@cli.command()
+@click.argument("target")
+@click.argument("resultsdir")
+@click.argument("output")
+def covset_gen(_target: str, _resultsdir: str, _output: str):
+    pass  # placeholder command
+
+
 if __name__ == "__main__":
     # Per its own documentation, Click does not support losslessly forwarding
     # command line arguments. So when we want to do that, we bypass Click.
@@ -464,5 +472,17 @@ if __name__ == "__main__":
                     cast(Literal["cc", "ld"], category), Path(run_as), sys.argv[4:]
                 )
             )
+        if sys.argv[1] == "covset-gen":
+            # Forward to the function directly, to avoid Click argument parsing issues.
+            if len(sys.argv) < 5:
+                click.echo("Error: covset-gen requires at least three arguments", err=True)
+                sys.exit(1)
+            target, resultsdir, output = sys.argv[2:5]
+            rest = sys.argv[5:]
+            try:
+                covset.generate_via(target, resultsdir, output, rest)
+            except SystemExit as e:
+                raise click.exceptions.Exit(code=int(e.code) if e.code is not None else 1)
+            sys.exit(0)
 
     cli()
