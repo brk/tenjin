@@ -44,3 +44,4 @@ target/
 # Junk files & directories
 ju_*
 ju.*
+xj-type_equiv_classes.txt
