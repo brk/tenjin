@@ -14,6 +14,7 @@ import provisioning
 import hermetic
 import translation
 import cli_subcommands
+import covset
 
 
 def do_check_repo_file_sizes() -> bool:
@@ -369,6 +370,41 @@ def synthesize_compilation_database_for(file: Path):
         c_file=file,
         builddir=file.parent,
     )
+
+
+@cli.command()
+@click.argument("expression")
+@click.option(
+    "-o",
+    "--output",
+    help="Output file path. Defaults to printing JSON to stdout.",
+)
+@click.option(
+    "--on-mismatch",
+    type=click.Choice(["error", "warn", "ignore"], case_sensitive=False),
+    default="error",
+    show_default=True,
+    help="Action to take on expanded hash mismatch.",
+)
+@click.option(
+    "--compression",
+    type=click.Choice(["identity", "zlib", "zstd"], case_sensitive=False),
+    default="zstd",
+    show_default=True,
+    help="Compression type for output bitmaps.",
+)
+def covset_eval(expression: str, output: str | None, on_mismatch: str, compression: str):
+    """Evaluate a covset s-expr."""
+
+    try:
+        covset.do_eval(
+            output=output,
+            expression=expression,
+            on_mismatch=cast(covset.MismatchPolicy, on_mismatch.lower()),
+            compression=cast(covset.CompressionType, compression.lower()),
+        )
+    except SystemExit as e:
+        raise click.exceptions.Exit(code=int(e.code) if e.code is not None else 1)
 
 
 if __name__ == "__main__":
