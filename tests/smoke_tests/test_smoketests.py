@@ -104,7 +104,7 @@ def test_triplicated_compilation(root, test_dir, tmp_codebase, tmp_resultsdir):
     )
 
     # (B) Deduplicated compilation database should have three differently-named files
-    compdb_dedup_path = tmp_resultsdir / "c_02_uniquify_built" / "compile_commands.json"
+    compdb_dedup_path = tmp_resultsdir / "c_03_uniquify_built" / "compile_commands.json"
     assert compdb_dedup_path.exists(), f"Deduplicated compdb not found at {compdb_dedup_path}"
 
     with open(compdb_dedup_path, "r", encoding="utf-8") as f:

@@ -173,13 +173,11 @@ class BuildInfo:
         self, current_codebase: Path, include_link_cmds=False
     ) -> compilation_database.CompileCommands:
         """Return a compilation database for all targets combined."""
-        cc_cmds = [
-            _CompileCommand_from_intercepted_command(c, current_codebase)
-            for c in self._intercepted_commands
-            if c.compile_only or include_link_cmds
-        ]
-
-        return compilation_database.CompileCommands(cc_cmds)
+        return self._compdb_for_all_targets_within(
+            current_codebase,
+            include_link_cmds=include_link_cmds,
+            extra_compile_flags=[],
+        )
 
     def get_all_targets(self) -> list[BuildTarget]:
         """Return all build targets found in this BuildInfo."""
@@ -203,6 +201,29 @@ class BuildInfo:
 
         return compilation_database.CompileCommands(cc_cmds)
 
+    def _compdb_for_all_targets_within(
+        self,
+        current_codebase: Path,
+        include_link_cmds: bool,
+        extra_compile_flags: list[str],
+    ) -> compilation_database.CompileCommands:
+        cc_cmds = [
+            _CompileCommand_from_intercepted_command(c, current_codebase, extra_compile_flags)
+            for c in self._intercepted_commands
+            if c.compile_only or include_link_cmds
+        ]
+
+        return compilation_database.CompileCommands(cc_cmds)
+
+    def compdb_for_profiled_build(
+        self, current_codebase: Path
+    ) -> compilation_database.CompileCommands:
+        return self._compdb_for_all_targets_within(
+            current_codebase,
+            include_link_cmds=True,
+            extra_compile_flags=["-fprofile-instr-generate", "-fcoverage-mapping"],
+        )
+
     def is_empty(self) -> bool:
         """Return True if there are no intercepted commands."""
         return len(self._intercepted_commands) == 0
@@ -211,6 +232,7 @@ class BuildInfo:
 def _CompileCommand_from_intercepted_command(
     icmd: targets_from_intercept.InterceptedCommand,
     current_codebase: Path,
+    extra_compile_flags: list[str] = [],
 ) -> compilation_database.CompileCommand:
     """Convert an InterceptedCommand to a CompileCommand."""
 
@@ -276,9 +298,13 @@ def _CompileCommand_from_intercepted_command(
     assert filename, f"InterceptedCommand has no identified input file, {icmd}"
     assert output, "InterceptedCommand has no identified output"
 
+    raw_arguments = icmd.entry["arguments"]
+    if icmd.compile_only:
+        raw_arguments += extra_compile_flags
+
     return compilation_database.CompileCommand(
         directory=icmd.entry["directory"],
         file=update(filename),
-        arguments=[update_arg(arg) for arg in icmd.entry["arguments"]],
+        arguments=[update_arg(arg) for arg in raw_arguments],
         output=update(output),
     )
