@@ -4,7 +4,8 @@ import base64
 import zlib
 import bz2
 from pathlib import Path
-from typing import TypedDict, Union, Optional, Literal, cast
+from typing import TypedDict, Union, Any, Optional, Literal, cast
+import hashlib
 from typing_extensions import NotRequired
 
 """
@@ -230,6 +231,209 @@ class CovSet:
         """Saves a covset to a JSON file."""
         with open(filepath, "w", encoding="utf-8") as f:
             json.dump(self.to_json_dict(), f, indent=2)
+
+
+def llvm_profdata_to_CovSetDict(
+    llvm_cov_export: dict[str, Any],
+    *,
+    codebase_path: Path,
+    compression: CompressionType = "zstd",
+    path_is_relative_to_codebase: bool = True,
+) -> CovSetDict:
+    """
+    Convert `llvm-cov export -format=text` JSON output to `CovSet`.
+
+    Notes:
+    - This function marks a line as covered if any segment covering that
+        line has `Count > 0`.
+    - CovSet keys are SHA-256 hashes of the *original* source file bytes.
+
+    Parameters
+    ----------
+    llvm_cov_export:
+        Parsed JSON object from `llvm-cov export`.
+    codebase_path:
+        Directory to resolve source files for hashing and line counting.
+    compression:
+        Compression for the stored bitmap.
+    path_is_relative_to_codebase:
+        If true, file paths in the LLVM JSON are treated as relative to
+        `codebase_path`. If false, they are treated as absolute paths.
+    """
+    if not codebase_path.is_dir():
+        raise FileNotFoundError(f"Codebase path not found or not a directory: {codebase_path}")
+
+    # The JSON schema varies somewhat across LLVM versions and flags.
+    # We support the common shape:
+    #   {"data": [{"files": [{"filename": "...", "segments": [...]}, ...]}]}
+    data = llvm_cov_export.get("data")
+    if not isinstance(data, list):
+        raise TypeError("Invalid llvm-cov export JSON: missing/invalid 'data' array")
+
+    files_out: FilesDict = {}
+    # We don't currently reconstruct per-file compiler configurations from
+    # llvm-cov export; keep a single empty config to satisfy schema.
+    configs_out: ConfigsArray = [[]]
+
+    for datum in data:
+        if not isinstance(datum, dict):
+            continue
+        files = datum.get("files")
+        if not isinstance(files, list):
+            continue
+
+        for f in files:
+            if not isinstance(f, dict):
+                continue
+            filename = f.get("filename") or f.get("name")
+            if not isinstance(filename, str) or not filename:
+                continue
+
+            if path_is_relative_to_codebase:
+                relative_path = filename
+                source_path = codebase_path / filename
+            else:
+                source_path = Path(filename)
+                try:
+                    relative_path = source_path.relative_to(codebase_path).as_posix()
+                except Exception:
+                    relative_path = source_path.as_posix()
+
+            # Hash original source bytes to produce CovSet file key.
+            source_bytes = source_path.read_bytes()
+            file_hash = hashlib.sha256(source_bytes).hexdigest()
+
+            # Determine number of lines to size the bitmap.
+            # Compute per-line lengths from a robust UTF-8 decode (with replacement)
+            # and derive the line count from that.
+            text = source_bytes.decode("utf-8", errors="replace")
+            line_texts = text.splitlines()
+            # Preserve previous semantics of counting a trailing newline as an
+            # additional (empty) final line.
+            if text.endswith("\n"):
+                line_texts.append("")
+            if not line_texts:
+                line_texts = [""]
+            line_lengths = [len(line) for line in line_texts]
+
+            segments = f.get("segments")
+            if segments is None:
+                # Some versions nest under "segments": {"segments": ...}
+                seg_obj = f.get("segments")
+                segments = seg_obj.get("segments") if isinstance(seg_obj, dict) else None
+
+            # If no segments are available, we still record the file with an
+            # empty bitmap (useful for reporting).
+            if isinstance(segments, list):
+                covered, coverable = _covered_lines_from_llvm_segments(segments, line_lengths)
+            else:
+                covered = 0
+                coverable = 0
+
+            files_out[file_hash] = cast(
+                FileInfo,
+                {
+                    "filepath": {"utf8": relative_path, "hex": None},
+                    "expandedhash": None,
+                    "encodedcoverage": encode_bitmap(covered, compression),
+                    "encodedcoverable": encode_bitmap(coverable, compression),
+                    "misc": None,
+                },
+            )
+
+    return {"files": files_out, "configs": configs_out}
+
+
+def _covered_lines_from_llvm_segments(
+    segments: list[Any], line_lengths: list[int]
+) -> tuple[int, int]:
+    """Extract 1-based covered & coverable line numbers from an `llvm-cov export`
+    segments array.
+
+    LLVM segments represent points where coverage count changes. Each segment
+    marks a (line, column) position and the count that applies from that point
+    until the next segment.
+    """
+    covered: int = 0
+    coverable: int = 0
+
+    def ret():
+        return (covered, coverable)
+
+    if not segments:
+        return ret()
+
+    # Filter and parse valid segments
+    # Segment format: [Line, Col, Count, HasCount, IsRegionEntry, IsGapRegion, ...]
+    parsed_segments: list[tuple[int, int, int, bool]] = []  # (line, col, count, has_count)
+
+    for seg in segments:
+        if not isinstance(seg, (list, tuple)) or len(seg) < 3:
+            continue
+        line = seg[0]
+        col = seg[1] if len(seg) > 1 else 1
+        count = seg[2]
+        # HasCount indicates whether count is meaningful; if false, treat as uncovered
+        has_count = seg[3] if len(seg) > 3 else True
+
+        if not isinstance(line, int) or line <= 0:
+            continue
+        if not isinstance(col, int):
+            col = 1
+
+        # If HasCount is false, treat as zero coverage regardless of count field
+        if has_count is False or has_count == 0:
+            parsed_segments.append((line, col, 0, False))
+            continue
+
+        # Count may be int or string depending on exporter; accept numeric strings.
+        if isinstance(count, str):
+            try:
+                count_int = int(count)
+            except ValueError:
+                continue
+        elif isinstance(count, int):
+            count_int = count
+        else:
+            continue
+
+        parsed_segments.append((line, col, count_int, True))
+
+    if not parsed_segments:
+        return ret()
+
+    # Segments should already be in order, but sort to be safe
+    parsed_segments.sort(key=lambda s: (s[0], s[1]))
+
+    # Process consecutive segment pairs.
+    # The count at segment[i] applies to all lines from segment[i] to segment[i+1].
+    for i in range(len(parsed_segments) - 1):
+        start_line, start_col, count, has_count = parsed_segments[i]
+        end_line, end_col, _, _ = parsed_segments[i + 1]
+
+        if start_col == line_lengths[start_line - 1] + 1:
+            # Segment starts at column after end of line: move to next line
+            start_line += 1
+
+        # If the next segment starts at column 1, the previous segment ends on
+        # the line before (exclusive). Otherwise it ends on the same line (inclusive).
+        if end_col == 1:
+            end_line = end_line - 1
+
+        # Mark all lines from start to end (inclusive)
+        for line_num in range(start_line, end_line + 1):
+            covered |= (1 if count > 0 else 0) << (line_num - 1)
+            coverable |= (1 if has_count else 0) << (line_num - 1)
+
+    # Handle the last segment: if it has count > 0, at minimum that line is covered
+    if parsed_segments:
+        last_line, last_col, last_count, last_has_count = parsed_segments[-1]
+        if last_col == line_lengths[last_line - 1] + 1:
+            last_line += 1
+        if last_count > 0:
+            covered |= 1 << (last_line - 1)
+            coverable |= (1 if last_has_count else 0) << (last_line - 1)
+    return ret()
 
 
 def decode_bitmap(encoded_data: EncodedCoverage) -> int:
