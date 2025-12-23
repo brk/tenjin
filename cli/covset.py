@@ -7,6 +7,10 @@ from pathlib import Path
 from typing import TypedDict, Union, Any, Optional, Literal, cast
 import hashlib
 from typing_extensions import NotRequired
+import tempfile
+from subprocess import CompletedProcess
+
+import hermetic
 
 """
 Type definitions for the Coverage Set (covset) format.
@@ -798,3 +802,86 @@ def do_eval(
     except (ValueError, FileNotFoundError, json.JSONDecodeError, TypeError) as e:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
+
+
+def generate_via(
+    target: str, codebase: Path, resultsdir: Path, output: Path, rest: list[str]
+) -> CompletedProcess:
+    assert resultsdir.is_dir(), f"Results directory not found: {resultsdir}"
+    builtcov = resultsdir / "_built_cov"
+    assert builtcov.is_dir(), f"Built coverage directory not found: {builtcov}"
+    assert (builtcov / target).is_file(), f"Target executable not found: {builtcov / target}"
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp_path = Path(tmpdir)
+        # Use LLVM_PROFILE_FILE to direct coverage output and ensure
+        # shared libraries do not collide in their output files.
+        #    %p = process ID
+        #    %m = module name
+        cp = hermetic.run(
+            [str(builtcov / target), *rest],
+            cwd=tmp_path,
+            env_ext={"LLVM_PROFILE_FILE": "xj-%p-%m.profraw"},
+            check=False,
+        )
+
+        raws = [p.as_posix() for p in tmp_path.glob("xj-*.profraw")]
+        hermetic.run(
+            [
+                "llvm-profdata",
+                "merge",
+                "-sparse",
+                *raws,
+                "-o",
+                str(tmp_path / "merged.profdata"),
+            ],
+            check=True,
+        )
+
+        # --compilation-dir
+        covex = hermetic.run(
+            [
+                "llvm-cov",
+                "export",
+                str(builtcov / target),
+                "-instr-profile",
+                str(tmp_path / "merged.profdata"),
+                "--skip-branches",
+                "--skip-expansions",
+                "--check-binary-ids",
+            ],
+            check=True,
+            capture_output=True,
+        )
+
+        covex_html = hermetic.run(
+            [
+                "llvm-cov",
+                "show",
+                str(builtcov / target),
+                "-instr-profile",
+                str(tmp_path / "merged.profdata"),
+                "-show-line-counts-or-regions",
+                "--format=html",
+            ],
+            check=True,
+            capture_output=True,
+        )
+
+    # TODO parse target info from serialized JSON to reconstruct
+    # the `-object` flags needed to get coverage for shared libraries
+
+    llvm_cov_json = json.loads(covex.stdout.decode("utf-8"))
+    covset_dict = llvm_profdata_to_CovSetDict(
+        llvm_cov_json,
+        codebase_path=codebase,
+        compression="zlib",
+        path_is_relative_to_codebase=True,
+    )
+    with open(output, "w", encoding="utf-8") as f:
+        json.dump(covset_dict, f, indent=2)
+
+    output.with_suffix(".llvm.json").write_bytes(covex.stdout)
+    output.with_suffix(".llvm.html").write_bytes(covex_html.stdout)
+
+    return cp
