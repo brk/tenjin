@@ -437,7 +437,7 @@ def run_preparation_passes(
 
         for target in store.build_info.get_all_targets():
             compdb_for_target = store.build_info.compdb_for_target_within(
-                target.name, current_codebase, include_link_cmds=False
+                target.name, current_codebase
             )
             defs = compilation_database.extract_preprocessor_definitions_from_compile_commands(
                 compdb_for_target,
@@ -458,18 +458,32 @@ def run_preparation_passes(
     def prep_02_build_coverage(prev: Path, current_codebase: Path, store: PrepPassResultStore):
         # Rebuild all targets with coverage instrumentation flags.
 
+        # Note that this will compile the source files from the current_codebase,
+        # but the built artifacts will remain in the original build directory.
         profile_compdb = store.build_info.compdb_for_profiled_build(current_codebase)
 
-        seen_outputs = set()
+        original_builddir = Path(current_codebase.parent / "_build_1")
+        # Since we want to preserve the original build directory contents,
+        # we'll first copy it to a new location. Then we'll re-execute the
+        # intercepted build commands, and then swap out the resulting
+        # artifacts, restoring the original build directory contents.
+        preserved_builddir = original_builddir.with_name("_build_1_preserved")
+        shutil.copytree(original_builddir, preserved_builddir, dirs_exist_ok=True)
+
+        cmd_for_output: dict[str, compilation_database.CompileCommand] = {}
 
         def runcmd(cmd: compilation_database.CompileCommand):
             assert cmd.arguments
+            print("TENJIN: Building coverage target", cmd.output)
+            print(".       by running:", " ".join(cmd.arguments))
+            print(".       in directory:", cmd.directory)
             hermetic.run(
                 cmd.arguments,
                 cwd=cmd.directory,
                 check=True,
             )
-            seen_outputs.add(cmd.output)
+            assert cmd.output is not None
+            cmd_for_output[cmd.output] = cmd
 
         # First, build all object files
         for cmd in profile_compdb.commands:
@@ -487,25 +501,36 @@ def run_preparation_passes(
 
         # Then all remaining commands, which are assumed to be executables
         for cmd in profile_compdb.commands:
-            if cmd.output is not None and cmd.output not in seen_outputs:
+            if cmd.output is not None and cmd.output not in cmd_for_output:
                 runcmd(cmd)
 
         # TODO: run the above steps in parallel batches
 
-        cov_outputs = set(
-            cmd.output
-            for cmd in profile_compdb.commands
-            if cmd.output is not None and not cmd.output.endswith(".o")
-        )
-        cov_output_names = [Path(p).name for p in cov_outputs]
+        # cov_outputs = set(
+        #     cmd.output
+        #     for cmd in profile_compdb.commands
+        #     if cmd.output is not None and not cmd.output.endswith(".o")
+        # )
+        cov_output_names = [Path(p).name for p in cmd_for_output.keys()]
         assert len(cov_output_names) == len(set(cov_output_names)), (
             f"Expected unique exe/lib file names, got duplicates: {cov_output_names}"
         )
 
         built_cov = Path(current_codebase.parent / "_built_cov")
         built_cov.mkdir(exist_ok=True)
-        for o in cov_outputs:
-            shutil.copyfile(o, built_cov / Path(o).name)
+        for o, cmd in cmd_for_output.items():
+            po = Path(o)
+            if not po.is_absolute():
+                po = Path(cmd.directory) / o
+            assert po.exists(), f"Expected built coverage output file not found: {o}"
+            assert po.is_relative_to(original_builddir), (
+                f"Expected built coverage output {o} to be within original builddir {original_builddir}"
+            )
+            rel = po.relative_to(original_builddir)
+            shutil.move(po, built_cov / po.name)
+            shutil.move(preserved_builddir / rel, po)
+
+        shutil.rmtree(preserved_builddir)
 
     def prep_uniquify_built_files(prev: Path, current_codebase: Path, store: PrepPassResultStore):
         # Some codebases will compile the same source file multiple times with different
@@ -600,8 +625,11 @@ def run_preparation_passes(
         if len(all_targets) == 1 and all_targets[0].type == TargetType.EXECUTABLE:
             # Case A
             compdb = store.build_info.compdb_for_target_within(
-                all_targets[0].name, current_codebase, include_link_cmds=False
+                all_targets[0].name, current_codebase
             )
+
+            print("TENJIN: Localizing mutable globals for single-target codebase.")
+            print(compdb)
 
             c_refact.localize_mutable_globals(
                 current_codebase / "xj-cclyzer.json", compdb, prev, current_codebase
@@ -617,7 +645,7 @@ def run_preparation_passes(
         # without concern for overlapping source files.
         for target in store.build_info.get_all_targets():
             compdb_for_target = store.build_info.compdb_for_target_within(
-                target.name, current_codebase, include_link_cmds=False
+                target.name, current_codebase
             )
             c_refact_arglifter.lift_subfield_args(compdb_for_target)
 
@@ -696,8 +724,13 @@ def run_preparation_passes(
             return
 
         curr_compdb = store.build_info.compdb_for_target_within(
-            all_build_targets[0].name, current_codebase, include_link_cmds=False
+            all_build_targets[0].name, current_codebase
         )
+        print("compdb for target:", all_build_targets[0].name)
+        print(curr_compdb)
+        print()
+        print()
+        print(store.build_info)
 
         # Compile and link LLVM bitcode module
         bitcode_module_path = current_codebase / "linked_module.bc"
@@ -717,7 +750,7 @@ def run_preparation_passes(
             return
 
         compdb = store.build_info.compdb_for_target_within(
-            all_build_targets[0].name, current_codebase, include_link_cmds=False
+            all_build_targets[0].name, current_codebase
         )
 
         # clang-rename will use this
@@ -828,7 +861,7 @@ def run_preparation_passes(
             return
 
         compdb = store.build_info.compdb_for_target_within(
-            all_build_targets[0].name, current_codebase, include_link_cmds=False
+            all_build_targets[0].name, current_codebase
         )
 
         decls_src_by_tu: dict[FilePathStr, dict[QUSS, FileContentsStr]] = {}
@@ -1051,7 +1084,7 @@ def run_preparation_passes(
             return
 
         compdb = store.build_info.compdb_for_target_within(
-            all_build_targets[0].name, current_codebase, include_link_cmds=False
+            all_build_targets[0].name, current_codebase
         )
 
         # We want to capture decl information after the header contents have stabilized,
@@ -1065,13 +1098,12 @@ def run_preparation_passes(
         )
 
         # Miscellaneous tasks over, onwards with preprocessor expansion!
+        c_refact.preprocess_build(store.build_info, all_build_targets[0], current_codebase)
+        # build_info now marked to use preprocessed files, so re-generate compdb
         new_compdb: compilation_database.CompileCommands = (
-            c_refact.preprocess_and_create_new_compdb(
-                compdb,
-                current_codebase.as_posix(),
-            )
+            store.build_info.compdb_for_target_within(all_build_targets[0].name, current_codebase)
         )
-        # new_compdb already written to current_codebase
+
         for cmd in new_compdb.commands:
             assert cmd.file_path.suffix == ".i", "Expected preprocessed .i files"
 
@@ -1087,16 +1119,8 @@ def run_preparation_passes(
             print("TENJIN: NOTE: Skipping preprocessor refolding for multi-target codebase.")
             return
 
-        compdb = store.build_info.compdb_for_target_within(
-            all_build_targets[0].name, current_codebase, include_link_cmds=False
-        )
-
-        new_compdb: compilation_database.CompileCommands = (
-            c_refact.refold_preprocess_and_create_new_compdb(compdb, current_codebase.as_posix())
-        )
-        # new_compdb already written to current_codebase
-        for cmd in new_compdb.commands:
-            assert cmd.file_path.suffix == ".c", "Expected un-preprocessed .c files"
+        c_refact.refold_build(store.build_info, all_build_targets[0], current_codebase)
+        # build_info now marked to use refolded files, for future steps
 
     preparation_passes: list[
         tuple[str, Callable[[Path, Path, PrepPassResultStore], CompletedProcess | None]]
@@ -1111,15 +1135,11 @@ def run_preparation_passes(
         ("run_cclzyerpp_analysis", prep_run_cclzyerpp_analysis),
         ("localize_mutable_globals", prep_localize_mutable_globals),
         ("lift_subfield_args", prep_lift_subfield_args),
+        # Refolding and pre-refolding should always go together.
+        # They are separate steps to allow inspection of the intermediate codebase.
+        ("pre_refold_consolidation", prep_pre_refold_consolidation),
+        ("refold_preprocessor", prep_refold_preprocessor),
     ]
-
-    if os.environ.get("XJ_EXTRA_PREPARATION_PASSES") == "1":
-        preparation_passes.extend([
-            # Refolding and pre-refolding should always go together.
-            # They are separate steps to allow inspection of the intermediate codebase.
-            ("pre_refold_consolidation", prep_pre_refold_consolidation),
-            ("refold_preprocessor", prep_refold_preprocessor),
-        ])
 
     prev = original_codebase.absolute()
     resultsdir_abs = resultsdir.absolute()
