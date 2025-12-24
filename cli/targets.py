@@ -240,7 +240,7 @@ def _CompileCommand_from_intercepted_command(
 
     cc_res = current_codebase.resolve()
 
-    def update(p: str) -> str:
+    def update(p: str, must_exist=True) -> str:
         # `p` is assumed to either be a relative path (relative to builddir)
         # or an absolute path, or a non-path argument.
         #
@@ -272,7 +272,7 @@ def _CompileCommand_from_intercepted_command(
             redirected_parts = list(pp.parts)
             redirected_parts[index] = cc_res.name
             newp = Path(*redirected_parts)
-            if newp.exists():
+            if not must_exist or newp.exists():
                 return newp.as_posix()
             return pp.as_posix()
 
@@ -282,9 +282,9 @@ def _CompileCommand_from_intercepted_command(
     def update_arg(p: str) -> str:
         # Applies update to an include (-Ipath) argument
         if p.startswith("-I"):
-            return f"-I{update(p[2:])}"
+            return f"-I{update(p[2:], True)}"
         else:
-            return update(p)
+            return update(p, True)
 
     output = icmd.output
     assert output is not None, "InterceptedCommand has no output"
@@ -306,5 +306,5 @@ def _CompileCommand_from_intercepted_command(
         directory=icmd.entry["directory"],
         file=update(filename),
         arguments=[update_arg(arg) for arg in raw_arguments],
-        output=update(output),
+        output=update(output, must_exist=False),
     )
