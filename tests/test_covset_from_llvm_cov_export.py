@@ -20,9 +20,10 @@ def test_llvm_profdata_to_covset_marks_lines(tmp_path: Path):
                         "filename": "a.c",
                         # cover lines 1 and 3
                         "segments": [
-                            [1, 0, 1, True, True, False],
-                            [2, 0, 0, True, True, False],
-                            [3, 0, 5, True, True, False],
+                            # line, col, count, has_count, is_region_entry, is_gap_region
+                            [1, 1, 1, True, True, False],
+                            [2, 1, 0, True, True, False],
+                            [3, 2, 5, True, True, False],
                         ],
                     }
                 ]
@@ -40,12 +41,10 @@ def test_llvm_profdata_to_covset_marks_lines(tmp_path: Path):
     assert expected_hash in covset.files
 
     info = covset.files[expected_hash]
+    assert "utf8" in info["filepath"]
     assert info["filepath"]["utf8"] == "a.c"
 
     bitmap = ccs.decode_bitmap(info["encodedcoverage"])
-    # 4 lines -> 1 byte
-    assert len(bitmap) == 1
 
-    # show() assumes line 1 -> MSB
-    # covered lines: 1 and 3 -> bits 7 and 5 set => 0b1010_0000 == 0xA0
-    assert bitmap[0] == 0xA0
+    # covered lines: 1 and 3
+    assert bin(bitmap) == "0b101"

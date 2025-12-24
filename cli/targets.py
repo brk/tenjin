@@ -3,6 +3,8 @@ from enum import Enum
 from pathlib import Path
 import pprint
 
+import bencodepy  # type: ignore
+
 import compilation_database
 import targets_from_intercept
 from intercept_exec import InterceptedCommandInfo
@@ -52,6 +54,12 @@ class TargetType(Enum):
                 raise ValueError(f"Unknown TargetType: {self}")
 
 
+class LinkCommandHandling(Enum):
+    INCLUDE = "include"
+    EXCLUDE = "exclude"
+    ADAPT_FOR_C2RUST = "adapt-for-c2rust"
+
+
 type BuildTargetName = str
 
 
@@ -66,6 +74,7 @@ class BuildInfo:
     def __init__(self) -> None:
         self._intercepted_commands: list[targets_from_intercept.InterceptedCommand] = []
         self._implicit_target: BuildTarget | None = None
+        self._use_preprocessed_files: bool = False
 
     def __repr__(self) -> str:
         return (
@@ -73,11 +82,11 @@ class BuildInfo:
             f"intercepted_commands={pprint.pformat(self._intercepted_commands)})"
         )
 
-    def for_single_file(self, c_file: Path, target: BuildTarget) -> None:
+    def for_single_file(self, c_file: Path, builddir: Path, target: BuildTarget) -> None:
         self._implicit_target = target
         self._with_parsed_compile_commands(
-            compilation_database.synthetic_compile_commands_for_c_file(c_file, c_file.parent),
-            c_file.parent,
+            compilation_database.synthetic_compile_commands_for_c_file(c_file, builddir),
+            builddir,
         )
 
     def _with_parsed_compile_commands(
@@ -170,13 +179,14 @@ class BuildInfo:
         return target_to_cmds
 
     def compdb_for_all_targets_within(
-        self, current_codebase: Path, include_link_cmds=False
+        self, current_codebase: Path, link_cmd_handling=LinkCommandHandling.EXCLUDE
     ) -> compilation_database.CompileCommands:
         """Return a compilation database for all targets combined."""
-        return self._compdb_for_all_targets_within(
+        return self._compdb_for_commands_within(
+            self._intercepted_commands,
             current_codebase,
-            include_link_cmds=include_link_cmds,
-            extra_compile_flags=[],
+            link_cmd_handling=link_cmd_handling,
+            extra_compile_or_link_flags=[],
         )
 
     def get_all_targets(self) -> list[BuildTarget]:
@@ -185,7 +195,10 @@ class BuildInfo:
         return [tup[0] for tup in target_map.values()]
 
     def compdb_for_target_within(
-        self, target_name: BuildTargetName, current_codebase: Path, include_link_cmds=False
+        self,
+        target_name: BuildTargetName,
+        current_codebase: Path,
+        link_cmd_handling=LinkCommandHandling.EXCLUDE,
     ) -> compilation_database.CompileCommands:
         """Return a compilation database for the given target."""
         target_map = self._process_targets()
@@ -193,24 +206,32 @@ class BuildInfo:
             raise ValueError(f"Target {target_name} not found in BuildInfo")
 
         _, cmds = target_map[target_name]
-        cc_cmds = [
-            _CompileCommand_from_intercepted_command(c, current_codebase)
-            for c in cmds
-            if c.compile_only or include_link_cmds or len(c.c_inputs) == 1
-        ]
+        return self._compdb_for_commands_within(
+            cmds,
+            current_codebase,
+            link_cmd_handling=link_cmd_handling,
+            extra_compile_or_link_flags=[],
+        )
 
-        return compilation_database.CompileCommands(cc_cmds)
-
-    def _compdb_for_all_targets_within(
+    def _compdb_for_commands_within(
         self,
+        commands: list[targets_from_intercept.InterceptedCommand],
         current_codebase: Path,
-        include_link_cmds: bool,
-        extra_compile_flags: list[str],
+        link_cmd_handling: LinkCommandHandling,
+        extra_compile_or_link_flags: list[str],
     ) -> compilation_database.CompileCommands:
         cc_cmds = [
-            _CompileCommand_from_intercepted_command(c, current_codebase, extra_compile_flags)
-            for c in self._intercepted_commands
-            if c.compile_only or include_link_cmds
+            _CompileCommand_from_intercepted_command(
+                c,
+                current_codebase,
+                self._use_preprocessed_files,
+                link_cmd_handling,
+                extra_compile_or_link_flags,
+            )
+            for c in commands
+            if c.compile_only
+            or link_cmd_handling != LinkCommandHandling.EXCLUDE
+            or len(c.c_inputs) == 1
         ]
 
         return compilation_database.CompileCommands(cc_cmds)
@@ -218,10 +239,11 @@ class BuildInfo:
     def compdb_for_profiled_build(
         self, current_codebase: Path
     ) -> compilation_database.CompileCommands:
-        return self._compdb_for_all_targets_within(
+        return self._compdb_for_commands_within(
+            self._intercepted_commands,
             current_codebase,
-            include_link_cmds=True,
-            extra_compile_flags=["-fprofile-instr-generate", "-fcoverage-mapping"],
+            link_cmd_handling=LinkCommandHandling.INCLUDE,
+            extra_compile_or_link_flags=["-fprofile-instr-generate", "-fcoverage-mapping"],
         )
 
     def is_empty(self) -> bool:
@@ -232,13 +254,21 @@ class BuildInfo:
 def _CompileCommand_from_intercepted_command(
     icmd: targets_from_intercept.InterceptedCommand,
     current_codebase: Path,
-    extra_compile_flags: list[str] = [],
+    use_preprocessed_files: bool,
+    link_cmd_handling: LinkCommandHandling,
+    extra_compile_or_link_flags: list[str] = [],
 ) -> compilation_database.CompileCommand:
     """Convert an InterceptedCommand to a CompileCommand."""
 
     assert current_codebase.is_absolute()
 
     cc_res = current_codebase.resolve()
+
+    def tweak_suffix(p: Path) -> str:
+        if use_preprocessed_files:
+            if p.suffix == ".c":
+                return p.with_suffix(".nolines.i").as_posix()
+        return p.as_posix()
 
     def update(p: str, must_exist=True) -> str:
         # `p` is assumed to either be a relative path (relative to builddir)
@@ -263,7 +293,7 @@ def _CompileCommand_from_intercepted_command(
 
         # Paths within the current codebase remain as-is.
         if pp.is_relative_to(cc_res):
-            return pp.as_posix()
+            return tweak_suffix(pp)
 
         # Paths within siblings of the current_codebase are redirected
         # to current_codebase when possible.
@@ -273,8 +303,8 @@ def _CompileCommand_from_intercepted_command(
             redirected_parts[index] = cc_res.name
             newp = Path(*redirected_parts)
             if not must_exist or newp.exists():
-                return newp.as_posix()
-            return pp.as_posix()
+                return tweak_suffix(newp)
+            return tweak_suffix(pp)
 
         # Absolute paths outside both codebase and builddir remain as-is.
         return p
@@ -282,29 +312,48 @@ def _CompileCommand_from_intercepted_command(
     def update_arg(p: str) -> str:
         # Applies update to an include (-Ipath) argument
         if p.startswith("-I"):
-            return f"-I{update(p[2:], True)}"
-        else:
-            return update(p, True)
-
-    output = icmd.output
-    assert output is not None, "InterceptedCommand has no output"
-    if not Path(output).is_absolute():
-        output = (current_codebase / output).as_posix()
+            return f"-I{update(p[2:])}"
+        return update(p)
 
     filename = icmd.entry["file"]
-    if not filename and len(icmd.c_inputs) == 1:
-        filename = icmd.c_inputs[0]
+    if not filename:
+        if len(icmd.c_inputs) == 1:
+            filename = icmd.c_inputs[0]
+        elif len(icmd.c_inputs) == 0 and not icmd.compile_only and len(icmd.rest_inputs) == 1:
+            filename = icmd.rest_inputs[0]
+
+    raw_arguments = icmd.entry["arguments"] + extra_compile_or_link_flags
+
+    if link_cmd_handling == LinkCommandHandling.ADAPT_FOR_C2RUST and not icmd.compile_only:
+        # For link commands, we need to adapt the arguments
+        # to be suitable for c2rust.
+        assert icmd.output is not None, "Link command must have an output"
+        assert not icmd.c_inputs, "Link command should not have c_inputs"
+        link_info = {
+            "inputs": icmd.rest_inputs,  # FIXME: wrong order???
+            "c_files": [],
+            "libs": icmd.libs,
+            "lib_dirs": icmd.lib_dirs,
+            "type": "shared" if icmd.shared_lib else "exe",
+            # TODO: parse and add in other linker flags
+            # for now, we don't do this because rustc doesn't use them
+        }
+        filename = "/c2rust/link/" + bencodepy.encode(link_info).decode("utf-8")
+
+    if not filename and not icmd.compile_only and not icmd.c_inputs and len(icmd.rest_inputs) > 0:
+        # At this point, if we don't have a filename, it's most likely
+        # because we have a link command for multiple object files, in
+        # which case there is no distinguished input file. But it also
+        # doesn't matter so long as we're just using the command to do
+        # linking, since the filename doesn't get used. We'll just pick
+        # the first input file.
+        filename = icmd.rest_inputs[0]
 
     assert filename, f"InterceptedCommand has no identified input file, {icmd}"
-    assert output, "InterceptedCommand has no identified output"
-
-    raw_arguments = icmd.entry["arguments"]
-    if icmd.compile_only:
-        raw_arguments += extra_compile_flags
 
     return compilation_database.CompileCommand(
         directory=icmd.entry["directory"],
         file=update(filename),
         arguments=[update_arg(arg) for arg in raw_arguments],
-        output=update(output, must_exist=False),
+        output=icmd.output,
     )
