@@ -196,7 +196,7 @@ class BuildInfo:
         cc_cmds = [
             _CompileCommand_from_intercepted_command(c, current_codebase)
             for c in cmds
-            if c.compile_only or include_link_cmds
+            if c.compile_only or include_link_cmds or len(c.c_inputs) == 1
         ]
 
         return compilation_database.CompileCommands(cc_cmds)
@@ -292,7 +292,7 @@ def _CompileCommand_from_intercepted_command(
         output = (current_codebase / output).as_posix()
 
     filename = icmd.entry["file"]
-    if not filename and icmd.compile_only and len(icmd.c_inputs) == 1:
+    if not filename and len(icmd.c_inputs) == 1:
         filename = icmd.c_inputs[0]
 
     assert filename, f"InterceptedCommand has no identified input file, {icmd}"
