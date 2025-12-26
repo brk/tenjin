@@ -124,6 +124,29 @@ jobs:
         run: XJ_BUILD_RS_PROFILE=release cli/10j pytest tests --capture=no
 
 
+  not-rocket-science-reprovision:
+    runs-on: ubuntu-24.04
+    container: aarnotenjin/fedora-42:latest
+    env:
+      C2RUST_TESTED_CRATES: "-p c2rust -p c2rust-transpile -p c2rust-ast-printer"
+      XJ_BUILD_RS_PROFILE: release
+    steps:
+      - name: Fetch latest commit
+        run: |
+          cd /tenjin
+          git fetch --no-tags --prune --depth=1 "https://github.com/${{ github.repository }}.git" "+${{ github.sha }}"
+          git switch --detach ${{ github.sha }}
+
+      - name: Build c2rust tests
+        run: cd /tenjin/c2rust && ../cli/10j cargo test --locked --release $C2RUST_TESTED_CRATES --no-run
+
+      - name: Run c2rust unit tests
+        run: cd /tenjin/c2rust && ../cli/10j cargo test --locked --release $C2RUST_TESTED_CRATES
+
+      - run: 10j build-rs
+      - run: 10j pytest tests -n auto
+
+
   not-rocket-science-rs-lint:
     runs-on: ubuntu-latest
     steps:
