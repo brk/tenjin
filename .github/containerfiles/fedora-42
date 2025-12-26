@@ -11,6 +11,7 @@ RUN \
    cd / && \
    git clone https://github.com/Aarno-Labs/tenjin && \
    cd tenjin && \
+   XJ_BUILD_RS_PROFILE=release && \
    10j provision && \
    echo 'int main() { return 42; }' > /tmp/fortytwo.c && \
    10j translate-and-run /tmp/fortytwo.c ; \
