@@ -12,6 +12,11 @@ env:
 
 jobs:
   dockerbuilds:
+    # Disable scheduled builds in forks, but retain manual triggering.
+    if: |
+      github.event_name != 'schedule' || 
+      github.repository == 'Aarno-Labs/tenjin'
+
     permissions:
       contents: read
       packages: write
@@ -98,6 +103,11 @@ jobs:
           retention-days: 1
 
   merge:
+    # Disable scheduled builds in forks, but retain manual triggering.
+    if: |
+      github.event_name != 'schedule' || 
+      github.repository == 'Aarno-Labs/tenjin'
+      
     runs-on: ubuntu-latest
     needs:
       - dockerbuilds
