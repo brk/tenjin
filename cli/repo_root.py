@@ -18,6 +18,8 @@ def find_repo_root_dir_Path(start_dir=None) -> Path:
         rootdir = tenjdir.parent
         if validate_candidate_dir(rootdir):
             return rootdir
+        elif "XJ_REPO_ROOT_DIR" in os.environ:
+            start_dir = os.environ["XJ_REPO_ROOT_DIR"]
         else:
             start_dir = os.getcwd()
 

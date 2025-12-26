@@ -392,7 +392,10 @@ if __name__ == "__main__":
         if sys.argv[1] == "clang":
             sys.exit(hermetic.run_shell_cmd(sys.argv[1:]).returncode)
         if sys.argv[1] == "pytest":
-            sys.exit(hermetic.run_shell_cmd(sys.argv[1:]).returncode)
+            # When pytest executes from outside of the repo, e.g. because `10j` is on the PATH,
+            # it cannot find the repo root from the executing script or the cwd.
+            env_ext = {"XJ_REPO_ROOT_DIR": str(repo_root.find_repo_root_dir_Path())}
+            sys.exit(hermetic.run_shell_cmd(sys.argv[1:], env_ext=env_ext).returncode)
         if sys.argv[1] == "chkc":
             sys.exit(hermetic.run_chkc(sys.argv[2:]).returncode)
         if sys.argv[1] == "exec":
