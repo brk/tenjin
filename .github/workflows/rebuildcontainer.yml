@@ -77,7 +77,7 @@ jobs:
           context: .github/containerfiles/
           tags: |
             aarnotenjin/${{ env.CONTAINERFILE }}
-            ghcr.io/Aarno-Labs/tenjin-${{ env.CONTAINERFILE }}
+            ghcr.io/aarno-labs/tenjin-${{ env.CONTAINERFILE }}
           labels: ${{ steps.meta.outputs.labels }}
           annotations: ${{ steps.meta.outputs.annotations }}
           outputs: type=image,push-by-digest=true,name-canonical=true,push=true
