@@ -285,6 +285,9 @@ pub fn create_temp_compile_commands(sources: &[PathBuf]) -> (TempDir, PathBuf) {
         .expect("Failed to create temporary directory for compile_commands.json");
     let temp_path = temp_dir.path().join("compile_commands.json");
 
+    // Clang assumes it will be invoked via absolute path and finds configuration files thusly.
+    let clang_path = env::var("CLANG_PATH").unwrap_or_else(|_| "clang".into());
+
     let compile_commands: Vec<CompileCmd> = sources
         .iter()
         .map(|source_file| {
@@ -295,7 +298,7 @@ pub fn create_temp_compile_commands(sources: &[PathBuf]) -> (TempDir, PathBuf) {
                 directory: PathBuf::from("."),
                 file: absolute_path.clone(),
                 arguments: vec![
-                    "clang".to_string(),
+                    clang_path.clone(),
                     absolute_path.to_str().unwrap().to_owned(),
                 ],
                 command: None,

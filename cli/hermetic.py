@@ -108,6 +108,8 @@ def mk_env_for(localdir: Path, with_tenjin_deps=True, env_ext=None, **kwargs) ->
             env["PATH"],
         ])
 
+        env["CLANG_PATH"] = (xj_llvm_root(localdir) / "bin" / "clang").as_posix()
+
         pkg_config_path = env.get("PKG_CONFIG_PATH", "")
         env["PKG_CONFIG_PATH"] = os.pathsep.join([
             str(xj_more_deps(localdir) / "lib" / "pkgconfig"),
