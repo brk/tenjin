@@ -137,6 +137,8 @@ jobs:
           git fetch --no-tags --prune --depth=1 "https://github.com/${{ github.repository }}.git" "+${{ github.sha }}"
           git switch --detach ${{ github.sha }}
 
+      - run: cd /tenjin && cli/10j provision  # Reprovisioning is automatic outside of CI.
+
       - name: Build c2rust tests
         run: cd /tenjin/c2rust && ../cli/10j cargo test --locked --release $C2RUST_TESTED_CRATES --no-run
 
@@ -144,7 +146,7 @@ jobs:
         run: cd /tenjin/c2rust && ../cli/10j cargo test --locked --release $C2RUST_TESTED_CRATES
 
       - run: 10j build-rs
-      - run: 10j pytest tests -n auto
+      - run: 10j pytest /tenjin/tests -n auto
 
 
   not-rocket-science-rs-lint:
