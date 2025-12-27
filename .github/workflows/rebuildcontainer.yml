@@ -6,9 +6,16 @@ on:
     # Run every Saturday at 16:39 UTC (just before noon on the US East Coast).
     - cron:  '39 16 * * 6'
 
+env:
+  DOCKER_BUILDKIT: 1
+  CONTAINERFILE: fedora-42
+
 jobs:
-  docker:
-    runs-on: ubuntu-latest
+  dockerbuilds:
+    # Disable scheduled builds in forks, but retain manual triggering.
+    if: |
+      github.event_name != 'schedule' || 
+      github.repository == 'Aarno-Labs/tenjin'
 
     permissions:
       contents: read
@@ -17,8 +24,17 @@ jobs:
       id-token: write
 
     strategy:
+      fail-fast: false
       matrix:
-        image: [fedora-42]
+        include:
+        - platslash: linux/amd64
+          platdash: linux-amd64
+          runner: ubuntu-latest
+        - platslash: linux/arm64
+          platdash: linux-arm64
+          runner: ubuntu-24.04-arm
+
+    runs-on: ${{ matrix.runner }}
  
     steps:
       - uses: actions/checkout@v4
@@ -29,15 +45,12 @@ jobs:
           username: aarnotenjin
           password: ${{ secrets.DOCKER_HUB_TOKEN }}
 
-      - name: Login to GitHub Container Registry
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
+      # - name: Login to GitHub Container Registry
+      #   uses: docker/login-action@v3
+      #   with:
+      #     registry: ghcr.io
+      #     username: ${{ github.actor }}
+      #     password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -45,13 +58,90 @@ jobs:
       - name: Get Git commit timestamp
         run: echo "TIMESTAMP=$(git log -1 --pretty=%ct)" >> $GITHUB_ENV
 
+      - name: Docker meta
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: |
+            aarnotenjin/${{ env.CONTAINERFILE }}
+          labels: |
+            org.opencontainers.image.created={{commit_date 'YYYY-MM-DDTHH:mm:ss.SSS[Z]'}}
+
+      - name: Build and push ${{ env.CONTAINERFILE }} by digest
+        uses: docker/build-push-action@v6
+        id: buildandpush
+        with:
+          platforms: ${{ matrix.platslash }}
+          file: .github/containerfiles/${{ env.CONTAINERFILE }}
+          context: .github/containerfiles/
+          tags: |
+            aarnotenjin/${{ env.CONTAINERFILE }}
+          labels: ${{ steps.meta.outputs.labels }}
+          annotations: ${{ steps.meta.outputs.annotations }}
+          outputs: type=image,push-by-digest=true,name-canonical=true,push=true
+        env:
+          SOURCE_DATE_EPOCH: ${{ env.TIMESTAMP }}
+
+      # - name: Generate artifact attestation
+      #   uses: actions/attest-build-provenance@v2
+      #   with:
+      #     subject-name: ghcr.io/Aarno-Labs/tenjin-${{ env.CONTAINERFILE }}
+      #     subject-digest: ${{ steps.buildandpush.outputs.digest }}
+      #     push-to-registry: true
+
+      - name: Export digest
+        run: |
+          mkdir -p ${{ runner.temp }}/digests
+          digest="${{ steps.buildandpush.outputs.digest }}"
+          touch "${{ runner.temp }}/digests/${digest#sha256:}"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@v4
+        with:
+          name: digests-${{ matrix.platdash }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge:
+    # Disable scheduled builds in forks, but retain manual triggering.
+    if: |
+      github.event_name != 'schedule' || 
+      github.repository == 'Aarno-Labs/tenjin'
+
+    runs-on: ubuntu-latest
+    needs:
+      - dockerbuilds
+    steps:
+      - name: Download digests
+        uses: actions/download-artifact@v4
+        with:
+          path: ${{ runner.temp }}/digests
+          pattern: digests-*
+          merge-multiple: true
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: aarnotenjin
+          password: ${{ secrets.DOCKER_HUB_TOKEN }}
+
+      # - name: Login to GitHub Container Registry
+      #   uses: docker/login-action@v3
+      #   with:
+      #     registry: ghcr.io
+      #     username: ${{ github.actor }}
+      #     password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
       - name: Extract metadata
         id: meta
         uses: docker/metadata-action@v5
         with:
           images: |
-            aarnotenjin/${{ matrix.image }}
-            ghcr.io/Aarno-Labs/tenjin-${{ matrix.image }}
+            aarnotenjin/${{ env.CONTAINERFILE }}
           tags: |
             type=sha,prefix=rev-
             type=raw,latest
@@ -61,23 +151,18 @@ jobs:
         env:
           DOCKER_METADATA_SHORT_SHA_LENGTH: 9
 
-      - name: Build and push ${{ matrix.image }}
-        uses: docker/build-push-action@v6
-        id: push
-        with:
-          platforms: linux/amd64,linux/arm64
-          push: true
-          file: .github/containerfiles/${{ matrix.image }}
-          context: .github/containerfiles/
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          annotations: ${{ steps.meta.outputs.annotations }}
-        env:
-          SOURCE_DATE_EPOCH: ${{ env.TIMESTAMP }}
+      - name: Create manifest list and push
+        working-directory: ${{ runner.temp }}/digests
+        shell: bash
+        run: |
+          docker_tags=$(jq -cr '.tags | map(select(contains("aarnotenjin"))) | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON")
+          docker_digests=$(printf 'aarnotenjin/${{ env.CONTAINERFILE }}@sha256:%s ' *)
+          docker buildx imagetools create $docker_tags $docker_digests
 
-      - name: Generate artifact attestation
-        uses: actions/attest-build-provenance@v2
-        with:
-          subject-name: ghcr.io/Aarno-Labs/tenjin-${{ matrix.image }}
-          subject-digest: ${{ steps.push.outputs.digest }}
-          push-to-registry: true
+          # ghcreg_tags=$(jq -cr '.tags | map(select(contains("ghcr.io"))) | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON")
+          # ghcreg_digests=$(printf 'ghcr.io/Aarno-Labs/tenjin-${{ env.CONTAINERFILE }}@sha256:%s ' *)
+          # docker buildx imagetools create $ghcreg_tags $ghcreg_digests
+
+      - name: Inspect image
+        run: |
+          docker buildx imagetools inspect aarnotenjin/${{ env.CONTAINERFILE }}:latest

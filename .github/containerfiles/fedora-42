@@ -1,18 +1,25 @@
 FROM fedora:42
 
+ENV CARGO_HOME=/xj-cargo
+ENV RUSTUP_HOME=/xj-rustup
+ENV PATH="$PATH:/xj-cargo/bin:/tenjin/cli"
+
 RUN \
    dnf install git -y && \
    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain 1.88.0 -y && \
    /bin/true
 
-ENV PATH="$PATH:/root/.cargo/bin:/tenjin/cli"
-
 RUN \
    cd / && \
    git clone https://github.com/Aarno-Labs/tenjin && \
    cd tenjin && \
+   XJ_BUILD_RS_PROFILE=release && \
+   RUSTFLAGS="-Dwarnings -Aclippy::uninlined_format_args" && \
    10j provision && \
    echo 'int main() { return 42; }' > /tmp/fortytwo.c && \
    10j translate-and-run /tmp/fortytwo.c ; \
-   if [ $? -ne 42 ]; then exit 1; fi
+   if [ $? -ne 42 ]; then exit 1; fi && \
+   cd c2rust && \
+   ../cli/10j cargo test --locked --release -p c2rust -p c2rust-transpile -p c2rust-ast-printer --no-run && \
+   /bin/true
    
