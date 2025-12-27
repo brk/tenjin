@@ -1,11 +1,13 @@
 FROM fedora:42
 
+ENV CARGO_HOME=/xj-cargo
+ENV RUSTUP_HOME=/xj-rustup
+ENV PATH="$PATH:/xj-cargo/bin:/tenjin/cli"
+
 RUN \
    dnf install git -y && \
    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain 1.88.0 -y && \
    /bin/true
-
-ENV PATH="$PATH:/root/.cargo/bin:/tenjin/cli"
 
 RUN \
    cd / && \
