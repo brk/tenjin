@@ -15,5 +15,8 @@ RUN \
    10j provision && \
    echo 'int main() { return 42; }' > /tmp/fortytwo.c && \
    10j translate-and-run /tmp/fortytwo.c ; \
-   if [ $? -ne 42 ]; then exit 1; fi
+   if [ $? -ne 42 ]; then exit 1; fi && \
+   cd c2rust && \
+   ../cli/10j cargo test --locked --release -p c2rust -p c2rust-transpile -p c2rust-ast-printer --no-run && \
+   /bin/true
    
