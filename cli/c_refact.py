@@ -1177,7 +1177,8 @@ def localize_mutable_globals(
     #    before the first function definition which uses a mutable global.
     #
     # Use the `BatchingRewriter` to perform all of these rewrites in a single pass.
-    #
+
+    compdb.to_json_file(current_codebase / "compile_commands.json")
 
     nonmain_tissue_functions: set[str] = set(j.get("mutable_global_tissue", {}).get("tissue", []))
     nonmain_tissue_functions.discard("main")  # Don't modify main
