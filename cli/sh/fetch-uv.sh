@@ -5,10 +5,11 @@ set -eu
 
 ##############################################################
 XJ_WANT_UV_VERSION="$1"
+XJ_ROOTDIR="$2"
 
 if [ "$XJ_WANT_UV_VERSION" = "" ]; then
-  echo "Usage: fetch-uv.sh <uv-version>" >&2
-  echo "  e.g. fetch-uv.sh v0.8.0" >&2
+  echo "Usage: fetch-uv.sh <uv-version> <rootdir>" >&2
+  echo "  e.g. fetch-uv.sh 0.8.0 /path/to/tenjin" >&2
   exit 1
 fi
 ##############################################################
@@ -38,6 +39,7 @@ download () {
 
 ##############################################################
 
+cd "$XJ_ROOTDIR"
 REPOROOT=$(realpath .)
 
 [ -f $REPOROOT/cli/sh/fetch-uv.sh ] || die "please run this script from Tenjin's root directory";
