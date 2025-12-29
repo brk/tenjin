@@ -421,6 +421,10 @@ def parse_covset_gen_args(argv: list[str]) -> tuple[argparse.Namespace, list[str
     parser.add_argument("--codebase", required=True)
     parser.add_argument("--resultsdir", required=True)
     parser.add_argument("--output", required=True)
+    parser.add_argument("--html", action="store_true", help="Generate HTML coverage report")
+    parser.add_argument(
+        "--rust", action="store_true", help="Run translated Rust code instead of C code"
+    )
     ns, rest = parser.parse_known_args(argv)
 
     if not ns.target:
@@ -500,7 +504,13 @@ if __name__ == "__main__":
             ns, rest = parse_covset_gen_args(sys.argv[2:])
             try:
                 cp = covset.generate_via(
-                    ns.target, Path(ns.codebase), Path(ns.resultsdir), Path(ns.output), rest
+                    ns.target,
+                    Path(ns.codebase),
+                    Path(ns.resultsdir),
+                    Path(ns.output),
+                    ns.html,
+                    ns.rust,
+                    rest,
                 )
             except SystemExit as e:
                 raise click.exceptions.Exit(code=int(e.code) if e.code is not None else 1)

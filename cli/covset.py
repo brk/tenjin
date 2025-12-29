@@ -243,7 +243,7 @@ def llvm_profdata_to_CovSetDict(
     *,
     codebase_path: Path,
     compression: CompressionType = "zstd",
-    path_is_relative_to_codebase: bool = True,
+    codebase_only: bool = False,
 ) -> CovSetDict:
     """
     Convert `llvm-cov export -format=text` JSON output to `CovSet`.
@@ -258,15 +258,15 @@ def llvm_profdata_to_CovSetDict(
     llvm_cov_export:
         Parsed JSON object from `llvm-cov export`.
     codebase_path:
-        Directory to resolve source files for hashing and line counting.
+        Relative paths will be resolved relative to this directory
     compression:
         Compression for the stored bitmap.
-    path_is_relative_to_codebase:
-        If true, file paths in the LLVM JSON are treated as relative to
-        `codebase_path`. If false, they are treated as absolute paths.
+    codebase_only:
+        If True, discard coverage for files outside `codebase_path`.
     """
     if not codebase_path.is_dir():
         raise FileNotFoundError(f"Codebase path not found or not a directory: {codebase_path}")
+    resolved_codebase_path = codebase_path.resolve()
 
     # The JSON schema varies somewhat across LLVM versions and flags.
     # We support the common shape:
@@ -294,15 +294,13 @@ def llvm_profdata_to_CovSetDict(
             if not isinstance(filename, str) or not filename:
                 continue
 
-            if path_is_relative_to_codebase:
-                relative_path = filename
-                source_path = codebase_path / filename
+            filepath = Path(filename)
+            if filepath.is_absolute():
+                if codebase_only and not filepath.resolve().is_relative_to(resolved_codebase_path):
+                    continue
+                source_path = filepath
             else:
-                source_path = Path(filename)
-                try:
-                    relative_path = source_path.relative_to(codebase_path).as_posix()
-                except Exception:
-                    relative_path = source_path.as_posix()
+                source_path = codebase_path / filepath
 
             # Hash original source bytes to produce CovSet file key.
             source_bytes = source_path.read_bytes()
@@ -338,7 +336,7 @@ def llvm_profdata_to_CovSetDict(
             files_out[file_hash] = cast(
                 FileInfo,
                 {
-                    "filepath": {"utf8": relative_path, "hex": None},
+                    "filepath": {"utf8": filename, "hex": None},
                     "expandedhash": None,
                     "encodedcoverage": encode_bitmap(covered, compression),
                     "encodedcoverable": encode_bitmap(coverable, compression),
@@ -810,12 +808,36 @@ def do_eval(
 
 
 def generate_via(
-    target: str, codebase: Path, resultsdir: Path, output: Path, rest: list[str]
+    target: str,
+    codebase: Path,
+    resultsdir: Path,
+    output: Path,
+    html: bool,
+    rust: bool,
+    rest: list[str],
 ) -> CompletedProcess:
     assert resultsdir.is_dir(), f"Results directory not found: {resultsdir}"
-    builtcov = resultsdir / "_built_cov"
-    assert builtcov.is_dir(), f"Built coverage directory not found: {builtcov}"
-    assert (builtcov / target).is_file(), f"Target executable not found: {builtcov / target}"
+
+    if rust:
+        finaldir = resultsdir / "final"
+        # Clear non-instrumented build artifacts
+        # hermetic.run_cargo_on_translated_code(["clean"], cwd=finaldir, check=True)
+        hermetic.run_cargo_on_translated_code(
+            ["build"],
+            cwd=finaldir,
+            check=True,
+            env_ext={"RUSTFLAGS": "-C instrument-coverage -Awarnings"},
+        )
+        target_binary_path = finaldir / "target" / "debug" / target
+        codebase_path = finaldir
+    else:
+        builtcov = resultsdir / "_built_cov"
+        assert builtcov.is_dir(), f"Built coverage directory not found: {builtcov}"
+        target_binary_path = builtcov / target
+        codebase_path = codebase
+
+    assert target_binary_path.is_file(), f"Target executable not found: {target_binary_path}"
+    target_binary = target_binary_path.as_posix()
 
     with tempfile.TemporaryDirectory() as tmpdir:
         tmp_path = Path(tmpdir)
@@ -824,7 +846,7 @@ def generate_via(
         #    %p = process ID
         #    %m = module name
         cp = hermetic.run(
-            [str(builtcov / target), *rest],
+            [target_binary, *rest],
             cwd=tmp_path,
             env_ext={"LLVM_PROFILE_FILE": "xj-%p-%m.profraw"},
             check=False,
@@ -848,7 +870,7 @@ def generate_via(
             [
                 "llvm-cov",
                 "export",
-                str(builtcov / target),
+                target_binary,
                 "-instr-profile",
                 str(tmp_path / "merged.profdata"),
                 "--skip-branches",
@@ -859,19 +881,22 @@ def generate_via(
             capture_output=True,
         )
 
-        covex_html = hermetic.run(
-            [
-                "llvm-cov",
-                "show",
-                str(builtcov / target),
-                "-instr-profile",
-                str(tmp_path / "merged.profdata"),
-                "-show-line-counts-or-regions",
-                "--format=html",
-            ],
-            check=True,
-            capture_output=True,
-        )
+        if html:
+            covex_html = hermetic.run(
+                [
+                    "llvm-cov",
+                    "show",
+                    target_binary,
+                    "-instr-profile",
+                    str(tmp_path / "merged.profdata"),
+                    "-show-line-counts-or-regions",
+                    "--format=html",
+                ],
+                check=True,
+                capture_output=True,
+            ).stdout
+        else:
+            covex_html = None
 
     # TODO parse target info from serialized JSON to reconstruct
     # the `-object` flags needed to get coverage for shared libraries
@@ -879,14 +904,15 @@ def generate_via(
     llvm_cov_json = json.loads(covex.stdout.decode("utf-8"))
     covset_dict = llvm_profdata_to_CovSetDict(
         llvm_cov_json,
-        codebase_path=codebase,
-        compression="zlib",
-        path_is_relative_to_codebase=True,
+        codebase_path=codebase_path,
+        compression="zstd",
+        codebase_only=True,
     )
     with open(output, "w", encoding="utf-8") as f:
         json.dump(covset_dict, f, indent=2)
 
-    output.with_suffix(".llvm.json").write_bytes(covex.stdout)
-    output.with_suffix(".llvm.html").write_bytes(covex_html.stdout)
+    # output.with_suffix(".llvm.json").write_bytes(covex.stdout)
+    if covex_html:
+        output.with_suffix(".llvm.html").write_bytes(covex_html)
 
     return cp

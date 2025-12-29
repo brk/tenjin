@@ -58,6 +58,7 @@ def covset_gen_arg_parse_helper(args: list[str]) -> dict[str, str | list[str]]:
         "codebase": ns.codebase,
         "resultsdir": ns.resultsdir,
         "output": ns.output,
+        "rust": ns.rust,
         "extra_args": rest,
     }
 
@@ -79,6 +80,7 @@ def test_covset_gen_arg_parsing_1():
         "codebase": "/path/to/codebase",
         "resultsdir": "/path/to/resultsdir",
         "output": "/path/to/output",
+        "rust": False,
         "extra_args": ["--extra-arg1", "extra-arg2"],
     }
 
@@ -100,6 +102,7 @@ def test_covset_gen_arg_parsing_2():
         "codebase": "C",
         "resultsdir": "R",
         "output": "O",
+        "rust": False,
         "extra_args": ["extra-arg2"],
     }
 
@@ -120,6 +123,7 @@ def test_covset_gen_arg_parsing_3():
         "codebase": "C",
         "resultsdir": "R",
         "output": "O",
+        "rust": False,
         "extra_args": ["extra-arg2"],
     }
 
@@ -141,13 +145,14 @@ def test_covset_gen_arg_parsing_4():
         "codebase": "C",
         "resultsdir": "R",
         "output": "O",
+        "rust": False,
         "extra_args": ["extra-arg2"],
     }
 
 
 def test_covset_gen_arg_parsing_5():
     # Note that the separating double dash is required
-    # with the duplicate --codebase argument.
+    # to pass conflicting arguments.
     assert covset_gen_arg_parse_helper([
         "--codebase",
         "C",
@@ -156,6 +161,7 @@ def test_covset_gen_arg_parsing_5():
         "--output",
         "O",
         "T",
+        "--rust",
         # missing double dash
         "--codebase",
         "extra",
@@ -164,5 +170,6 @@ def test_covset_gen_arg_parsing_5():
         "codebase": "extra",
         "resultsdir": "R",
         "output": "O",
+        "rust": True,
         "extra_args": [],
     }
