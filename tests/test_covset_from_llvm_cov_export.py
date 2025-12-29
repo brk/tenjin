@@ -2,6 +2,7 @@ import hashlib
 from pathlib import Path
 
 import covset as ccs
+import main
 
 
 def test_llvm_profdata_to_covset_marks_lines(tmp_path: Path):
@@ -48,3 +49,120 @@ def test_llvm_profdata_to_covset_marks_lines(tmp_path: Path):
 
     # covered lines: 1 and 3
     assert bin(bitmap) == "0b101"
+
+
+def covset_gen_arg_parse_helper(args: list[str]) -> dict[str, str | list[str]]:
+    ns, rest = main.parse_covset_gen_args(args)
+    return {
+        "target": ns.target,
+        "codebase": ns.codebase,
+        "resultsdir": ns.resultsdir,
+        "output": ns.output,
+        "extra_args": rest,
+    }
+
+
+def test_covset_gen_arg_parsing_1():
+    assert covset_gen_arg_parse_helper([
+        "--target",
+        "x86_64-unknown-linux-gnu",
+        "--codebase",
+        "/path/to/codebase",
+        "--resultsdir",
+        "/path/to/resultsdir",
+        "--output",
+        "/path/to/output",
+        "--extra-arg1",
+        "extra-arg2",
+    ]) == {
+        "target": "x86_64-unknown-linux-gnu",
+        "codebase": "/path/to/codebase",
+        "resultsdir": "/path/to/resultsdir",
+        "output": "/path/to/output",
+        "extra_args": ["--extra-arg1", "extra-arg2"],
+    }
+
+
+def test_covset_gen_arg_parsing_2():
+    assert covset_gen_arg_parse_helper([
+        "--target",
+        "T",
+        "--codebase",
+        "C",
+        "--resultsdir",
+        "R",
+        "--output",
+        "O",
+        "--",
+        "extra-arg2",
+    ]) == {
+        "target": "T",
+        "codebase": "C",
+        "resultsdir": "R",
+        "output": "O",
+        "extra_args": ["extra-arg2"],
+    }
+
+
+def test_covset_gen_arg_parsing_3():
+    assert covset_gen_arg_parse_helper([
+        "T",
+        "--codebase",
+        "C",
+        "--resultsdir",
+        "R",
+        "--output",
+        "O",
+        "--",
+        "extra-arg2",
+    ]) == {
+        "target": "T",
+        "codebase": "C",
+        "resultsdir": "R",
+        "output": "O",
+        "extra_args": ["extra-arg2"],
+    }
+
+
+def test_covset_gen_arg_parsing_4():
+    # Target can be given as positional argument, even after options.
+    assert covset_gen_arg_parse_helper([
+        "--codebase",
+        "C",
+        "--resultsdir",
+        "R",
+        "--output",
+        "O",
+        "T",
+        "--",
+        "extra-arg2",
+    ]) == {
+        "target": "T",
+        "codebase": "C",
+        "resultsdir": "R",
+        "output": "O",
+        "extra_args": ["extra-arg2"],
+    }
+
+
+def test_covset_gen_arg_parsing_5():
+    # Note that the separating double dash is required
+    # with the duplicate --codebase argument.
+    assert covset_gen_arg_parse_helper([
+        "--codebase",
+        "C",
+        "--resultsdir",
+        "R",
+        "--output",
+        "O",
+        "T",
+        # missing double dash
+        "--codebase",
+        "extra",
+    ]) == {
+        "target": "T",
+        "codebase": "extra",
+        "resultsdir": "R",
+        "output": "O",
+        "extra_args": [],
+    }

@@ -1,6 +1,7 @@
 import subprocess
 import sys
 import os
+import argparse
 from pathlib import Path
 import shutil
 import tempfile
@@ -408,11 +409,30 @@ def covset_eval(expression: str, output: str | None, on_mismatch: str, compressi
 
 
 @cli.command()
-@click.argument("target")
-@click.argument("resultsdir")
-@click.argument("output")
-def covset_gen(_target: str, _resultsdir: str, _output: str):
+def covset_gen():
+    """Runs a C or Rust program to get coverage data"""
     pass  # placeholder command
+
+
+#   10j covset-gen --target ... --codebase ... --resultsdir ... --output ... [EXTRA...]
+def parse_covset_gen_args(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
+    parser = argparse.ArgumentParser(prog="10j covset-gen")
+    parser.add_argument("--target", required=False)
+    parser.add_argument("--codebase", required=True)
+    parser.add_argument("--resultsdir", required=True)
+    parser.add_argument("--output", required=True)
+    ns, rest = parser.parse_known_args(argv)
+
+    if not ns.target:
+        if rest:
+            ns.target = rest[0]
+            rest = rest[1:]
+        else:
+            parser.error("missing --target argument")
+
+    if rest and rest[0] == "--":
+        rest = rest[1:]
+    return ns, rest
 
 
 if __name__ == "__main__":
@@ -477,20 +497,10 @@ if __name__ == "__main__":
                 )
             )
         if sys.argv[1] == "covset-gen":
-            # Forward to the function directly, to avoid Click argument parsing issues.
-            if len(sys.argv) < 6:
-                click.echo("Error: covset-gen requires at least four arguments", err=True)
-                click.echo(
-                    "Usage: 10j covset-gen TARGET CODEBASE RESULTSDIR OUTPUT [EXTRA ARGS...)",
-                    err=True,
-                )
-                click.echo(f"   Args: {sys.argv}", err=True)
-                sys.exit(1)
-            target, codebase, resultsdir, output = sys.argv[2:6]
-            rest = sys.argv[6:]
+            ns, rest = parse_covset_gen_args(sys.argv[2:])
             try:
                 cp = covset.generate_via(
-                    target, Path(codebase), Path(resultsdir), Path(output), rest
+                    ns.target, Path(ns.codebase), Path(ns.resultsdir), Path(ns.output), rest
                 )
             except SystemExit as e:
                 raise click.exceptions.Exit(code=int(e.code) if e.code is not None else 1)
