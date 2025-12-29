@@ -18,7 +18,7 @@ def check_call_uv(args: Sequence[str | os.PathLike[str]], cwd: Path) -> None:
     # The args here should be kept in sync with the 10j script.
     localdir = repo_root.localdir()
     # XREF:WANT_UV_VERSION in cli/10j
-    want_uv_version = "0.8.0"
+    want_uv_version = "0.9.16"
     run(
         [
             localdir / f"uv-{want_uv_version}",
