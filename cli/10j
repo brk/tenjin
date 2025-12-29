@@ -30,6 +30,8 @@ fi
 # If/when we want to update the uv binary, we should do that here.
 
 if [ -e "$localuv" ] && [ -e "$localcg" ]; then
+    export UV_PYTHON_BIN_DIR="${rootdir}/_local/uv_python_bin"
+    export UV_PYTHON_INSTALL_DIR="${rootdir}/_local/uv_python"
     exec "$localuv" run --project "$tenjdir" --config-file "$localcg" "$tenjdir/main.py" "$@"
 else
     echo "10j's provisioning failed -- sorry!" >&2
