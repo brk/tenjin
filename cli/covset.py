@@ -2,7 +2,6 @@ import sys
 import json
 import base64
 import zlib
-import bz2
 import compression.zstd as zstd
 import os
 from pathlib import Path
@@ -48,8 +47,8 @@ class EncodedCoverage(TypedDict):
     b64 : str
         Base64-encoded binary data. After decoding and decompressing,
         this yields a bitmap where bit N indicates whether line N is covered.
-    compression : str
-        Compression algorithm: "identity", "zlib", or "bzip2".
+    compression : CompressionType
+        Compression algorithm: "identity", "zlib", or "zstd".
         Defaults to "identity" if not present.
     """
 
@@ -462,8 +461,6 @@ def decode_bitmap(encoded_data: EncodedCoverage) -> int:
         return _bytes_to_bits(zstd.decompress(binary_data))
     elif compression == "zlib":
         return _bytes_to_bits(zlib.decompress(binary_data))
-    elif compression == "bzip2":
-        return _bytes_to_bits(bz2.decompress(binary_data))
     else:
         raise ValueError(f"Unknown compression type: {compression}")
 
@@ -477,8 +474,6 @@ def encode_bitmap(bitmap: int, compression: CompressionType) -> EncodedCoverage:
         compressed_data = zstd.compress(binary_data)
     elif compression == "zlib":
         compressed_data = zlib.compress(binary_data)
-    elif compression == "bzip2":
-        compressed_data = bz2.compress(binary_data)
     else:
         raise ValueError(f"Unknown compression type: {compression}")
 
