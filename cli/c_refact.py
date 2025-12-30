@@ -1653,8 +1653,8 @@ def localize_mutable_globals(
             # print(f"\n  Found {len(types_in_scope)} types already in scope in TU: {tu_path}")
 
             # Determine which types need to be emitted
-            types_to_emit_structs = {}  # name -> decl_cursor
-            types_to_emit_typedefs = {}  # name -> decl_cursor
+            types_to_emit_structs: dict[str, Cursor] = {}  # name -> decl_cursor
+            types_to_emit_typedefs: dict[str, Cursor] = {}  # name -> decl_cursor
 
             for type_name, decl_cursor in needed_struct_defs.items():
                 if type_name not in types_in_scope:
@@ -1671,7 +1671,7 @@ def localize_mutable_globals(
                 #     print(f"    Skipping typedef (already in scope): {type_name}")
 
             # Build type definitions to insert before main()
-            type_defs_lines = []
+            type_defs_lines: list[str] = []
             type_defs_lines.append("\n// Type definitions needed for XjGlobals")
 
             # Add forward declarations if needed
