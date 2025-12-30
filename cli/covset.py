@@ -812,7 +812,7 @@ def do_eval(
     expression: str,
     compression: CompressionType,
     on_mismatch: MismatchPolicy = "error",
-):
+) -> None:
     try:
         parsed_exp = parse_sexp(expression)
         result_covset = evaluate_exp(parsed_exp, on_mismatch, compression)
