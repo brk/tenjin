@@ -107,7 +107,9 @@ def test_covset_gen_arg_parsing_2():
     }
 
 
-def test_covset_gen_arg_parsing_3():
+def test_covset_gen_arg_parsing_oops_3():
+    # Including a positional arg before the double dash
+    # will give likely-unwanted results.
     assert covset_gen_arg_parse_helper([
         "T",
         "--codebase",
@@ -119,34 +121,12 @@ def test_covset_gen_arg_parsing_3():
         "--",
         "extra-arg2",
     ]) == {
-        "target": "T",
+        "target": None,
         "codebase": "C",
         "resultsdir": "R",
         "output": "O",
         "rust": False,
-        "extra_args": ["extra-arg2"],
-    }
-
-
-def test_covset_gen_arg_parsing_4():
-    # Target can be given as positional argument, even after options.
-    assert covset_gen_arg_parse_helper([
-        "--codebase",
-        "C",
-        "--resultsdir",
-        "R",
-        "--output",
-        "O",
-        "T",
-        "--",
-        "extra-arg2",
-    ]) == {
-        "target": "T",
-        "codebase": "C",
-        "resultsdir": "R",
-        "output": "O",
-        "rust": False,
-        "extra_args": ["extra-arg2"],
+        "extra_args": ["T", "--", "extra-arg2"],
     }
 
 
@@ -160,13 +140,12 @@ def test_covset_gen_arg_parsing_5():
         "R",
         "--output",
         "O",
-        "T",
         "--rust",
         # missing double dash
         "--codebase",
         "extra",
     ]) == {
-        "target": "T",
+        "target": None,
         "codebase": "extra",
         "resultsdir": "R",
         "output": "O",

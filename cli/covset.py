@@ -4,6 +4,7 @@ import base64
 import zlib
 import bz2
 import compression.zstd as zstd
+import os
 from pathlib import Path
 from typing import TypedDict, Union, Any, Optional, Literal, cast
 import hashlib
@@ -808,8 +809,12 @@ def do_eval(
         sys.exit(1)
 
 
+def _binaries_within(dir: Path) -> list[Path]:
+    return [p for p in dir.iterdir() if p.is_file() and os.access(p, os.X_OK)]
+
+
 def generate_via(
-    target: str,
+    target: str | None,
     codebase: Path,
     resultsdir: Path,
     output: Path,
@@ -846,19 +851,36 @@ def generate_via(
             check=True,
             env_ext={"RUSTFLAGS": "-C instrument-coverage -Awarnings"},
         )
-        target_binary_path = finaldir / "target" / "debug" / target
+        target_binary_parent = finaldir / "target" / "debug"
         codebase_path = finaldir
         llvm_tools_path = llvm_profdata_paths[0].parent
     else:
         builtcov = resultsdir / "_built_cov"
         assert builtcov.is_dir(), f"Built coverage directory not found: {builtcov}"
 
-        target_binary_path = builtcov / target
+        target_binary_parent = builtcov
         codebase_path = codebase
         llvm_tools_path = hermetic.xj_llvm_root(repo_root.localdir()) / "bin"
 
-    assert target_binary_path.is_file(), f"Target executable not found: {target_binary_path}"
-    target_binary = target_binary_path.as_posix()
+    binaries_to_consider = _binaries_within(target_binary_parent)
+    binaries_matching_target = [
+        b for b in binaries_to_consider if target is None or b.name == target
+    ]
+    if len(binaries_matching_target) == 0:
+        raise ValueError(
+            f"No target binary matching '{target}' found in {target_binary_parent}. Candidates: "
+            + str([b.relative_to(target_binary_parent).as_posix() for b in binaries_to_consider])
+        )
+    if len(binaries_matching_target) > 1:
+        raise ValueError(
+            f"Expected exactly one target binary matching '{target}' in {target_binary_parent}, "
+            f" found {len(binaries_matching_target)}: "
+            + str([
+                b.relative_to(target_binary_parent).as_posix() for b in binaries_matching_target
+            ])
+        )
+
+    target_binary = binaries_matching_target[0].as_posix()
 
     with tempfile.TemporaryDirectory() as tmpdir:
         tmp_path = Path(tmpdir)

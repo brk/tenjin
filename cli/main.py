@@ -414,7 +414,7 @@ def covset_gen():
     pass  # placeholder command
 
 
-#   10j covset-gen --target ... --codebase ... --resultsdir ... --output ... [EXTRA...]
+#   10j covset-gen [--target ...] --codebase ... --resultsdir ... --output ... [EXTRA...]
 def parse_covset_gen_args(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
     parser = argparse.ArgumentParser(prog="10j covset-gen")
     parser.add_argument("--target", required=False)
@@ -426,14 +426,6 @@ def parse_covset_gen_args(argv: list[str]) -> tuple[argparse.Namespace, list[str
         "--rust", action="store_true", help="Run translated Rust code instead of C code"
     )
     ns, rest = parser.parse_known_args(argv)
-
-    if not ns.target:
-        if rest:
-            ns.target = rest[0]
-            rest = rest[1:]
-        else:
-            parser.error("missing --target argument")
-
     if rest and rest[0] == "--":
         rest = rest[1:]
     return ns, rest
