@@ -445,7 +445,7 @@ fn libz_rs_sys_call_form_cases(t: &Translation, func: &Expr) -> Option<Recognize
             // libz_rs_sys does not provide crc32_z, so we'll emulate it.
             t.with_cur_file_item_store(|item_store| {
                 item_store.add_item_str_once(
-                    r#"unsafe fn crc32_zz(crc: libc::c_ulong, buf: *const Bytef, len: libc::c_ulong) -> libc::c_ulong { libz_rs_sys::crc32(crc, buf, libz_rs_sys::uInt::try_from(len).expect("crc32_z overflow")) }"#,
+                    r#"unsafe fn crc32_zz(crc: ::core::ffi::c_ulong, buf: *const Bytef, len: ::core::ffi::c_ulong) -> ::core::ffi::c_ulong { libz_rs_sys::crc32(crc, buf, libz_rs_sys::uInt::try_from(len).expect("crc32_z overflow")) }"#,
                 );
             });
             return Some(RecognizedCallForm::RetargetedCallee(
