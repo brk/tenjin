@@ -28,7 +28,7 @@ import batching_rewriter
 from cindex_helpers import render_declaration_sans_qualifiers, yield_matching_cursors
 import c_refact_type_mod_replicator
 from constants import XJ_GUIDANCE_FILENAME
-from targets import BuildInfo
+import targets
 
 
 def create_xj_clang_index() -> Index:
@@ -148,30 +148,24 @@ def parse_project(
     return tus
 
 
-def preprocess_and_create_new_compdb(
-    compdb: compilation_database.CompileCommands,
-    target_dir: str,
-) -> compilation_database.CompileCommands:
+def preprocess_build(b: targets.BuildInfo, t: targets.BuildTarget, target_dir: Path) -> None:
     """
-    For each TU in compdb, run clang -E to preprocess it into target_dir,
-    then create a new compile_commands.json in target_dir that refers to
-    the preprocessed .i files.
+    For each TU, run clang -E to preprocess it into target_dir.
     """
-    new_commands = []
-    target_dir_path = Path(target_dir)
-    target_dir_path.mkdir(parents=True, exist_ok=True)
+    target_dir.mkdir(parents=True, exist_ok=True)
 
     clang_path = hermetic.xj_llvm_root(repo_root.localdir()) / "bin" / "clang"
 
+    compdb = b.compdb_for_target_within(t.name, target_dir)
     for cmd in compdb.commands:
         # 1. Determine paths
         abs_src_path = cmd.absolute_file_path
         try:
-            rel_src_path = abs_src_path.relative_to(target_dir_path)
+            rel_src_path = abs_src_path.relative_to(target_dir)
         except ValueError:
             rel_src_path = Path(abs_src_path.name)
 
-        preprocessed_file_path = (target_dir_path / rel_src_path).with_suffix(".nolines.i")
+        preprocessed_file_path = (target_dir / rel_src_path).with_suffix(".nolines.i")
         preprocessed_file_path.parent.mkdir(parents=True, exist_ok=True)
 
         # 2. Run preprocessor
@@ -224,54 +218,15 @@ def preprocess_and_create_new_compdb(
         cp.check_returncode()
 
         shutil.copyfile(preprocessed_file_path, preprocessed_file_path.with_suffix(".unmodified.i"))
-
-        # 3. Create new command for new compdb
-        new_args = original_args.copy()
-
-        found = False
-        for i, arg in enumerate(new_args):
-            arg_path = Path(arg)
-            if not arg_path.is_absolute():
-                arg_path = cmd.directory_path / arg_path
-
-            if arg_path.resolve() == abs_src_path.resolve():
-                new_args[i] = str(preprocessed_file_path)
-                found = True
-                break
-
-        if not found:
-            raise ValueError(
-                f"Source file {abs_src_path} not found in command arguments: {original_args}"
-            )
-
-        new_commands.append(
-            compilation_database.CompileCommand(
-                directory=cmd.directory,
-                file=str(preprocessed_file_path),
-                arguments=new_args if cmd.arguments else None,
-                command=" ".join(new_args) if cmd.command else None,
-                output=cmd.output,
-            )
-        )
-
-    # 4. Write new compile_commands.json
-    new_compdb = compilation_database.CompileCommands(commands=new_commands)
-    new_compdb.to_json_file(target_dir_path / "compile_commands.json")
-    return new_compdb
+    b._use_preprocessed_files = True
 
 
-def refold_preprocess_and_create_new_compdb(
-    compdb: compilation_database.CompileCommands,
-    target_dir: str,
-) -> compilation_database.CompileCommands:
+def refold_build(b: targets.BuildInfo, t: targets.BuildTarget, target_dir_path: Path) -> None:
     """
-    For each TU in compdb, run clang-refold to produce .c files from modified .i files,
-    then create a new compile_commands.json in target_dir that refers to the .c files.
+    For each TU in compdb, run clang-refold to produce .c files from modified .i files
     """
-    new_commands = []
-    target_dir_path = Path(target_dir)
     target_dir_path.mkdir(parents=True, exist_ok=True)
-
+    compdb = b.compdb_for_target_within(t.name, target_dir_path)
     for cmd in compdb.commands:
         abs_src_path = cmd.absolute_file_path
 
@@ -297,36 +252,7 @@ def refold_preprocess_and_create_new_compdb(
             check=True,
             cwd=cmd.directory,
         )
-
-        new_args = cmd.get_command_parts().copy()
-        found = False
-        for i, arg in enumerate(new_args):
-            arg_path = Path(arg)
-            if not arg_path.is_absolute():
-                arg_path = cmd.directory_path / arg_path
-
-            if arg_path.resolve() == abs_src_path.resolve():
-                new_args[i] = str(c_path)
-                found = True
-                break
-
-        if not found:
-            raise ValueError(f"Source file {abs_src_path} not found in command arguments")
-
-        new_commands.append(
-            compilation_database.CompileCommand(
-                directory=cmd.directory,
-                file=str(c_path),
-                arguments=new_args if cmd.arguments else None,
-                command=" ".join(new_args) if cmd.command else None,
-                output=cmd.output,
-            )
-        )
-
-    # 4. Write new compile_commands.json
-    new_compdb = compilation_database.CompileCommands(commands=new_commands)
-    new_compdb.to_json_file(target_dir_path / "compile_commands.json")
-    return new_compdb
+    b._use_preprocessed_files = False
 
 
 @dataclass
@@ -669,7 +595,9 @@ def localize_mutable_globals_phase1(
             # Working with .i files (in particular, ones without line markers)
             # allows us to reliably edit call sites. Otherwise, we'd have to contend
             # with call sites that are synthesized by the preprocessor in horrific ways.
-            assert i_file_path.endswith(".nolines.i")
+            assert i_file_path.endswith(".nolines.i"), (
+                f"Expected .nolines.i file, got {i_file_path}\n{compdb=}"
+            )
             assert i_file_path in tus
 
             param_to_pass = XJG_PLACEHOLDER
@@ -898,7 +826,7 @@ class XjLocateJoinedDeclsOutput(TypedDict):
 
 def run_xj_locate_joined_decls(
     current_codebase: Path,
-    build_info: BuildInfo,
+    build_info: targets.BuildInfo,
 ) -> XjLocateJoinedDeclsOutput:
     builddir = hermetic.xj_prepare_locatejoineddecls_build_dir(repo_root.localdir())
     assert builddir.exists(), (
@@ -1177,7 +1105,8 @@ def localize_mutable_globals(
     #    before the first function definition which uses a mutable global.
     #
     # Use the `BatchingRewriter` to perform all of these rewrites in a single pass.
-    #
+
+    compdb.to_json_file(current_codebase / "compile_commands.json")
 
     nonmain_tissue_functions: set[str] = set(j.get("mutable_global_tissue", {}).get("tissue", []))
     nonmain_tissue_functions.discard("main")  # Don't modify main
@@ -1724,8 +1653,8 @@ def localize_mutable_globals(
             # print(f"\n  Found {len(types_in_scope)} types already in scope in TU: {tu_path}")
 
             # Determine which types need to be emitted
-            types_to_emit_structs = {}  # name -> decl_cursor
-            types_to_emit_typedefs = {}  # name -> decl_cursor
+            types_to_emit_structs: dict[str, Cursor] = {}  # name -> decl_cursor
+            types_to_emit_typedefs: dict[str, Cursor] = {}  # name -> decl_cursor
 
             for type_name, decl_cursor in needed_struct_defs.items():
                 if type_name not in types_in_scope:
@@ -1742,7 +1671,7 @@ def localize_mutable_globals(
                 #     print(f"    Skipping typedef (already in scope): {type_name}")
 
             # Build type definitions to insert before main()
-            type_defs_lines = []
+            type_defs_lines: list[str] = []
             type_defs_lines.append("\n// Type definitions needed for XjGlobals")
 
             # Add forward declarations if needed

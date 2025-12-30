@@ -1,6 +1,7 @@
 import subprocess
 import sys
 import os
+import argparse
 from pathlib import Path
 import shutil
 import tempfile
@@ -14,6 +15,7 @@ import provisioning
 import hermetic
 import translation
 import cli_subcommands
+import covset
 
 
 def do_check_repo_file_sizes() -> bool:
@@ -371,6 +373,64 @@ def synthesize_compilation_database_for(file: Path):
     )
 
 
+@cli.command()
+@click.argument("expression")
+@click.option(
+    "-o",
+    "--output",
+    help="Output file path. Defaults to printing JSON to stdout.",
+)
+@click.option(
+    "--on-mismatch",
+    type=click.Choice(["error", "warn", "ignore"], case_sensitive=False),
+    default="error",
+    show_default=True,
+    help="Action to take on expanded hash mismatch.",
+)
+@click.option(
+    "--compression",
+    type=click.Choice(["identity", "zlib", "zstd"], case_sensitive=False),
+    default="zstd",
+    show_default=True,
+    help="Compression type for output bitmaps.",
+)
+def covset_eval(expression: str, output: str | None, on_mismatch: str, compression: str):
+    """Evaluate a covset s-expr."""
+
+    try:
+        covset.do_eval(
+            output=output,
+            expression=expression,
+            on_mismatch=cast(covset.MismatchPolicy, on_mismatch.lower()),
+            compression=cast(covset.CompressionType, compression.lower()),
+        )
+    except SystemExit as e:
+        raise click.exceptions.Exit(code=int(e.code) if e.code is not None else 1)
+
+
+@cli.command()
+def covset_gen():
+    """Runs a C or Rust program to get coverage data"""
+    pass  # placeholder command
+
+
+#   10j covset-gen [--target ...] --codebase ... --resultsdir ... --output ... [EXTRA...]
+def parse_covset_gen_args(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
+    parser = argparse.ArgumentParser(prog="10j covset-gen")
+    parser.add_argument("--target", required=False)
+    parser.add_argument("--codebase", required=True)
+    parser.add_argument("--resultsdir", required=True)
+    parser.add_argument("--output", required=True)
+    parser.add_argument("--html", action="store_true", help="Generate HTML coverage report")
+    parser.add_argument(
+        "--rust", action="store_true", help="Run translated Rust code instead of C code"
+    )
+    ns, rest = parser.parse_known_args(argv)
+    if rest and rest[0] == "--":
+        rest = rest[1:]
+    return ns, rest
+
+
 if __name__ == "__main__":
     # Per its own documentation, Click does not support losslessly forwarding
     # command line arguments. So when we want to do that, we bypass Click.
@@ -432,5 +492,20 @@ if __name__ == "__main__":
                     cast(Literal["cc", "ld"], category), Path(run_as), sys.argv[4:]
                 )
             )
+        if sys.argv[1] == "covset-gen":
+            ns, rest = parse_covset_gen_args(sys.argv[2:])
+            try:
+                cp = covset.generate_via(
+                    ns.target,
+                    Path(ns.codebase),
+                    Path(ns.resultsdir),
+                    Path(ns.output),
+                    ns.html,
+                    ns.rust,
+                    rest,
+                )
+            except SystemExit as e:
+                raise click.exceptions.Exit(code=int(e.code) if e.code is not None else 1)
+            sys.exit(cp.returncode)
 
     cli()

@@ -25,7 +25,7 @@ import repo_root
 import ingest_tracking
 import llvm_bitcode_linking
 import targets_from_intercept
-from targets import BuildInfo, BuildTarget, TargetType
+from targets import BuildInfo, TargetType
 from caching_file_contents import FilePathStr, CachingFileContents
 from constants import WANT, XJ_GUIDANCE_FILENAME
 
@@ -38,16 +38,18 @@ def elapsed_ms_of_ns(start_ns: int, end_ns: int) -> float:
 def compute_build_info_in(
     builddir: Path,
     codebase: Path,
-    buildcmd: str | None,
+    buildcmd: str | list[str] | None,
     tracker: ingest_tracking.TimingRepo,
     mut_build_info: BuildInfo,
 ):
-    """Builds the codebase in a temporary directory, intercepting compile and link commands.
-    (Single-file codebases do not require a build step.)
+    """Builds the codebase in the given directory,
+    intercepting compile and link commands.
 
     To account for builds that generate files in the source tree, such as `Vim`,
     any newly created files ending in `.h`, `.c`, or `.inc` will be copied back
-    to the original codebase. Otherwise, builds would fail due to missing files.
+    to the original codebase. Otherwise, later builds would fail due to missing files.
+
+    Postcondition: `builddir` exists.
     """
     buildcmds = codebase / ".xj-build-commands"
 
@@ -109,48 +111,47 @@ def compute_build_info_in(
         tracker.update_sub(cp2)
         convert_intercepted_commands_to_build_info()
         assert not mut_build_info.is_empty(), "Failed to intercept commands from CMake build"
+        return
 
-    elif buildcmd:
-        # Invoke the build command from a temporary directory with a copy of the
-        # input codebase, logging the intercepted commands.
-        shutil.copytree(codebase, builddir, dirs_exist_ok=True)
-
-        hermetic.run(
-            buildcmd,
-            cwd=builddir,
-            shell=True,
-            check=True,
-            env_ext={
-                "BUILD_COMMANDS_DIRECTORY": str(buildcmds),
-                "pre-Tenjin PATH prefix": [str(cc_ld_intercept_dir)],
-            },
-        )
-        copy_new_source_files_back(codebase, builddir)
-        convert_intercepted_commands_to_build_info()
-        assert not mut_build_info.is_empty(), "Failed to intercept commands from build"
-
-    else:
+    if not buildcmd:
         # If the codebase is a C file, or a directory containing a single C file,
         # we assume it's the intended source file to compile.
 
         if codebase.is_file() and codebase.suffix == ".c":
-            c_files = [codebase]
+            c_file = codebase
         else:
             c_files = list(codebase.glob("*.c"))
-
-        if len(c_files) == 1:
+            if len(c_files) != 1:
+                raise ValueError(
+                    f"Unable to build multi-C-file {codebase} without CMakeLists.txt or buildcmd"
+                )
             c_file = c_files[0]
-            # If we have a single C file, we synthesize a trivial build structure for it.
-            target_type = TargetType.EXECUTABLE
-            # TODO allow non-exe compilation via checking for main fn, then update docs/USE.md
-            mut_build_info.for_single_file(
-                c_file,
-                BuildTarget(name=c_file.name, type=target_type, stem=c_file.stem),
-            )
-        else:
-            raise ValueError(
-                f"Unable to build {codebase}, no CMakeLists.txt found, no buildcmd provided"
-            )
+
+        # TODO allow non-exe compilation via checking for main fn, then update docs/USE.md
+        buildcmd = [
+            "clang",
+            "-o",
+            f"{c_file.stem}.exe",
+            c_file.as_posix(),
+        ]
+    assert buildcmd is not None
+    # Invoke the build command from a temporary directory with a copy of the
+    # input codebase, logging the intercepted commands.
+    shutil.copytree(codebase, builddir, dirs_exist_ok=True)
+
+    hermetic.run(
+        buildcmd,
+        cwd=builddir,
+        shell=isinstance(buildcmd, str),
+        check=True,
+        env_ext={
+            "BUILD_COMMANDS_DIRECTORY": str(buildcmds),
+            "pre-Tenjin PATH prefix": [str(cc_ld_intercept_dir)],
+        },
+    )
+    copy_new_source_files_back(codebase, builddir)
+    convert_intercepted_commands_to_build_info()
+    assert not mut_build_info.is_empty(), "Failed to intercept commands from build"
 
 
 def copy_new_source_files_back(
@@ -437,7 +438,7 @@ def run_preparation_passes(
 
         for target in store.build_info.get_all_targets():
             compdb_for_target = store.build_info.compdb_for_target_within(
-                target.name, current_codebase, include_link_cmds=False
+                target.name, current_codebase
             )
             defs = compilation_database.extract_preprocessor_definitions_from_compile_commands(
                 compdb_for_target,
@@ -454,6 +455,81 @@ def run_preparation_passes(
             open(current_codebase / XJ_GUIDANCE_FILENAME, "w", encoding="utf-8"),
             indent=2,
         )
+
+    def prep_02_build_coverage(prev: Path, current_codebase: Path, store: PrepPassResultStore):
+        # Rebuild all targets with coverage instrumentation flags.
+
+        # Note that this will compile the source files from the current_codebase,
+        # but the built artifacts will remain in the original build directory.
+        profile_compdb = store.build_info.compdb_for_profiled_build(current_codebase)
+
+        original_builddir = resultsdir / "_build_1"
+        # Since we want to preserve the original build directory contents,
+        # we'll first copy it to a new location. Then we'll re-execute the
+        # intercepted build commands, and then swap out the resulting
+        # artifacts, restoring the original build directory contents.
+        preserved_builddir = original_builddir.with_name("_build_1_preserved")
+        shutil.copytree(original_builddir, preserved_builddir, dirs_exist_ok=True)
+
+        cmd_for_output: dict[str, compilation_database.CompileCommand] = {}
+
+        def runcmd(cmd: compilation_database.CompileCommand):
+            assert cmd.arguments
+            hermetic.run(
+                cmd.arguments,
+                cwd=cmd.directory,
+                check=True,
+            )
+            assert cmd.output is not None
+            cmd_for_output[cmd.output] = cmd
+
+        # First, build all object files
+        for cmd in profile_compdb.commands:
+            if cmd.output is not None and cmd.output.endswith(".o"):
+                runcmd(cmd)
+
+        # Then, all shared libraries
+        for cmd in profile_compdb.commands:
+            if cmd.output is not None and (
+                cmd.output.endswith(".so")
+                or cmd.output.endswith(".dylib")
+                or cmd.output.endswith(".dll")
+            ):
+                runcmd(cmd)
+
+        # Then all remaining commands, which are assumed to be executables
+        for cmd in profile_compdb.commands:
+            if cmd.output is not None and cmd.output not in cmd_for_output:
+                runcmd(cmd)
+
+        # TODO: run the above steps in parallel batches
+
+        # cov_outputs = set(
+        #     cmd.output
+        #     for cmd in profile_compdb.commands
+        #     if cmd.output is not None and not cmd.output.endswith(".o")
+        # )
+        cov_output_names = [Path(p).name for p in cmd_for_output.keys()]
+        assert len(cov_output_names) == len(set(cov_output_names)), (
+            f"Expected unique exe/lib file names, got duplicates: {cov_output_names}"
+        )
+
+        built_cov = Path(current_codebase.parent / "_built_cov")
+        built_cov.mkdir(exist_ok=True)
+        for o, cmd in cmd_for_output.items():
+            po = Path(o)
+            if not po.is_absolute():
+                po = Path(cmd.directory) / o
+            assert po.exists(), f"Expected built coverage output file not found: {o}"
+            assert po.is_relative_to(original_builddir), (
+                f"Expected built coverage output {o} to be within original builddir\n{original_builddir},"
+                f" got\n{po}"
+            )
+            rel = po.relative_to(original_builddir)
+            shutil.move(po, built_cov / po.name)
+            shutil.move(preserved_builddir / rel, po)
+
+        shutil.rmtree(preserved_builddir)
 
     def prep_uniquify_built_files(prev: Path, current_codebase: Path, store: PrepPassResultStore):
         # Some codebases will compile the same source file multiple times with different
@@ -548,7 +624,7 @@ def run_preparation_passes(
         if len(all_targets) == 1 and all_targets[0].type == TargetType.EXECUTABLE:
             # Case A
             compdb = store.build_info.compdb_for_target_within(
-                all_targets[0].name, current_codebase, include_link_cmds=False
+                all_targets[0].name, current_codebase
             )
 
             c_refact.localize_mutable_globals(
@@ -565,7 +641,7 @@ def run_preparation_passes(
         # without concern for overlapping source files.
         for target in store.build_info.get_all_targets():
             compdb_for_target = store.build_info.compdb_for_target_within(
-                target.name, current_codebase, include_link_cmds=False
+                target.name, current_codebase
             )
             c_refact_arglifter.lift_subfield_args(compdb_for_target)
 
@@ -644,8 +720,13 @@ def run_preparation_passes(
             return
 
         curr_compdb = store.build_info.compdb_for_target_within(
-            all_build_targets[0].name, current_codebase, include_link_cmds=False
+            all_build_targets[0].name, current_codebase
         )
+        print("compdb for target:", all_build_targets[0].name)
+        print(curr_compdb)
+        print()
+        print()
+        print(store.build_info)
 
         # Compile and link LLVM bitcode module
         bitcode_module_path = current_codebase / "linked_module.bc"
@@ -665,7 +746,7 @@ def run_preparation_passes(
             return
 
         compdb = store.build_info.compdb_for_target_within(
-            all_build_targets[0].name, current_codebase, include_link_cmds=False
+            all_build_targets[0].name, current_codebase
         )
 
         # clang-rename will use this
@@ -776,7 +857,7 @@ def run_preparation_passes(
             return
 
         compdb = store.build_info.compdb_for_target_within(
-            all_build_targets[0].name, current_codebase, include_link_cmds=False
+            all_build_targets[0].name, current_codebase
         )
 
         decls_src_by_tu: dict[FilePathStr, dict[QUSS, FileContentsStr]] = {}
@@ -999,7 +1080,7 @@ def run_preparation_passes(
             return
 
         compdb = store.build_info.compdb_for_target_within(
-            all_build_targets[0].name, current_codebase, include_link_cmds=False
+            all_build_targets[0].name, current_codebase
         )
 
         # We want to capture decl information after the header contents have stabilized,
@@ -1013,13 +1094,12 @@ def run_preparation_passes(
         )
 
         # Miscellaneous tasks over, onwards with preprocessor expansion!
+        c_refact.preprocess_build(store.build_info, all_build_targets[0], current_codebase)
+        # build_info now marked to use preprocessed files, so re-generate compdb
         new_compdb: compilation_database.CompileCommands = (
-            c_refact.preprocess_and_create_new_compdb(
-                compdb,
-                current_codebase.as_posix(),
-            )
+            store.build_info.compdb_for_target_within(all_build_targets[0].name, current_codebase)
         )
-        # new_compdb already written to current_codebase
+
         for cmd in new_compdb.commands:
             assert cmd.file_path.suffix == ".i", "Expected preprocessed .i files"
 
@@ -1035,22 +1115,15 @@ def run_preparation_passes(
             print("TENJIN: NOTE: Skipping preprocessor refolding for multi-target codebase.")
             return
 
-        compdb = store.build_info.compdb_for_target_within(
-            all_build_targets[0].name, current_codebase, include_link_cmds=False
-        )
-
-        new_compdb: compilation_database.CompileCommands = (
-            c_refact.refold_preprocess_and_create_new_compdb(compdb, current_codebase.as_posix())
-        )
-        # new_compdb already written to current_codebase
-        for cmd in new_compdb.commands:
-            assert cmd.file_path.suffix == ".c", "Expected un-preprocessed .c files"
+        c_refact.refold_build(store.build_info, all_build_targets[0], current_codebase)
+        # build_info now marked to use refolded files, for future steps
 
     preparation_passes: list[
         tuple[str, Callable[[Path, Path, PrepPassResultStore], CompletedProcess | None]]
     ] = [
         ("copy_pristine_codebase", prep_00_copy_pristine_codebase),
         ("intercept_build", prep_01_intercept_build),
+        ("build_coverage", prep_02_build_coverage),
         ("uniquify_built", prep_uniquify_built_files),
         ("uniquify_statics", prep_uniquify_statics),
         ("split_joined_decls", prep_split_joined_decls),
