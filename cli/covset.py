@@ -12,6 +12,7 @@ import tempfile
 from subprocess import CompletedProcess
 
 import hermetic
+import repo_root
 
 """
 Type definitions for the Coverage Set (covset) format.
@@ -820,6 +821,23 @@ def generate_via(
 
     if rust:
         finaldir = resultsdir / "final"
+        # Rust code emits profile data tied to its own version of llvm-profdata,
+        # so we must use it instead of Tenjin's hermetic copy.
+        # Note: this assumes that the final codebase is using a *nightly*
+        # version of Rust, since
+        #   (A) the coverage runtime is only available on nightly, and
+        #   (B) we don't install the llvm-tools component, which is what
+        #       provides `llvm-profdata` etc, on non-nightly toolchains.
+        toolchain_path_cp = hermetic.run(
+            ["rustc", "--print", "sysroot"], check=True, cwd=finaldir, capture_output=True
+        )
+        toolchain_path = Path(toolchain_path_cp.stdout.decode("utf-8").strip())
+        llvm_profdata_paths = list(toolchain_path.glob("**/llvm-profdata"))
+        assert len(llvm_profdata_paths) == 1, (
+            f"Could not find unique llvm-profdata in Rust toolchain {toolchain_path}; had "
+            + " & ".join(str(p) for p in llvm_profdata_paths)
+        )
+
         # Clear non-instrumented build artifacts
         # hermetic.run_cargo_on_translated_code(["clean"], cwd=finaldir, check=True)
         hermetic.run_cargo_on_translated_code(
@@ -830,11 +848,14 @@ def generate_via(
         )
         target_binary_path = finaldir / "target" / "debug" / target
         codebase_path = finaldir
+        llvm_tools_path = llvm_profdata_paths[0].parent
     else:
         builtcov = resultsdir / "_built_cov"
         assert builtcov.is_dir(), f"Built coverage directory not found: {builtcov}"
+
         target_binary_path = builtcov / target
         codebase_path = codebase
+        llvm_tools_path = hermetic.xj_llvm_root(repo_root.localdir()) / "bin"
 
     assert target_binary_path.is_file(), f"Target executable not found: {target_binary_path}"
     target_binary = target_binary_path.as_posix()
@@ -855,7 +876,7 @@ def generate_via(
         raws = [p.as_posix() for p in tmp_path.glob("xj-*.profraw")]
         hermetic.run(
             [
-                "llvm-profdata",
+                llvm_tools_path / "llvm-profdata",
                 "merge",
                 "-sparse",
                 *raws,
@@ -868,7 +889,7 @@ def generate_via(
         # --compilation-dir
         covex = hermetic.run(
             [
-                "llvm-cov",
+                llvm_tools_path / "llvm-cov",
                 "export",
                 target_binary,
                 "-instr-profile",
@@ -884,7 +905,7 @@ def generate_via(
         if html:
             covex_html = hermetic.run(
                 [
-                    "llvm-cov",
+                    llvm_tools_path / "llvm-cov",
                     "show",
                     target_binary,
                     "-instr-profile",
