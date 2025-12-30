@@ -244,7 +244,7 @@ def llvm_profdata_to_CovSetDict(
     *,
     codebase_path: Path,
     compression: CompressionType = "zstd",
-    codebase_only: bool = False,
+    only_within: list[Path] = [],
 ) -> CovSetDict:
     """
     Convert `llvm-cov export -format=text` JSON output to `CovSet`.
@@ -275,7 +275,6 @@ def llvm_profdata_to_CovSetDict(
             codebase_path = codebase_path.parent
         else:
             raise FileNotFoundError(f"Codebase path not found or not a directory: {codebase_path}")
-    resolved_codebase_path = codebase_path.resolve()
 
     # The JSON schema varies somewhat across LLVM versions and flags.
     # We support the common shape:
@@ -305,8 +304,9 @@ def llvm_profdata_to_CovSetDict(
 
             filepath = Path(filename)
             if filepath.is_absolute():
-                if codebase_only and not filepath.resolve().is_relative_to(resolved_codebase_path):
-                    continue
+                if only_within:
+                    if not any(filepath.resolve().is_relative_to(p) for p in only_within):
+                        continue
                 source_path = filepath
             else:
                 source_path = codebase_path / filepath
@@ -974,7 +974,7 @@ def generate_via(
         llvm_cov_json,
         codebase_path=codebase_path,
         compression="zstd",
-        codebase_only=True,
+        only_within=[codebase_path, resultsdir],
     )
     with open(output, "w", encoding="utf-8") as f:
         json.dump(covset_dict, f, indent=2)
