@@ -3,6 +3,7 @@ import json
 import base64
 import zlib
 import bz2
+import compression.zstd as zstd
 from pathlib import Path
 from typing import TypedDict, Union, Any, Optional, Literal, cast
 import hashlib
@@ -449,6 +450,8 @@ def decode_bitmap(encoded_data: EncodedCoverage) -> int:
 
     if compression == "identity":
         return _bytes_to_bits(binary_data)
+    elif compression == "zstd":
+        return _bytes_to_bits(zstd.decompress(binary_data))
     elif compression == "zlib":
         return _bytes_to_bits(zlib.decompress(binary_data))
     elif compression == "bzip2":
@@ -462,6 +465,8 @@ def encode_bitmap(bitmap: int, compression: CompressionType) -> EncodedCoverage:
     binary_data = _bits_to_bytes(bitmap)
     if compression == "identity":
         compressed_data = binary_data
+    elif compression == "zstd":
+        compressed_data = zstd.compress(binary_data)
     elif compression == "zlib":
         compressed_data = zlib.compress(binary_data)
     elif compression == "bzip2":
