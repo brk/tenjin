@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 
+import covset
 import hermetic
 import translation
 import translation_preparation
@@ -42,6 +43,54 @@ def test_single_c_file(root, test_dir, test_tmp_dir, tmp_codebase, tmp_resultsdi
     rs_prog_output = run_cargo_on_final(tmp_resultsdir / "final", ["run"], capture_output=True)
 
     assert rs_prog_output.stdout == c_prog_output.stdout
+
+    # Check that code coverage is collected as expected
+    cp = covset.generate_via(
+        None,
+        tmp_codebase,
+        tmp_resultsdir,
+        test_tmp_dir / "x.0.cov.json",
+        html=False,
+        rust=False,
+        rest=[],
+    )
+    cp.check_returncode()
+
+    cp_ce = hermetic.run(
+        [
+            (root / "cli" / "10j").as_posix(),
+            "covset-eval",
+            "-o",
+            "/dev/null",
+            f"(show {str(test_tmp_dir / 'x.0.cov.json')})",
+        ],
+        check=True,
+        capture_output=True,
+    )
+    # strip file header line, which has a path that varies per run
+    output_lines = cp_ce.stdout.decode("utf-8").splitlines()
+    output_relevant = "\n".join(output_lines[2:]) + "\n"
+    assert (
+        output_relevant
+        == """----------------------------------------
+  #include <stdio.h>
+  #include <assert.h>
+  
+  int main(int argc, char** argv)
++ {
++ 	printf("Hello, Tenjin!\\n");
++ 	assert(1);
+  
++ 	if (argc > 2) {
+-           printf("  (more than two args provided)\\n");
+- 	}
++ 	return 0;
++ }
+
+========================================
+Total covered lines: 6 / 8 = 75.00%
+"""  # noqa: W293
+    )
 
 
 def test_chkc_trivial(test_dir, tmp_codebase):
