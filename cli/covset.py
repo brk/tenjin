@@ -267,7 +267,15 @@ def llvm_profdata_to_CovSetDict(
         If True, discard coverage for files outside `codebase_path`.
     """
     if not codebase_path.is_dir():
-        raise FileNotFoundError(f"Codebase path not found or not a directory: {codebase_path}")
+        if (
+            codebase_path.exists()
+            and codebase_path.suffix == ".c"
+            and codebase_path.parent.is_dir()
+        ):
+            # Special case: single C file as codebase
+            codebase_path = codebase_path.parent
+        else:
+            raise FileNotFoundError(f"Codebase path not found or not a directory: {codebase_path}")
     resolved_codebase_path = codebase_path.resolve()
 
     # The JSON schema varies somewhat across LLVM versions and flags.
@@ -843,6 +851,8 @@ def generate_via(
     rest: list[str],
 ) -> CompletedProcess:
     assert resultsdir.is_dir(), f"Results directory not found: {resultsdir}"
+    # Resolve relative paths before changing working directory
+    resultsdir = resultsdir.absolute()
 
     if rust:
         finaldir = resultsdir / "final"
