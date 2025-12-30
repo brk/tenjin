@@ -688,6 +688,12 @@ def evaluate_exp(
         covset = evaluate_exp(exp[1], mismatch_policy, compression)
         return op_negate(covset, compression)
 
+    if op == "cat":
+        if len(exp) != 2:
+            raise ValueError(f"Operation '{op}' requires 1 argument, got {len(exp) - 1}")
+        covset = evaluate_exp(exp[1], mismatch_policy, compression)
+        return op_cat(covset)
+
     if op == "show":
         if len(exp) != 2:
             raise ValueError(f"Operation '{op}' requires 1 argument, got {len(exp) - 1}")
@@ -707,6 +713,19 @@ def evaluate_exp(
         return set_operation(op, set1, set2, mismatch_policy, compression)
 
     raise ValueError(f"Unknown operation: {op}")
+
+
+def op_cat(covset: CovSet) -> CovSet:
+    """Emits the coverage data in JSON format to stdout"""
+    cat(covset.to_json_dict())
+    return covset
+
+
+def cat(covset_data: CovSetDict):
+    """
+    Prints the covset JSON data to stdout.
+    """
+    print(json.dumps(covset_data, indent=2))
 
 
 def op_show(covset: CovSet) -> CovSet:
@@ -800,8 +819,9 @@ def do_eval(
         if output:
             with open(output, "w", encoding="utf-8") as f:
                 f.write(output_json)
-            print(f"Result written to {output}")
         else:
+            if expression.strip().startswith("(cat ") or expression.strip().startswith("(show "):
+                return
             print(output_json)
 
     except (ValueError, FileNotFoundError, json.JSONDecodeError, TypeError) as e:
