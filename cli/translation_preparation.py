@@ -210,6 +210,15 @@ def collect_decls_by_rel_tu(
     restricted_to_files: set[FilePathStr] | None = None,
     fn_def_handling: FnDefHandling = FnDefHandling.EXCLUDE,
 ) -> dict[RelativeFilePathStr, dict[QUSS, tuple[RelativeFilePathStr, int, int, FileContentsStr]]]:
+    """Collect declarations from the codebase's translation units,
+    indexed by path relative to the codebase root.
+
+    The caller may specify a set of files to restrict collection to,
+    so as to e.g. only collect declarations from (a subset of) headers.
+    The caller may also specify whether functions should be omitted,
+    or included with or without their bodies.
+    """
+
     def path_of_interest(p: FilePathStr) -> bool:
         if not Path(p).is_relative_to(current_codebase):
             assert not Path(p).is_relative_to(current_codebase.parent), (
@@ -234,7 +243,13 @@ def collect_decls_by_rel_tu(
             f"Unexpected TU path: {tu_path} not relative to {current_codebase=}\n{compdb=}"
         )
         rel_tu_path = Path(tu_path).relative_to(current_codebase).as_posix()
+        macro_inst_ranges: dict[tuple[int, FilePathStr], int] = {}
         for cursor in tu.cursor.get_children():
+            if cursor.kind == CursorKind.MACRO_INSTANTIATION:
+                inst_loc = (cursor.extent.start.offset, cursor.location.file.name)
+                macro_inst_ranges[inst_loc] = cursor.extent.end.offset
+                continue
+
             # When we run this pass before expanding the preprocessor,
             # cursor.location can reflect header file locations.
             if (
@@ -248,7 +263,7 @@ def collect_decls_by_rel_tu(
                 # print("   QUSS:", q)
                 # print("   From location:", cursor.location.file.name)
                 # print("   found in TU:", tu_path)
-                cursor_end = cursor.extent.end
+                cursor_end_offset = cursor.extent.end.offset
                 if cursor.kind == CursorKind.FUNCTION_DECL and cursor.is_definition():
                     if fn_def_handling == FnDefHandling.EXCLUDE:
                         continue
@@ -263,19 +278,27 @@ def collect_decls_by_rel_tu(
                                     if prev_tok:
                                         # Probably a ) before { but it could be
                                         # an attribute or an #endif or a non-expanding macro...)
-                                        cursor_end = prev_tok.extent.end
+                                        cursor_end_offset = prev_tok.extent.end.offset
                                     else:
-                                        cursor_end = t.extent.start
+                                        cursor_end_offset = t.extent.start.offset
                                     break
                                 prev_tok = t
+                else:
+                    # Include macro instantiations adjacent to the end of the definition.
+                    # This is intended to handle cases like the argument list of a function
+                    # declaration being wrapped in a macro, as seen in `zlib.h`.
+                    # It will break on code which hides declaration separators inside macro expansions.
+                    cursor_end_loc = (cursor_end_offset, cursor.location.file.name)
+                    if cursor_end_loc in macro_inst_ranges:
+                        cursor_end_offset = macro_inst_ranges[cursor_end_loc]
 
                 relative = Path(cursor.location.file.name).relative_to(current_codebase)
                 decls_by_rel_tu.setdefault(rel_tu_path, {})[q] = (
                     relative.as_posix(),
                     cursor.extent.start.offset,
-                    cursor_end.offset,
+                    cursor_end_offset,
                     header_contents.get_bytes(cursor.location.file.name)[
-                        cursor.extent.start.offset : cursor_end.offset
+                        cursor.extent.start.offset : cursor_end_offset
                     ].decode("utf-8"),
                 )
     return decls_by_rel_tu
