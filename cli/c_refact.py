@@ -1342,7 +1342,7 @@ def localize_mutable_globals(
 
     with batching_rewriter.BatchingRewriter() as rewriter:
         # TU -> offset of first fn using mutable globals
-        lowest_mutable_accessing_fn_starts: dict[str, int] = {}
+        lowest_mutable_accessing_fn_starts: dict[str, tuple[int, str]] = {}
 
         # Step 8: Replace uses of mutable globals with xjg->WHATEVER
         print("\n  --- Step 8: Replacing global variable accesses ---")
@@ -1351,7 +1351,9 @@ def localize_mutable_globals(
             for child in tu.cursor.walk_preorder():
                 if child.kind == CursorKind.FUNCTION_DECL:
                     if child.is_definition():
-                        current_fn_start = child.extent.start.offset
+                        q = c_refact_type_mod_replicator.quss(child, None)
+                        current_fn_start = (child.extent.start.offset, q)
+
                 if (
                     child.kind == CursorKind.DECL_REF_EXPR
                     and child.spelling in phase1results.mutd_global_names
@@ -1395,9 +1397,9 @@ def localize_mutable_globals(
                     if tu_path not in lowest_mutable_accessing_fn_starts:
                         lowest_mutable_accessing_fn_starts[tu_path] = current_fn_start
                     else:
-                        lowest_mutable_accessing_fn_starts[tu_path] = min(
-                            lowest_mutable_accessing_fn_starts[tu_path], current_fn_start
-                        )
+                        lmafs = lowest_mutable_accessing_fn_starts[tu_path]
+                        if lmafs[0] > current_fn_start[0]:
+                            lowest_mutable_accessing_fn_starts[tu_path] = current_fn_start
 
         # Step 3: Create xj_globals.h header file
         print("\n  --- Step 3: Creating xj_globals.h ---")
@@ -1657,7 +1659,7 @@ def localize_mutable_globals(
 
         # Phase 1 only inserted forward declarations, we'll also add the header as needed.
         # (not much point in replacing the forward declarations).
-        for tu_path, offset in lowest_mutable_accessing_fn_starts.items():
+        for tu_path, (offset, q) in lowest_mutable_accessing_fn_starts.items():
             tu = tus[tu_path]
 
             # print(f"\n  Analyzing types in scope in TU: {tu_path}")
@@ -1734,6 +1736,7 @@ def localize_mutable_globals(
                             break
 
             type_defs_lines.append('#include "xj_globals.h"')
+            type_defs_lines.append(f"/* @{q} end include block for XjGlobals */")
 
             type_defs_text = "\n".join(type_defs_lines) + "\n"
             rewriter.add_rewrite(tu_path, offset, 0, type_defs_text)

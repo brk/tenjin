@@ -250,6 +250,15 @@ def collect_decls_by_rel_tu(
                 macro_inst_ranges[inst_loc] = cursor.extent.end.offset
                 continue
 
+            print(
+                "PPRC: Visiting cursor:",
+                cursor.kind,
+                cursor.spelling,
+                "is_definition=",
+                cursor.is_definition(),
+                fn_def_handling,
+            )
+
             # When we run this pass before expanding the preprocessor,
             # cursor.location can reflect header file locations.
             if (
@@ -1125,6 +1134,58 @@ def run_preparation_passes(
                         rewriter.add_rewrite(
                             header_file_path.as_posix(), start_offset, length, modified_version
                         )
+
+            print("PPRC: XZZZZ3")
+            print(tus.items())
+            # Relocate includes of xj_globals.h from TU to header, if possible.
+            for tu_path, tu in tus.items():
+                tu_file_contents = rewriter.get_content(tu_path)
+                start_include_block = tu_file_contents.find(
+                    b"\n// Type definitions needed for XjGlobals"
+                )
+                end_include_block = tu_file_contents.find(b"end include block for XjGlobals */\n")
+                if start_include_block == -1 or end_include_block == -1:
+                    print("PPRC: NOTE: Could not find xj_globals include block in TU:", tu_path)
+                    continue
+
+                target_q_idx = tu_file_contents.rfind(b"@", start_include_block, end_include_block)
+                if target_q_idx == -1:
+                    print("PPRC: NOTE: Could not find @ sign in include block in TU:", tu_path)
+                    continue
+                target_q_end_idx = tu_file_contents.find(b" ", target_q_idx, end_include_block)
+                # +1 to skip the '@'
+                target_q_bytes = tu_file_contents[target_q_idx + 1 : target_q_end_idx]
+                target_q = target_q_bytes.decode("utf-8")
+
+                print("PPRC: NOTE: Found target QUSS in include block:", target_q)
+
+                for rel_hdr_path_str, header_decls in store.decls_defined_by_headers.items():
+                    print("PPRC: NOTE: Checking header for target QUSS:", rel_hdr_path_str)
+                    print(header_decls.keys())
+                    print()
+                    details = header_decls.get(target_q, None)
+                    if details:
+                        print(
+                            "PPRC: NOTE: Found include block destined for header in TU:",
+                            tu_path,
+                            rel_hdr_path_str,
+                        )
+                        # Remove the include block from the TU
+                        rewriter.add_rewrite(
+                            tu_path,
+                            start_include_block,
+                            end_include_block - start_include_block,
+                            "",
+                        )
+                        # Add the include block to the header
+                        q_start_offset, _q_end_offset, _ = details
+                        rewriter.add_rewrite(
+                            (current_codebase / rel_hdr_path_str).as_posix(),
+                            q_start_offset,
+                            0,
+                            tu_file_contents[start_include_block:end_include_block].decode("utf-8"),
+                        )
+                        break
 
     def prep_expand_preprocessor(prev: Path, current_codebase: Path, store: PrepPassResultStore):
         # XREF:NON_TRIVIAL_REFACTORING_PRECONDITIONS
