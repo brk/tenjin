@@ -1691,7 +1691,7 @@ def localize_mutable_globals(
 
             for type_name, decl_cursor in needed_typedefs.items():
                 if type_name not in types_in_scope:
-                    types_to_emit_typedefs[type_name] = decl_cursor
+                    types_to_emit_typedefs[type_name] = decl_cursor[0]
                 #     print(f"    Will emit typedef: {type_name}")
                 # else:
                 #     print(f"    Skipping typedef (already in scope): {type_name}")
