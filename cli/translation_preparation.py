@@ -950,8 +950,8 @@ def run_preparation_passes(
         # Build a map from QUSS to the expected (original) source text from headers
         qd_to_header_src: dict[tuple[QUSS, bool], FileContentsStr] = {}
         for header_items in store.items_defined_by_headers.values():
-            for q, details in header_items.items():
-                for start_offset, end_offset, source_text, _is_defn in details:
+            for q, hdr_details in header_items.items():
+                for start_offset, end_offset, source_text, _is_defn in hdr_details:
                     qd = (q, _is_defn)
                     qd_to_header_src[qd] = source_text
 
