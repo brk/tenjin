@@ -64,6 +64,7 @@ fn guidance_for_file(c_path: &Path) -> serde_json::Value {
                 "&mut str" : ["*:xstr", "*:xstr2"],
                 "Vec<u8>" : "*:ovu8",
                 "&Vec<u8>" : "*:rvu8",
+                "u8": "guided_static:u8"
             },
             "fn_return_type": {
                 "guided_ret_ostr": "String"

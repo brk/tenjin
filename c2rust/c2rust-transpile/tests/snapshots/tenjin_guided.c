@@ -27,6 +27,11 @@ void guided_str_init_lit()
     const char *uptr = "unguided pointer";
 }
 
+void guided_static()
+{
+    static int u8;
+}
+
 // XREF:guided_ret_type
 const char *guided_ret_ostr()
 {

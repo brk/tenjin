@@ -43,6 +43,10 @@ pub unsafe extern "C" fn guided_str_init_lit() {
         b"unguided pointer\0" as *const u8 as *const ::core::ffi::c_char;
 }
 #[no_mangle]
+pub unsafe extern "C" fn guided_static() {
+    static mut u8: u8 = 0;
+}
+#[no_mangle]
 pub unsafe extern "C" fn guided_ret_ostr() -> String {
     return String::new();
 }
