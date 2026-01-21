@@ -204,6 +204,32 @@ class FnDefHandling(Enum):
     INCLUDE_DECL_ONLY = 3
 
 
+def function_signature_span_end(cursor: Cursor) -> int:
+    """Visual example of return value:
+    ```
+        void f(int a, int b)  { ... }
+                            ^
+    ```
+    """
+    cursor_end_offset = cursor.extent.end.offset
+    # Do not include the function body in the recorded declaration.
+    prev_tok = None
+    for t in cursor.get_tokens():
+        if t.location.offset >= cursor.location.offset:
+            # This will break on pernicious code which defines a macro
+            # to hide the opening curly brace of the function body.
+            if t.spelling == "{":
+                if prev_tok:
+                    # Probably a ) before { but it could be
+                    # an attribute or an #endif or a non-expanding macro...)
+                    cursor_end_offset = prev_tok.extent.end.offset
+                else:
+                    cursor_end_offset = t.extent.start.offset
+                break
+            prev_tok = t
+    return cursor_end_offset
+
+
 def collect_decls_by_rel_tu(
     current_codebase: Path,
     compdb: compilation_database.CompileCommands,
@@ -277,21 +303,7 @@ def collect_decls_by_rel_tu(
                     if fn_def_handling == FnDefHandling.EXCLUDE:
                         continue
                     if fn_def_handling == FnDefHandling.INCLUDE_DECL_ONLY:
-                        # Do not include the function body in the recorded declaration.
-                        prev_tok = None
-                        for t in cursor.get_tokens():
-                            if t.location.offset >= cursor.location.offset:
-                                # This will break on pernicious code which defines a macro
-                                # to hide the opening curly brace of the function body.
-                                if t.spelling == "{":
-                                    if prev_tok:
-                                        # Probably a ) before { but it could be
-                                        # an attribute or an #endif or a non-expanding macro...)
-                                        cursor_end_offset = prev_tok.extent.end.offset
-                                    else:
-                                        cursor_end_offset = t.extent.start.offset
-                                    break
-                                prev_tok = t
+                        cursor_end_offset = function_signature_span_end(cursor)
                 else:
                     # Include macro instantiations adjacent to the end of the definition.
                     # This is intended to handle cases like the argument list of a function
