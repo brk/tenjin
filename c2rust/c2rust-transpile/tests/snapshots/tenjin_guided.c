@@ -29,6 +29,7 @@ void guided_str_init_lit()
 
 void guided_static()
 {
+    // XREF:guided_static_globals
     static int u8;
 }
 
