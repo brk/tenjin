@@ -2682,9 +2682,11 @@ impl<'c> Translation<'c> {
                     CDeclKind::Variable {
                         ident,
                         has_global_storage,
+                        has_static_duration,
                         ..
                     } => {
-                        if *has_global_storage {
+                        if *has_global_storage && !*has_static_duration {
+                            // XREF:guided_static_globals
                             // For globals, match the spec fnname instead of the varname
                             tenjin::is_derived_name(&spec.fnname, ident)
                         } else {
