@@ -357,19 +357,22 @@ def organize_decls_by_headers(
         RelativeFilePathStr, dict[QUSS, list[tuple[int, int, FileContentsStr, QUSS_is_defn]]]
     ] = {}
     for q in every_quss:
-        entries_dups = []
+        entries_defns = []
+        entries_nondefns = []
         for rel_tu_path in rel_tu_paths:
             tu_decls = decls_by_rel_tu[rel_tu_path]
             if q in tu_decls:
-                # When we have mixed decls/defns, prefer the defns, since we can derive
-                # the decls from them.
-                any_defs = any(e[4] for e in tu_decls[q])
-                if any_defs:
-                    canonical_decls = [e for e in tu_decls[q] if e[4]]
-                else:
-                    canonical_decls = tu_decls[q]
-                entries_dups.extend(canonical_decls)
-        expanded_entries_set = expand_overlapping_decl_header_entries(set(entries_dups))
+                # We have to separate definitions from non-definitions,
+                # since their contents are expected to differ, and we
+                # only want to compare like with like.
+                entries_defns.extend([e for e in tu_decls[q] if e[4]])
+                entries_nondefns.extend([e for e in tu_decls[q] if not e[4]])
+
+        expanded_entries_set = expand_overlapping_decl_header_entries(set(entries_defns))
+        expanded_nondefns_entries_set = expand_overlapping_decl_header_entries(
+            set(entries_nondefns)
+        )
+
         if len(expanded_entries_set) > 1:
             if len(set(e[3] for e in expanded_entries_set)) > 1:
                 print("ERROR: Declaration contents differ between TUs for QUSS:", q)
@@ -380,8 +383,20 @@ def organize_decls_by_headers(
                 print()
                 # continue  # skip inconsistent declarations
                 raise ValueError("ERROR: Declaration contents differ between TUs for QUSS:" + q)
+
+        assert len(expanded_nondefns_entries_set) <= 1
+
         # All declarations have same contents
         for exp_entry in expanded_entries_set:
+            header_path_str = exp_entry[0]
+            header_path = Path(header_path_str)
+            if header_path.is_absolute():
+                raise ValueError(
+                    f"Expected relative header path, got absolute path: {header_path_str}"
+                )
+            decls_by_header.setdefault(header_path_str, {}).setdefault(q, []).append(exp_entry[1:])
+
+        for exp_entry in expanded_nondefns_entries_set:
             header_path_str = exp_entry[0]
             header_path = Path(header_path_str)
             if header_path.is_absolute():
@@ -933,13 +948,12 @@ def run_preparation_passes(
         tus = c_refact.parse_project(index, compdb)
 
         # Build a map from QUSS to the expected (original) source text from headers
-        quss_to_header_src: dict[QUSS, FileContentsStr] = {}
+        qd_to_header_src: dict[tuple[QUSS, bool], FileContentsStr] = {}
         for header_items in store.items_defined_by_headers.values():
             for q, details in header_items.items():
                 for start_offset, end_offset, source_text, _is_defn in details:
-                    if not _is_defn:
-                        continue
-                    quss_to_header_src[q] = source_text
+                    qd = (q, _is_defn)
+                    qd_to_header_src[qd] = source_text
 
         def combine_source_texts_for_header(t1: str, t2: str) -> str | None:
             if t1 == t2:
@@ -1067,9 +1081,8 @@ def run_preparation_passes(
                     if q in nested_children:
                         continue
 
-                    if q in quss_to_header_src:
-                        qd = (q, cursor.is_definition())
-
+                    qd = (q, cursor.is_definition())
+                    if qd in qd_to_header_src:
                         start_offset = cursor.extent.start.offset
                         end_offset = cursor.extent.end.offset
 
@@ -1148,7 +1161,7 @@ def run_preparation_passes(
                 # Apply the consolidation: replace TU versions with header version,
                 # and update header with the modified version
                 modified_version = modified_versions_for_qd.pop()
-                # original_header_version = quss_to_header_src[q]
+                # original_header_version = qd_to_header_src[q]
                 expanded_header_version = quss_to_expanded_src[qd]
 
                 if modified_version == expanded_header_version:
