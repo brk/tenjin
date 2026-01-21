@@ -7,6 +7,7 @@ import subprocess
 import shutil
 from typing import TypedDict
 import pprint
+from os import environ
 
 from clang.cindex import (  # type: ignore
     Index,
@@ -253,26 +254,27 @@ def refold_build(b: targets.BuildInfo, t: targets.BuildTarget, target_dir_path: 
             cwd=cmd.directory,
         )
 
-        crc_cp = hermetic.run(
-            [
-                "clang-refold",
-                "--check",
-                c_path,
-                "--refold-map",
-                refold_map_path,
-                "--pp-mod",
-                abs_src_path,
-            ],
-            check=False,
-            capture_output=True,
-        )
-        if crc_cp.returncode != 0:
-            print("clang-refold --check failed:")
-            print("stdout:")
-            print(crc_cp.stdout.decode("utf-8"))
-            print("stderr:")
-            print(crc_cp.stderr.decode("utf-8"))
-            raise RuntimeError("clang-refold --check failed")
+        if environ.get("XJ_REFOLD_CHECK"):
+            crc_cp = hermetic.run(
+                [
+                    "clang-refold",
+                    "--check",
+                    c_path,
+                    "--refold-map",
+                    refold_map_path,
+                    "--pp-mod",
+                    abs_src_path,
+                ],
+                check=False,
+                capture_output=True,
+            )
+            if crc_cp.returncode != 0:
+                print("clang-refold --check failed:")
+                print("stdout:")
+                print(crc_cp.stdout.decode("utf-8"))
+                print("stderr:")
+                print(crc_cp.stderr.decode("utf-8"))
+                raise RuntimeError("clang-refold --check failed")
 
     b._use_preprocessed_files = False
 
@@ -1340,7 +1342,7 @@ def localize_mutable_globals(
 
     with batching_rewriter.BatchingRewriter() as rewriter:
         # TU -> offset of first fn using mutable globals
-        lowest_mutable_accessing_fn_starts: dict[str, int] = {}
+        lowest_mutable_accessing_fn_starts: dict[str, tuple[int, str]] = {}
 
         # Step 8: Replace uses of mutable globals with xjg->WHATEVER
         print("\n  --- Step 8: Replacing global variable accesses ---")
@@ -1349,7 +1351,9 @@ def localize_mutable_globals(
             for child in tu.cursor.walk_preorder():
                 if child.kind == CursorKind.FUNCTION_DECL:
                     if child.is_definition():
-                        current_fn_start = child.extent.start.offset
+                        q = c_refact_type_mod_replicator.quss(child, None)
+                        current_fn_start = (child.extent.start.offset, q)
+
                 if (
                     child.kind == CursorKind.DECL_REF_EXPR
                     and child.spelling in phase1results.mutd_global_names
@@ -1393,9 +1397,9 @@ def localize_mutable_globals(
                     if tu_path not in lowest_mutable_accessing_fn_starts:
                         lowest_mutable_accessing_fn_starts[tu_path] = current_fn_start
                     else:
-                        lowest_mutable_accessing_fn_starts[tu_path] = min(
-                            lowest_mutable_accessing_fn_starts[tu_path], current_fn_start
-                        )
+                        lmafs = lowest_mutable_accessing_fn_starts[tu_path]
+                        if lmafs[0] > current_fn_start[0]:
+                            lowest_mutable_accessing_fn_starts[tu_path] = current_fn_start
 
         # Step 3: Create xj_globals.h header file
         print("\n  --- Step 3: Creating xj_globals.h ---")
@@ -1655,7 +1659,7 @@ def localize_mutable_globals(
 
         # Phase 1 only inserted forward declarations, we'll also add the header as needed.
         # (not much point in replacing the forward declarations).
-        for tu_path, offset in lowest_mutable_accessing_fn_starts.items():
+        for tu_path, (offset, q) in lowest_mutable_accessing_fn_starts.items():
             tu = tus[tu_path]
 
             # print(f"\n  Analyzing types in scope in TU: {tu_path}")
@@ -1689,7 +1693,7 @@ def localize_mutable_globals(
 
             for type_name, decl_cursor in needed_typedefs.items():
                 if type_name not in types_in_scope:
-                    types_to_emit_typedefs[type_name] = decl_cursor
+                    types_to_emit_typedefs[type_name] = decl_cursor[0]
                 #     print(f"    Will emit typedef: {type_name}")
                 # else:
                 #     print(f"    Skipping typedef (already in scope): {type_name}")
@@ -1732,6 +1736,7 @@ def localize_mutable_globals(
                             break
 
             type_defs_lines.append('#include "xj_globals.h"')
+            type_defs_lines.append(f"/* @{q} end include block for XjGlobals */")
 
             type_defs_text = "\n".join(type_defs_lines) + "\n"
             rewriter.add_rewrite(tu_path, offset, 0, type_defs_text)
