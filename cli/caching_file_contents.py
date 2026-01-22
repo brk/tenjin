@@ -1,4 +1,4 @@
-type FilePathStr = str
+from tenj_types import FilePathStr
 
 
 class CachingFileContents:

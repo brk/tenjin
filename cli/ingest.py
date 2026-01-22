@@ -2,10 +2,7 @@ import uuid
 from dataclasses import dataclass
 
 from dataclasses_json import dataclass_json, DataClassJsonMixin
-
-
-type PreprocessorDefinition = tuple[str, str | None]
-type PerFilePreprocessorDefinitions = dict[str, list[PreprocessorDefinition]]
+from tenj_types import PerFilePreprocessorDefinitions
 
 
 @dataclass_json

@@ -26,8 +26,9 @@ import ingest_tracking
 import llvm_bitcode_linking
 import targets_from_intercept
 from targets import BuildInfo, TargetType
-from caching_file_contents import FilePathStr, CachingFileContents
+from caching_file_contents import CachingFileContents
 from constants import WANT, XJ_GUIDANCE_FILENAME
+from tenj_types import FileContentsStr, FilePathStr, RelativeFilePathStr
 
 
 def elapsed_ms_of_ns(start_ns: int, end_ns: int) -> float:
@@ -196,8 +197,6 @@ def copy_codebase_dir(
 type QUSS = c_refact_type_mod_replicator.QuasiUniformSymbolSpecifier
 type QUSS_is_defn = bool
 type QUSS_and_defn = tuple[QUSS, QUSS_is_defn]
-type FileContentsStr = str
-type RelativeFilePathStr = str
 
 
 class FnDefHandling(Enum):

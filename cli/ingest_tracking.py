@@ -6,6 +6,7 @@ from pathlib import Path
 from subprocess import CalledProcessError, CompletedProcess
 
 import ingest
+from tenj_types import PerFilePreprocessorDefinitions
 
 
 @dataclass
@@ -83,7 +84,7 @@ class TimingRepo:
             cpe.stdout.decode("utf-8").splitlines() if cpe.stdout is not None else None
         )
 
-    def set_preprocessor_definitions(self, definitions: ingest.PerFilePreprocessorDefinitions):
+    def set_preprocessor_definitions(self, definitions: PerFilePreprocessorDefinitions):
         if self._translation_record:
             self._translation_record.inputs.per_file_preprocessor_definitions = definitions
 

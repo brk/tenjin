@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 import repo_root
 import hermetic
-import ingest
+from tenj_types import PerFilePreprocessorDefinitions, PreprocessorDefinition
 
 # See https://clang.llvm.org/docs/JSONCompilationDatabase.html
 
@@ -205,7 +205,7 @@ def extract_macro_args_affecting_content_from_compile_command(cc: CompileCommand
 def extract_preprocessor_definitions_from_compile_commands(
     ccs: CompileCommands,
     codebase: Path,
-) -> ingest.PerFilePreprocessorDefinitions:
+) -> PerFilePreprocessorDefinitions:
     """Extract preprocessor definitions from `compile_commands.json`"""
     definitions = {}
     for cc in ccs.commands:
@@ -222,7 +222,7 @@ def extract_preprocessor_definitions_from_compile_commands(
             chosen_path = resolved_file_path.relative_to(resolved_codebase_path)
         else:
             chosen_path = resolved_file_path
-        defs: list[ingest.PreprocessorDefinition] = []
+        defs: list[PreprocessorDefinition] = []
         i = 0
         while i < len(args):
             arg = args[i]
