@@ -11,6 +11,8 @@ from typing import Callable, Sequence
 from subprocess import CompletedProcess
 from dataclasses import dataclass
 
+from tenj_types import ResolvedPath
+
 import click
 
 import ingest_tracking
@@ -372,7 +374,7 @@ def run_whiteout_clippy_no_effect_paths(root: Path, dir: Path) -> None:
 
     spans_to_erase: list[ExplicitSpan] = []
     files_map: dict[str, int] = {}
-    files_list: list[Path] = []
+    files_list: list[ResolvedPath] = []
 
     for obj in messages:
         message = obj.get("message", {})
@@ -388,7 +390,7 @@ def run_whiteout_clippy_no_effect_paths(root: Path, dir: Path) -> None:
                 continue
 
             # clippy file_name is relative to the crate root (`dir`)
-            abs_path = (dir / file_name).resolve()  # TODO test-resolve
+            abs_path: ResolvedPath = (dir / file_name).resolve()  # TODO test-resolve
             abs_path_str = str(abs_path)
 
             if abs_path_str not in files_map:
@@ -405,7 +407,7 @@ def run_whiteout_clippy_no_effect_paths(root: Path, dir: Path) -> None:
     if not spans_to_erase:
         return
 
-    def span_to_path(span: ExplicitSpan) -> Path:
+    def span_to_path(span: ExplicitSpan) -> ResolvedPath:
         return files_list[span.fileid]
 
     rewriter = SpeculativeSpansEraser(spans_to_erase, span_to_path)

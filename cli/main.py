@@ -18,6 +18,7 @@ import hermetic
 import translation
 import cli_subcommands
 import covset
+from tenj_types import ResolvedPath
 
 
 def do_check_repo_file_sizes() -> bool:
@@ -102,7 +103,14 @@ def cli():
     help="If the results directory already exists, delete its contents.",
     is_flag=True,
 )
-def translate(codebase, resultsdir, cratename, guidance, buildcmd, reset_resultsdir):
+@click.option(
+    "--do-not-refactor",
+    multiple=True,
+    help="Directory paths to exclude from refactoring (can be specified multiple times).",
+)
+def translate(
+    codebase, resultsdir, cratename, guidance, buildcmd, reset_resultsdir, do_not_refactor
+):
     root = repo_root.find_repo_root_dir_Path()
     cli_subcommands.do_build_star()
 
@@ -133,7 +141,20 @@ def translate(codebase, resultsdir, cratename, guidance, buildcmd, reset_results
         click.echo("Using empty guidance; pass `--guidance` to refine translation.", err=True)
         guidance = "{}"
 
-    translation.do_translate(root, Path(codebase), resultsdir, cratename, guidance, buildcmd)
+    def resolve_within_codebase(p: Path) -> ResolvedPath:
+        if p.is_absolute():
+            return p
+        return Path(codebase) / p
+
+    translation.do_translate(
+        root,
+        Path(codebase),
+        resultsdir,
+        cratename,
+        guidance,
+        [resolve_within_codebase(p) for p in do_not_refactor],
+        buildcmd,
+    )
 
 
 @cli.command()

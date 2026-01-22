@@ -24,13 +24,18 @@ import hermetic
 import vcs_helpers
 import cargo_workspace_helpers
 import static_measurements_rust
+from tenj_types import ResolvedPath
 from c_refact_identify_mains import find_main_translation_units
 from translation_preparation import run_preparation_passes
 from translation_improvement import run_improvement_passes
 from constants import XJ_GUIDANCE_FILENAME
 
 
-def stub_ingestion_record(codebase: Path, guidance: dict) -> ingest.TranslationRecord:
+def stub_ingestion_record(
+    codebase: Path,
+    guidance: dict,
+    do_not_refactor_headers_within: list[ResolvedPath],
+) -> ingest.TranslationRecord:
     """
     Create a stub IngestionRecord for the given codebase and crate name.
     This is used to initialize the ingestion record before the actual translation.
@@ -52,7 +57,6 @@ def stub_ingestion_record(codebase: Path, guidance: dict) -> ingest.TranslationR
                 git_commit=codebase_wcs.commit,
                 relative_path=str(codebase_relative_path),
             )
-
     tenjin_vcs_dir = vcs_helpers.find_containing_vcs_dir(find_repo_root_dir_Path())
     assert tenjin_vcs_dir is not None, "No VCS directory found for Tenjin?!?!"
 
@@ -71,6 +75,9 @@ def stub_ingestion_record(codebase: Path, guidance: dict) -> ingest.TranslationR
             tenjin_git_commit=tenjin_wcs.commit,
             c2rust_baseline_version=upstream_c2rust or "unknown",
             per_file_preprocessor_definitions={},
+            do_not_refactor_headers_within=[
+                p.relative_to(codebase).as_posix() for p in do_not_refactor_headers_within
+            ],
             guidance=guidance,
         ),
         results=ingest.TranslationResults(
@@ -196,6 +203,7 @@ def do_translate(
     resultsdir: Path,
     cratename: str,
     guidance_path_or_literal: str,
+    do_not_refactor_headers_within: list[ResolvedPath] = [],
     buildcmd: str | None = None,
 ):
     """
@@ -212,9 +220,14 @@ def do_translate(
     have files called `translation_metadata.json` and `translation_snapshot.json`.
     """
 
+    for rp in do_not_refactor_headers_within:
+        assert rp == rp.resolve(), f"`do_not_refactor` path {rp} not resolved!"
+
     guidance = load_and_parse_guidance(guidance_path_or_literal)
 
-    tracker = ingest_tracking.TimingRepo(stub_ingestion_record(codebase, guidance))
+    tracker = ingest_tracking.TimingRepo(
+        stub_ingestion_record(codebase, guidance, do_not_refactor_headers_within)
+    )
 
     skip_remainder_of_translation = False
 
@@ -223,7 +236,7 @@ def do_translate(
 
     # Preparation passes may modify the guidance stored in XJ_GUIDANCE_FILENAME
     final_prepared_codebase, build_info = run_preparation_passes(
-        codebase, resultsdir, tracker, guidance, buildcmd
+        codebase, resultsdir, tracker, guidance, do_not_refactor_headers_within, buildcmd
     )
 
     c2rust_transpile_flags = [

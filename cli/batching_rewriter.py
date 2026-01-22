@@ -1,4 +1,5 @@
-from caching_file_contents import FilePathStr, CachingFileContents
+from caching_file_contents import CachingFileContents
+from tenj_types import FilePathStr
 
 
 class BatchingRewriter:

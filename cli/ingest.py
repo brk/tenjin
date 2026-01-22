@@ -2,10 +2,7 @@ import uuid
 from dataclasses import dataclass
 
 from dataclasses_json import dataclass_json, DataClassJsonMixin
-
-
-type PreprocessorDefinition = tuple[str, str | None]
-type PerFilePreprocessorDefinitions = dict[str, list[PreprocessorDefinition]]
+from tenj_types import PerFilePreprocessorDefinitions, RelativeFilePathStr
 
 
 @dataclass_json
@@ -38,6 +35,7 @@ class TranslationInputs:
     tenjin_git_commit: str
     c2rust_baseline_version: str
     guidance: dict
+    do_not_refactor_headers_within: list[RelativeFilePathStr]
 
 
 @dataclass_json

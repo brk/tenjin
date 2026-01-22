@@ -26,8 +26,9 @@ import ingest_tracking
 import llvm_bitcode_linking
 import targets_from_intercept
 from targets import BuildInfo, TargetType
-from caching_file_contents import FilePathStr, CachingFileContents
+from caching_file_contents import CachingFileContents
 from constants import WANT, XJ_GUIDANCE_FILENAME
+from tenj_types import FileContentsStr, FilePathStr, RelativeFilePathStr, ResolvedPath
 
 
 def elapsed_ms_of_ns(start_ns: int, end_ns: int) -> float:
@@ -196,8 +197,6 @@ def copy_codebase_dir(
 type QUSS = c_refact_type_mod_replicator.QuasiUniformSymbolSpecifier
 type QUSS_is_defn = bool
 type QUSS_and_defn = tuple[QUSS, QUSS_is_defn]
-type FileContentsStr = str
-type RelativeFilePathStr = str
 
 
 class FnDefHandling(Enum):
@@ -500,10 +499,15 @@ def run_preparation_passes(
     resultsdir: Path,
     tracker: ingest_tracking.TimingRepo,
     guidance: dict,
+    do_not_refactor_headers_within: list[ResolvedPath],
     buildcmd: str | None = None,
 ) -> tuple[Path, BuildInfo]:
     """Returns the path to the final prepared codebase directory,
     along with information about the build structure."""
+
+    def can_refactor_header(p: Path) -> bool:
+        rp = p.resolve()
+        return not any(rp.is_relative_to(excluded) for excluded in do_not_refactor_headers_within)
 
     def prep_00_copy_pristine_codebase(pristine: Path, newdir: Path, store: PrepPassResultStore):
         copy_codebase(pristine, newdir)
@@ -1297,7 +1301,9 @@ def run_preparation_passes(
 
         # We want to capture decl information after the header contents have stabilized,
         # so just before preprocessor expansion is a good time.
-        local_header_paths = set(p.as_posix() for p in current_codebase.glob("**/*.h"))
+        local_header_paths = set(
+            p.as_posix() for p in current_codebase.glob("**/*.h") if can_refactor_header(p)
+        )
 
         store.items_defined_by_headers = organize_decls_by_headers(
             collect_decls_by_rel_tu(
