@@ -1147,6 +1147,9 @@ impl Translation<'_> {
                     };
                     self.recognize_preconversion_call_method_1_guided(ctx, method, cargs)
                 }
+                _ if tenjin::is_path_exactly_1(path, "difftime") => {
+                    self.recognize_preconversion_call_difftime(ctx, cargs)
+                }
                 _ => Ok(None),
             }
         } else {
@@ -1688,6 +1691,28 @@ impl Translation<'_> {
             return Ok(Some(WithStmts::new_val(call)));
         }
 
+        Ok(None)
+    }
+
+    #[allow(clippy::borrowed_box)]
+    fn recognize_preconversion_call_difftime(
+        &self,
+        ctx: ExprContext,
+        cargs: &[CExprId],
+    ) -> TranslationResult<Option<WithStmts<Box<Expr>>>> {
+        if cargs.len() == 2 {
+            self.use_crate(ExternCrate::XjCtime);
+            // self.with_cur_file_item_store(|item_store| {
+            //     item_store.add_use(false, vec!["xj_ctime".into(), "compat".into()], "difftime");
+            // });
+            let e1 = self.convert_expr(ctx.used(), cargs[0], None)?;
+            let e2 = self.convert_expr(ctx.used(), cargs[1], None)?;
+            let difftime_call = mk().call_expr(
+                mk().path_expr(vec!["xj_ctime", "compat", "difftime"]),
+                vec![e1.to_expr(), e2.to_expr()],
+            );
+            return Ok(Some(WithStmts::new_val(difftime_call)));
+        }
         Ok(None)
     }
 
