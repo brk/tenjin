@@ -1150,6 +1150,9 @@ impl Translation<'_> {
                 _ if tenjin::is_path_exactly_1(path, "difftime") => {
                     self.recognize_preconversion_call_difftime(ctx, cargs)
                 }
+                _ if tenjin::is_path_exactly_1(path, "time") => {
+                    self.recognize_preconversion_call_time(ctx, cargs)
+                }
                 _ => Ok(None),
             }
         } else {
@@ -1702,9 +1705,6 @@ impl Translation<'_> {
     ) -> TranslationResult<Option<WithStmts<Box<Expr>>>> {
         if cargs.len() == 2 {
             self.use_crate(ExternCrate::XjCtime);
-            // self.with_cur_file_item_store(|item_store| {
-            //     item_store.add_use(false, vec!["xj_ctime".into(), "compat".into()], "difftime");
-            // });
             let e1 = self.convert_expr(ctx.used(), cargs[0], None)?;
             let e2 = self.convert_expr(ctx.used(), cargs[1], None)?;
             let difftime_call = mk().call_expr(
@@ -1712,6 +1712,47 @@ impl Translation<'_> {
                 vec![e1.to_expr(), e2.to_expr()],
             );
             return Ok(Some(WithStmts::new_val(difftime_call)));
+        }
+        Ok(None)
+    }
+
+    /// Map NULL -> None, &x -> Some(&[mut] x), otherwise `x.as_ref()`.
+    fn c_coerce_pointer_to_option_ref(
+        &self,
+        ctx: ExprContext,
+        cexpr: CExprId,
+    ) -> TranslationResult<WithStmts<Box<Expr>>> {
+        if let CExprKind::ImplicitCast(_, _, CastKind::NullToPointer, _, _) =
+            self.ast_context[cexpr].kind
+        {
+            return Ok(WithStmts::new_val(mk().path_expr(vec!["None"])));
+        }
+        Ok(self.convert_expr(ctx.used(), cexpr, None)?.map(|e| {
+            if let Expr::Reference(_) = &*e {
+                mk().call_expr(mk().path_expr("Some"), vec![e])
+            } else {
+                mk().method_call_expr(e, "as_ref", vec![])
+            }
+        }))
+    }
+
+    #[allow(clippy::borrowed_box)]
+    fn recognize_preconversion_call_time(
+        &self,
+        ctx: ExprContext,
+        cargs: &[CExprId],
+    ) -> TranslationResult<Option<WithStmts<Box<Expr>>>> {
+        if cargs.len() == 1 {
+            self.use_crate(ExternCrate::XjCtime);
+            return Ok(Some(
+                self.c_coerce_pointer_to_option_ref(ctx, cargs[0])?
+                    .map(|arg_expr| {
+                        mk().call_expr(
+                            mk().path_expr(vec!["xj_ctime", "compat", "time"]),
+                            vec![arg_expr],
+                        )
+                    }),
+            ));
         }
         Ok(None)
     }
