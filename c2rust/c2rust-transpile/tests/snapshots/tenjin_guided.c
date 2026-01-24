@@ -34,6 +34,7 @@ void print_shared_vec_u8(const char *rvu8)
 
 void guided_str_init_lit()
 {
+    // XREF:guided_local_nonmut
     const char *ostr = "owned String";
     // const char* rstr = "shared &str";
     // const char* xstr = "exclusive &mut str";

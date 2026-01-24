@@ -4140,6 +4140,7 @@ impl<'c> Translation<'c> {
 
                 let mut stmts = self.compute_variable_array_sizes(ctx, typ.ctype)?;
 
+                // XREF:guided_local_nonmut
                 let ConvertedVariable { ty, mutbl, init } =
                     self.convert_variable(ctx, initializer, typ, &guided_type, guided_mutbl)?;
                 let mut init = init?;
