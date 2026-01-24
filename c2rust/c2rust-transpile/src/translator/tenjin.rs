@@ -776,10 +776,11 @@ impl Translation<'_> {
                 .query_expr_type(self, cargs[0])
                 .is_some_and(|g| g.pretty_sans_refs() == "Vec < u8 >")
         {
+            // XREF:sprint_into_mutref_vec_u8
             return RecognizedCallForm::PrintfS {
                 fmt_string_idx: 2,
-                opt_size: Some(args[1].clone()),
-                dest: args[0].clone(),
+                opt_size: Some(expr_in_usize(args[1].clone())),
+                dest: Box::new(tenjin::expr_strip_casts(&args[0]).clone()),
             };
         }
 

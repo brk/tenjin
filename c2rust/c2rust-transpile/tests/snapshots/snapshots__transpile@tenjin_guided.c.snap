@@ -13,6 +13,12 @@ input_file: c2rust-transpile/tests/snapshots/tenjin_guided.c
 )]
 extern "C" {
     fn printf(fmt: *const ::core::ffi::c_char, ...) -> ::core::ffi::c_int;
+    fn snprintf(
+        buf: *mut ::core::ffi::c_char,
+        _: ::core::ffi::c_ulong,
+        fmt: *const ::core::ffi::c_char,
+        ...
+    ) -> ::core::ffi::c_int;
     fn strlen(s: *const ::core::ffi::c_char) -> ::core::ffi::c_long;
     fn memset(
         s: *mut ::core::ffi::c_void,
@@ -44,6 +50,10 @@ pub unsafe extern "C" fn print_unguided_ptr(mut ptr: *const ::core::ffi::c_char)
 #[no_mangle]
 pub unsafe extern "C" fn print_shared_vec_u8(mut rvu8: &Vec<u8>) {
     println!("{:>}", String::from_utf8_lossy(&rvu8));
+}
+#[no_mangle]
+pub unsafe extern "C" fn sprint_into_mutref_vec_u8(mut xvu8: &mut Vec<u8>) {
+    xj_sprintf_Vec_u8(&mut xvu8, Some(24), format!("{:}", 42 as core::ffi::c_int));
 }
 #[no_mangle]
 pub unsafe extern "C" fn guided_str_init_lit() {
@@ -117,4 +127,18 @@ pub unsafe extern "C" fn guided_2d_vec(
     mut j: ::core::ffi::c_int,
 ) -> ::core::ffi::c_int {
     return x2d[i as usize][j as usize];
+}
+fn xj_sprintf_Vec_u8(dest: &mut Vec<u8>, lim: Option<usize>, val: String) -> usize {
+    if lim == Some(0) {
+        return 0;
+    }
+    let bytes = val.as_bytes();
+    let to_copy = if let Some(lim) = lim {
+        std::cmp::min(lim - 1, bytes.len())
+    } else {
+        bytes.len()
+    };
+    dest.clear();
+    dest.extend_from_slice(&bytes[..to_copy]);
+    to_copy
 }

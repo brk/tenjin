@@ -1,6 +1,7 @@
 // To avoid cross-platform output differences from `printf` argument names,
 // we'll just declare printf and other libc functions ourselves.
 int printf(const char *fmt, ...);
+int snprintf(char* buf, unsigned long, const char *fmt, ...);
 long strlen(const char *s);
 void *memset(void *s, int c, long n);
 
@@ -30,6 +31,12 @@ void print_shared_vec_u8(const char *rvu8)
 {
     // XREF:guided_cast_str_of_shared_vec_u8
     printf("%s\n", rvu8);
+}
+
+void sprint_into_mutref_vec_u8(const char *xvu8)
+{
+    // XREF:sprint_into_mutref_vec_u8
+    snprintf(xvu8, 24, "%d\n", 42);
 }
 
 void guided_str_init_lit()
