@@ -1153,6 +1153,12 @@ impl Translation<'_> {
                 _ if tenjin::is_path_exactly_1(path, "time") => {
                     self.recognize_preconversion_call_time(ctx, cargs)
                 }
+                _ if tenjin::is_path_exactly_1(path, "localtime")
+                    || tenjin::is_path_exactly_1(path, "localtime_r") =>
+                {
+                    self.use_crate(ExternCrate::XjCtime);
+                    Ok(None)
+                }
                 _ => Ok(None),
             }
         } else {
