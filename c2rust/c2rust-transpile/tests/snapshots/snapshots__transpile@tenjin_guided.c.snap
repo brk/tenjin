@@ -19,6 +19,12 @@ extern "C" {
         c: ::core::ffi::c_int,
         n: ::core::ffi::c_long,
     ) -> *mut ::core::ffi::c_void;
+    static mut extern_int_unguided: ::core::ffi::c_int;
+    static extern_int_nonmutbl: ::core::ffi::c_int;
+}
+#[no_mangle]
+pub unsafe extern "C" fn use_extern_ints() {
+    extern_int_unguided = 5 as ::core::ffi::c_int + extern_int_nonmutbl;
 }
 #[no_mangle]
 pub unsafe extern "C" fn print_owned_String(mut ostr: String) {
@@ -38,7 +44,7 @@ pub unsafe extern "C" fn print_shared_vec_u8(mut rvu8: &Vec<u8>) {
 }
 #[no_mangle]
 pub unsafe extern "C" fn guided_str_init_lit() {
-    let mut ostr: String = String::from("owned String");
+    let ostr: String = String::from("owned String");
     let mut uptr: *const ::core::ffi::c_char =
         b"unguided pointer\0" as *const u8 as *const ::core::ffi::c_char;
 }

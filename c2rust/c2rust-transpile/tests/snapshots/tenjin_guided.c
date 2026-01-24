@@ -4,6 +4,15 @@ int printf(const char *fmt, ...);
 long strlen(const char *s);
 void *memset(void *s, int c, long n);
 
+extern int extern_int_unguided;
+// XREF:extern_var_nonmutbl
+extern int extern_int_nonmutbl;
+
+void use_extern_ints()
+{
+    extern_int_unguided = 5 + extern_int_nonmutbl;
+}
+
 // XREF:fn_parameter_guided
 void print_owned_String(const char *ostr)
 {

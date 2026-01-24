@@ -66,6 +66,11 @@ fn guidance_for_file(c_path: &Path) -> serde_json::Value {
                 "&Vec<u8>" : "*:rvu8",
                 "u8": "guided_static:u8"
             },
+
+            "vars_mut" : {
+                "guided_str_init_lit:ostr": false,
+                "extern_int_nonmutbl": false
+            },
             "fn_return_type": {
                 "guided_ret_ostr": "String"
             }
