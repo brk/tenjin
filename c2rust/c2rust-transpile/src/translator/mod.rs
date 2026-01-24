@@ -3555,6 +3555,7 @@ impl<'c> Translation<'c> {
                     .parsed_guidance
                     .borrow_mut()
                     .query_decl_type(self, decl_id);
+                // XREF:guided_mutbl_fn_param
                 let guided_mutbl = self.parsed_guidance.borrow().query_decl_mut(self, decl_id);
                 let ConvertedVariable { ty, mutbl, init: _ } =
                     self.convert_variable(ctx, None, typ, &guided_type, guided_mutbl)?;

@@ -1,3 +1,4 @@
+// XREF:guided_mutbl_fn_param
 static char foo(int argc)
 {
     char x_xjtr_1 = 'a';
