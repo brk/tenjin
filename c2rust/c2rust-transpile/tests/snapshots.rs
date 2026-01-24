@@ -70,7 +70,8 @@ fn guidance_for_file(c_path: &Path) -> serde_json::Value {
             "vars_mut" : {
                 "guided_str_init_lit:ostr": false,
                 "extern_int_nonmutbl": false,
-                "static_int_nonmutbl": false
+                "static_int_nonmutbl": false,
+                "*:static_local_nonmutbl": false
             },
             "fn_return_type": {
                 "guided_ret_ostr": "String"

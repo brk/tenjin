@@ -25,7 +25,9 @@ extern "C" {
 static static_int_nonmutbl: ::core::ffi::c_int = 0 as ::core::ffi::c_int;
 #[no_mangle]
 pub unsafe extern "C" fn use_global_ints() {
-    extern_int_unguided = 5 as ::core::ffi::c_int + extern_int_nonmutbl + static_int_nonmutbl;
+    static static_local_nonmutbl: ::core::ffi::c_int = 0 as ::core::ffi::c_int;
+    extern_int_unguided =
+        5 as ::core::ffi::c_int + extern_int_nonmutbl + static_int_nonmutbl + static_local_nonmutbl;
 }
 #[no_mangle]
 pub unsafe extern "C" fn print_owned_String(mut ostr: String) {

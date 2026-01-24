@@ -12,7 +12,8 @@ static int static_int_nonmutbl = 0;
 
 void use_global_ints()
 {
-    extern_int_unguided = 5 + extern_int_nonmutbl + static_int_nonmutbl;
+    static int static_local_nonmutbl = 0;
+    extern_int_unguided = 5 + extern_int_nonmutbl + static_int_nonmutbl + static_local_nonmutbl;
 }
 
 // XREF:fn_parameter_guided
