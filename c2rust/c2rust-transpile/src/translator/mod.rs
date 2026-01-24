@@ -3233,6 +3233,7 @@ impl<'c> Translation<'c> {
                     .parsed_guidance
                     .borrow_mut()
                     .query_decl_type(self, decl_id);
+                // XREF:static_var_nonmutbl
                 let guided_mutbl = self.parsed_guidance.borrow().query_decl_mut(self, decl_id);
                 // Collect problematic static initializers and offload them to sections for the linker
                 // to initialize for us

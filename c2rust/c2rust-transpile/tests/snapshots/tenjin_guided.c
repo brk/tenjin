@@ -7,10 +7,12 @@ void *memset(void *s, int c, long n);
 extern int extern_int_unguided;
 // XREF:extern_var_nonmutbl
 extern int extern_int_nonmutbl;
+// XREF:static_var_nonmutbl
+static int static_int_nonmutbl = 0;
 
-void use_extern_ints()
+void use_global_ints()
 {
-    extern_int_unguided = 5 + extern_int_nonmutbl;
+    extern_int_unguided = 5 + extern_int_nonmutbl + static_int_nonmutbl;
 }
 
 // XREF:fn_parameter_guided
