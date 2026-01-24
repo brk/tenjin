@@ -4,6 +4,7 @@ int printf(const char *fmt, ...);
 long strlen(const char *s);
 void *memset(void *s, int c, long n);
 
+// XREF:fn_parameter_guided
 void print_owned_String(const char *ostr)
 {
     // XREF:guided_cast_str_of_owned_string

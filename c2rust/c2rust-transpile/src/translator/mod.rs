@@ -3551,6 +3551,7 @@ impl<'c> Translation<'c> {
 
             // handle regular (non-variadic) arguments
             for &(decl_id, ref var, typ) in arguments {
+                // XREF:fn_parameter_guided
                 let guided_type = self
                     .parsed_guidance
                     .borrow_mut()
