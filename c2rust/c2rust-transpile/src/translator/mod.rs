@@ -2669,17 +2669,40 @@ impl<'c> Translation<'c> {
                     return false;
                 }
 
-                if (!spec.fnname.is_empty()) && spec.fnname != "*" {
-                    let parent_fn_name = self.parent_fn_map.get(&id).and_then(|parent_fn| {
-                        self.ast_context
-                            .get_decl(parent_fn)
-                            .and_then(|fn_decl| fn_decl.kind.get_name().map(|s| s.as_str()))
-                    });
+                let parent_fn_name = self.parent_fn_map.get(&id).and_then(|parent_fn| {
+                    self.ast_context
+                        .get_decl(parent_fn)
+                        .and_then(|fn_decl| fn_decl.kind.get_name().map(|s| s.as_str()))
+                });
 
+                let is_global_variable = |decl: &CDecl| -> bool {
+                    match &decl.kind {
+                        CDeclKind::Variable {
+                            has_global_storage,
+                            has_static_duration,
+                            ..
+                        } => {
+                            let local_static = *has_static_duration && parent_fn_name.is_some();
+                            *has_global_storage && !local_static
+                        }
+                        _ => false,
+                    }
+                };
+
+                if (!spec.fnname.is_empty()) && spec.fnname != "*" {
                     let opt_parent_fn_name = fn_name_override.or(parent_fn_name);
-                    if opt_parent_fn_name.is_none_or(|s| !tenjin::is_derived_name(&spec.fnname, s))
-                    {
-                        return false;
+                    match opt_parent_fn_name {
+                        Some(parent_fn_name) => {
+                            if !tenjin::is_derived_name(&spec.fnname, parent_fn_name) {
+                                return false;
+                            }
+                        }
+                        None => {
+                            if !is_global_variable(decl) {
+                                // Global variables are the only thing that can match without a parent function
+                                return false;
+                            }
+                        }
                     }
                 }
 
@@ -2692,13 +2715,8 @@ impl<'c> Translation<'c> {
                             || spec.varname
                                 == var_name_override.expect("matches_decl() needs a field name")
                     }
-                    CDeclKind::Variable {
-                        ident,
-                        has_global_storage,
-                        has_static_duration,
-                        ..
-                    } => {
-                        if *has_global_storage && !*has_static_duration {
+                    CDeclKind::Variable { ident, .. } => {
+                        if is_global_variable(decl) {
                             // XREF:guided_static_globals
                             // For globals, match the spec fnname instead of the varname
                             tenjin::is_derived_name(&spec.fnname, ident)
