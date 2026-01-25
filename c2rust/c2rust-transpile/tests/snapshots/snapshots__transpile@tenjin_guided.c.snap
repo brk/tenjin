@@ -19,6 +19,11 @@ extern "C" {
         fmt: *const ::core::ffi::c_char,
         ...
     ) -> ::core::ffi::c_int;
+    fn sprintf(
+        buf: *mut ::core::ffi::c_char,
+        fmt: *const ::core::ffi::c_char,
+        ...
+    ) -> ::core::ffi::c_int;
     fn strlen(s: *const ::core::ffi::c_char) -> ::core::ffi::c_long;
     fn memset(
         s: *mut ::core::ffi::c_void,
@@ -54,6 +59,7 @@ pub unsafe extern "C" fn print_shared_vec_u8(mut rvu8: &Vec<u8>) {
 #[no_mangle]
 pub unsafe extern "C" fn sprint_into_mutref_vec_u8(mut xvu8: &mut Vec<u8>) {
     xj_sprintf_Vec_u8(&mut xvu8, Some(24), format!("{:}", 42 as core::ffi::c_int));
+    xj_sprintf_Vec_u8(&mut xvu8, None, format!("{:}", 42 as core::ffi::c_int));
 }
 #[no_mangle]
 pub unsafe extern "C" fn guided_str_init_lit() {
