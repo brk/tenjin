@@ -5875,6 +5875,7 @@ impl<'c> Translation<'c> {
         guided_type: &Option<tenjin::GuidedType>,
     ) -> Box<Expr> {
         if let Some(target_guided_type) = guided_type {
+            // XREF:guided_arg_coerce_borrow
             if let Some(ref expr_guided_type) = self
                 .parsed_guidance
                 .borrow_mut()

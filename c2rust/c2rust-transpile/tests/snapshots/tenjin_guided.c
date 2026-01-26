@@ -142,3 +142,24 @@ int guided_2d_vec(int **x2d, int i, int j)
 {
     return x2d[i][j];
 }
+
+// notyet:guided_ret_coerce_borrow
+// unsigned char guided_ret_ru8(unsigned char x)
+// {
+//     return x;
+// }
+
+void takes_shared_str(const char* rstr)
+{
+    (void) rstr;
+}
+
+void guided_coerce_borrow_arg() {
+    // XREF:guided_arg_coerce_borrow
+    const char* ostr = guided_ret_ostr();
+    takes_shared_str(ostr);
+
+    // notyet:
+    // (gets unneeded `.as_ref().unwrap()`)
+    //takes_shared_str(guided_ret_ostr());
+}

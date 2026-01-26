@@ -134,6 +134,13 @@ pub unsafe extern "C" fn guided_2d_vec(
 ) -> ::core::ffi::c_int {
     return x2d[i as usize][j as usize];
 }
+#[no_mangle]
+pub unsafe extern "C" fn takes_shared_str(mut rstr: &str) {}
+#[no_mangle]
+pub unsafe extern "C" fn guided_coerce_borrow_arg() {
+    let mut ostr: String = guided_ret_ostr();
+    takes_shared_str(&ostr);
+}
 fn xj_sprintf_Vec_u8(dest: &mut Vec<u8>, lim: Option<usize>, val: String) -> usize {
     if lim == Some(0) {
         return 0;
