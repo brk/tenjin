@@ -1401,6 +1401,7 @@ impl Translation<'_> {
                 self.c_expr_get_var_decl_id(cargs[0]),
                 self.c_expr_get_var_decl_id(cargs[1]),
             ) {
+                // XREF:guided_strcspn
                 if self
                     .parsed_guidance
                     .borrow_mut()

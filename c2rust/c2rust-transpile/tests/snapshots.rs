@@ -55,7 +55,7 @@ fn guidance_for_file(c_path: &Path) -> serde_json::Value {
     } else if c_path.ends_with("tenjin_guided.c") {
         serde_json::json!({
             "vars_of_type": {
-                "String" : "*:ostr",
+                "String" : ["*:ostr", "guided_strcspn:delimiters"],
                 "&str" : "*:rstr",
                 "&[::core::ffi::c_int]" : ["guided_1d_slice:x"],
                 "Vec<::core::ffi::c_int>" : ["guided_1d_vec:x"],

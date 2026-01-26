@@ -5,6 +5,7 @@ int snprintf(char* buf, unsigned long, const char *fmt, ...);
 int sprintf(char* buf, const char *fmt, ...);
 long strlen(const char *s);
 void *memset(void *s, int c, long n);
+unsigned long strcspn(const char *, const char *);
 // These are macros in <ctype.h> but Tenjin can translate the un-expanded form.
 int isalnum(int c);
 char tolower(int c);
@@ -96,6 +97,11 @@ int guided_isalnum() {
 int guided_tolower() {
     // XREF:guided_tolower
     return tolower('A');
+}
+
+int guided_strcspn(const char* ostr, const char* delimiters) {
+    // XREF:guided_strcspn
+    return strcspn(ostr, delimiters);
 }
 
 

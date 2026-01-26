@@ -30,6 +30,10 @@ extern "C" {
         c: ::core::ffi::c_int,
         n: ::core::ffi::c_long,
     ) -> *mut ::core::ffi::c_void;
+    fn strcspn(
+        _: *const ::core::ffi::c_char,
+        _: *const ::core::ffi::c_char,
+    ) -> ::core::ffi::c_ulong;
     fn isalnum(c: ::core::ffi::c_int) -> ::core::ffi::c_int;
     fn tolower(c: ::core::ffi::c_int) -> ::core::ffi::c_char;
     static mut extern_int_unguided: ::core::ffi::c_int;
@@ -108,6 +112,13 @@ pub unsafe extern "C" fn guided_isalnum() -> ::core::ffi::c_int {
 #[no_mangle]
 pub unsafe extern "C" fn guided_tolower() -> ::core::ffi::c_int {
     return xj_tolower('A' as i32) as ::core::ffi::c_int;
+}
+#[no_mangle]
+pub unsafe extern "C" fn guided_strcspn(
+    mut ostr: String,
+    mut delimiters: String,
+) -> ::core::ffi::c_int {
+    return strcspn_str(&ostr, &delimiters) as ::core::ffi::c_int;
 }
 #[no_mangle]
 pub unsafe extern "C" fn guided_vec_memset_zero_mulsizeof_ty(mut ovu8: Vec<u8>) {
@@ -209,4 +220,7 @@ fn xj_tolower(c: core::ffi::c_int) -> core::ffi::c_int {
     } else {
         (c as u8 as char).to_ascii_lowercase() as core::ffi::c_int
     }
+}
+fn strcspn_str(s: &str, chars: &str) -> usize {
+    s.chars().take_while(|c| !chars.contains(*c)).count()
 }
