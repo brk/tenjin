@@ -1,9 +1,28 @@
 // To avoid cross-platform output differences from `printf` argument names,
 // we'll just declare printf and other libc functions ourselves.
 int printf(const char *fmt, ...);
+int snprintf(char* buf, unsigned long, const char *fmt, ...);
+int sprintf(char* buf, const char *fmt, ...);
 long strlen(const char *s);
 void *memset(void *s, int c, long n);
+unsigned long strcspn(const char *, const char *);
+// These are macros in <ctype.h> but Tenjin can translate the un-expanded form.
+int isalnum(int c);
+char tolower(int c);
 
+extern int extern_int_unguided;
+// XREF:extern_var_nonmutbl
+extern int extern_int_nonmutbl;
+// XREF:static_var_nonmutbl
+static int static_int_nonmutbl = 0;
+
+void use_global_ints()
+{
+    static int static_local_nonmutbl = 0;
+    extern_int_unguided = 5 + extern_int_nonmutbl + static_int_nonmutbl + static_local_nonmutbl;
+}
+
+// XREF:fn_parameter_guided
 void print_owned_String(const char *ostr)
 {
     // XREF:guided_cast_str_of_owned_string
@@ -19,8 +38,16 @@ void print_shared_vec_u8(const char *rvu8)
     printf("%s\n", rvu8);
 }
 
+void sprint_into_mutref_vec_u8(const char *xvu8)
+{
+    // XREF:sprint_into_mutref_vec_u8
+    snprintf(xvu8, 24, "%d\n", 42);
+    sprintf(xvu8, "%d\n", 42);
+}
+
 void guided_str_init_lit()
 {
+    // XREF:guided_local_nonmut
     const char *ostr = "owned String";
     // const char* rstr = "shared &str";
     // const char* xstr = "exclusive &mut str";
@@ -53,6 +80,28 @@ void guided_c_assignment_string_pop(char* ostr)
 {
     // XREF:guided_c_assignment_string_pop
     ostr[strlen(ostr) - 1] = '\0';
+}
+
+unsigned long guided_c_strlen(char* ostr)
+{
+    // XREF:guided_c_strlen
+    return strlen(ostr);
+}
+
+int guided_isalnum() {
+    // XREF:guided_isalnum
+    return isalnum('A');
+}
+
+
+int guided_tolower() {
+    // XREF:guided_tolower
+    return tolower('A');
+}
+
+int guided_strcspn(const char* ostr, const char* delimiters) {
+    // XREF:guided_strcspn
+    return strcspn(ostr, delimiters);
 }
 
 
@@ -118,4 +167,48 @@ int guided_1d_vec(int *x, int index)
 int guided_2d_vec(int **x2d, int i, int j)
 {
     return x2d[i][j];
+}
+
+// notyet:guided_ret_coerce_borrow
+// unsigned char guided_ret_ru8(unsigned char x)
+// {
+//     return x;
+// }
+
+void takes_shared_str(const char* rstr) { (void) rstr; }
+void takes_shared_u8(unsigned char* ru8) { (void) ru8; }
+
+void guided_coerce_borrow_arg() {
+    // XREF:guided_arg_coerce_borrow
+    const char* ostr = guided_ret_ostr();
+    takes_shared_str(ostr);
+
+    // notyet:
+    // (gets unneeded `.as_ref().unwrap()`)
+    //takes_shared_str(guided_ret_ostr());
+}
+
+void unguided_coerce_asref(unsigned char* unguided) {
+    // XREF:unguided_arg_coerce_asref
+    takes_shared_u8(unguided);
+}
+
+struct StructWithMembersA {
+    unsigned char* uptr;
+    unsigned char zu8;
+};
+
+void struct_unguided_ptr_with_guided_members(struct StructWithMembersA* ug_ptr) {
+    //takes_shared_str(gm_ptr->ostr); // fails due to lack of Copy
+    //takes_shared_u8(&gm_ptr->zu8); // fails due to lack of AsRef<_>
+    ug_ptr->uptr[0] = 42;
+    ug_ptr->zu8 = 43;
+}
+
+void struct_guided_ptr_with_guided_members(struct StructWithMembersA* gm_ptr) {
+    //takes_shared_str(gm_ptr->ostr); // fails due to lack of Copy
+    //takes_shared_u8(&gm_ptr->zu8); // fails due to lack of AsRef<_>
+    // XREF:struct_guided_ptr_with_guided_members
+    gm_ptr->uptr[0] = 42;
+    gm_ptr->zu8 = 43;
 }

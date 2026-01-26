@@ -776,26 +776,29 @@ impl Translation<'_> {
                 .query_expr_type(self, cargs[0])
                 .is_some_and(|g| g.pretty_sans_refs() == "Vec < u8 >")
         {
+            // XREF:sprint_into_mutref_vec_u8
             return RecognizedCallForm::PrintfS {
                 fmt_string_idx: 2,
-                opt_size: Some(args[1].clone()),
-                dest: args[0].clone(),
+                opt_size: Some(expr_in_usize(args[1].clone())),
+                dest: Box::new(tenjin::expr_strip_casts(&args[0]).clone()),
             };
         }
 
         if tenjin::expr_is_ident(func, "sprintf")
             && args.len() >= 2
             && tenjin::expr_is_lit_str_or_bytes(tenjin::expr_strip_casts(&args[1]))
+            // TODO:xref
             && self
                 .parsed_guidance
                 .borrow_mut()
                 .query_expr_type(self, cargs[0])
                 .is_some_and(|g| g.pretty_sans_refs() == "Vec < u8 >")
         {
+            // XREF:sprint_into_mutref_vec_u8
             return RecognizedCallForm::PrintfS {
                 fmt_string_idx: 1,
                 opt_size: None,
-                dest: args[0].clone(),
+                dest: Box::new(tenjin::expr_strip_casts(&args[0]).clone()),
             };
         }
 
@@ -1364,6 +1367,7 @@ impl Translation<'_> {
             // should be translated to
             // FOO.len()
             if let Some(var_cdecl_id) = self.c_expr_get_var_decl_id(cargs[0]) {
+                // XREF:guided_c_strlen
                 if self
                     .parsed_guidance
                     .borrow_mut()
@@ -1397,6 +1401,7 @@ impl Translation<'_> {
                 self.c_expr_get_var_decl_id(cargs[0]),
                 self.c_expr_get_var_decl_id(cargs[1]),
             ) {
+                // XREF:guided_strcspn
                 if self
                     .parsed_guidance
                     .borrow_mut()
@@ -1440,6 +1445,7 @@ impl Translation<'_> {
     ) -> TranslationResult<Option<WithStmts<Box<Expr>>>> {
         if cargs.len() == 1 {
             if let Some(var_cdecl_id_foo) = self.c_expr_get_var_decl_id(cargs[0]) {
+                // XREF:guided_isalnum
                 if self
                     .parsed_guidance
                     .borrow_mut()
@@ -1523,6 +1529,7 @@ impl Translation<'_> {
     ) -> TranslationResult<Option<WithStmts<Box<Expr>>>> {
         if tenjin::expr_is_ident(func, "tolower") && cargs.len() == 1 {
             if let Some(var_cdecl_id_foo) = self.c_expr_get_var_decl_id(cargs[0]) {
+                // XREF:guided_tolower
                 if self
                     .parsed_guidance
                     .borrow_mut()

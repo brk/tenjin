@@ -55,7 +55,7 @@ fn guidance_for_file(c_path: &Path) -> serde_json::Value {
     } else if c_path.ends_with("tenjin_guided.c") {
         serde_json::json!({
             "vars_of_type": {
-                "String" : "*:ostr",
+                "String" : ["*:ostr", "guided_strcspn:delimiters"],
                 "&str" : "*:rstr",
                 "&[::core::ffi::c_int]" : ["guided_1d_slice:x"],
                 "Vec<::core::ffi::c_int>" : ["guided_1d_vec:x"],
@@ -64,7 +64,17 @@ fn guidance_for_file(c_path: &Path) -> serde_json::Value {
                 "&mut str" : ["*:xstr", "*:xstr2"],
                 "Vec<u8>" : "*:ovu8",
                 "&Vec<u8>" : "*:rvu8",
-                "u8": "guided_static:u8"
+                "&mut Vec<u8>" : "*:xvu8",
+                "u8": "guided_static:u8",
+                "&mut StructWithMembersA": "*:gm_ptr",
+                "&u8": "*:ru8"
+            },
+
+            "vars_mut" : {
+                "guided_str_init_lit:ostr": false,
+                "extern_int_nonmutbl": false,
+                "static_int_nonmutbl": false,
+                "*:static_local_nonmutbl": false
             },
             "fn_return_type": {
                 "guided_ret_ostr": "String"

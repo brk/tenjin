@@ -2669,17 +2669,40 @@ impl<'c> Translation<'c> {
                     return false;
                 }
 
-                if (!spec.fnname.is_empty()) && spec.fnname != "*" {
-                    let parent_fn_name = self.parent_fn_map.get(&id).and_then(|parent_fn| {
-                        self.ast_context
-                            .get_decl(parent_fn)
-                            .and_then(|fn_decl| fn_decl.kind.get_name().map(|s| s.as_str()))
-                    });
+                let parent_fn_name = self.parent_fn_map.get(&id).and_then(|parent_fn| {
+                    self.ast_context
+                        .get_decl(parent_fn)
+                        .and_then(|fn_decl| fn_decl.kind.get_name().map(|s| s.as_str()))
+                });
 
+                let is_global_variable = |decl: &CDecl| -> bool {
+                    match &decl.kind {
+                        CDeclKind::Variable {
+                            has_global_storage,
+                            has_static_duration,
+                            ..
+                        } => {
+                            let local_static = *has_static_duration && parent_fn_name.is_some();
+                            *has_global_storage && !local_static
+                        }
+                        _ => false,
+                    }
+                };
+
+                if (!spec.fnname.is_empty()) && spec.fnname != "*" {
                     let opt_parent_fn_name = fn_name_override.or(parent_fn_name);
-                    if opt_parent_fn_name.is_none_or(|s| !tenjin::is_derived_name(&spec.fnname, s))
-                    {
-                        return false;
+                    match opt_parent_fn_name {
+                        Some(parent_fn_name) => {
+                            if !tenjin::is_derived_name(&spec.fnname, parent_fn_name) {
+                                return false;
+                            }
+                        }
+                        None => {
+                            if !is_global_variable(decl) {
+                                // Global variables are the only thing that can match without a parent function
+                                return false;
+                            }
+                        }
                     }
                 }
 
@@ -2692,13 +2715,8 @@ impl<'c> Translation<'c> {
                             || spec.varname
                                 == var_name_override.expect("matches_decl() needs a field name")
                     }
-                    CDeclKind::Variable {
-                        ident,
-                        has_global_storage,
-                        has_static_duration,
-                        ..
-                    } => {
-                        if *has_global_storage && !*has_static_duration {
+                    CDeclKind::Variable { ident, .. } => {
+                        if is_global_variable(decl) {
                             // XREF:guided_static_globals
                             // For globals, match the spec fnname instead of the varname
                             tenjin::is_derived_name(&spec.fnname, ident)
@@ -3159,6 +3177,7 @@ impl<'c> Translation<'c> {
                     .parsed_guidance
                     .borrow_mut()
                     .query_decl_type(self, decl_id);
+                // XREF:extern_var_nonmutbl
                 let guided_mutbl = self.parsed_guidance.borrow().query_decl_mut(self, decl_id);
                 let ConvertedVariable { ty, mutbl, init: _ } =
                     self.convert_variable(ctx.static_(), None, typ, &guided_type, guided_mutbl)?;
@@ -3214,6 +3233,7 @@ impl<'c> Translation<'c> {
                     .parsed_guidance
                     .borrow_mut()
                     .query_decl_type(self, decl_id);
+                // XREF:static_var_nonmutbl
                 let guided_mutbl = self.parsed_guidance.borrow().query_decl_mut(self, decl_id);
                 // Collect problematic static initializers and offload them to sections for the linker
                 // to initialize for us
@@ -3551,10 +3571,12 @@ impl<'c> Translation<'c> {
 
             // handle regular (non-variadic) arguments
             for &(decl_id, ref var, typ) in arguments {
+                // XREF:fn_parameter_guided
                 let guided_type = self
                     .parsed_guidance
                     .borrow_mut()
                     .query_decl_type(self, decl_id);
+                // XREF:guided_mutbl_fn_param
                 let guided_mutbl = self.parsed_guidance.borrow().query_decl_mut(self, decl_id);
                 let ConvertedVariable { ty, mutbl, init: _ } =
                     self.convert_variable(ctx, None, typ, &guided_type, guided_mutbl)?;
@@ -4118,6 +4140,7 @@ impl<'c> Translation<'c> {
 
                 let mut stmts = self.compute_variable_array_sizes(ctx, typ.ctype)?;
 
+                // XREF:guided_local_nonmut
                 let ConvertedVariable { ty, mutbl, init } =
                     self.convert_variable(ctx, initializer, typ, &guided_type, guided_mutbl)?;
                 let mut init = init?;
@@ -5598,6 +5621,8 @@ impl<'c> Translation<'c> {
                 if ctx.is_unused() {
                     self.convert_expr(ctx, expr, None)
                 } else {
+                    // The guided type here is the type of the struct/union whose member
+                    // is being accessed, not the type of the field.
                     let guided_type = self
                         .parsed_guidance
                         .borrow_mut()
@@ -5607,7 +5632,10 @@ impl<'c> Translation<'c> {
                         if !guided_type.pretty.starts_with("*") {
                             // Member lookup with guidance that isn't a pointer;
                             // assuming this means we want direct lookup, without pointer deref.
+                            // XREF:struct_guided_ptr_with_guided_members
                             skip_ptr_deref = true;
+                            // Without this, we'd generate e.g. `(*s).field` instead of `s.field`
+                            // which is what we want when the guidance says it's not a pointer.
                         }
                     }
 
@@ -5852,6 +5880,7 @@ impl<'c> Translation<'c> {
         guided_type: &Option<tenjin::GuidedType>,
     ) -> Box<Expr> {
         if let Some(target_guided_type) = guided_type {
+            // XREF:guided_arg_coerce_borrow
             if let Some(ref expr_guided_type) = self
                 .parsed_guidance
                 .borrow_mut()
@@ -5868,6 +5897,7 @@ impl<'c> Translation<'c> {
                 // Have target guided type, but no expr guided type.
                 // If target is a borrow, we assume expr was a pointer.
                 if target_guided_type.is_shared_borrow() {
+                    // XREF:unguided_arg_coerce_asref
                     // Coerce to `.as_ref().unwrap()`
                     let opt = mk().method_call_expr(expr, "as_ref", Vec::<Box<Expr>>::new());
                     return mk().method_call_expr(opt, "unwrap", Vec::<Box<Expr>>::new());
