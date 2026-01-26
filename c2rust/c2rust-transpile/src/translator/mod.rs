@@ -5621,6 +5621,8 @@ impl<'c> Translation<'c> {
                 if ctx.is_unused() {
                     self.convert_expr(ctx, expr, None)
                 } else {
+                    // The guided type here is the type of the struct/union whose member
+                    // is being accessed, not the type of the field.
                     let guided_type = self
                         .parsed_guidance
                         .borrow_mut()
@@ -5630,7 +5632,10 @@ impl<'c> Translation<'c> {
                         if !guided_type.pretty.starts_with("*") {
                             // Member lookup with guidance that isn't a pointer;
                             // assuming this means we want direct lookup, without pointer deref.
+                            // XREF:struct_guided_ptr_with_guided_members
                             skip_ptr_deref = true;
+                            // Without this, we'd generate e.g. `(*s).field` instead of `s.field`
+                            // which is what we want when the guidance says it's not a pointer.
                         }
                     }
 

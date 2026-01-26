@@ -166,3 +166,23 @@ void unguided_coerce_asref(unsigned char* unguided) {
     // XREF:unguided_arg_coerce_asref
     takes_shared_u8(unguided);
 }
+
+struct StructWithMembersA {
+    unsigned char* uptr;
+    unsigned char zu8;
+};
+
+void struct_unguided_ptr_with_guided_members(struct StructWithMembersA* ug_ptr) {
+    //takes_shared_str(gm_ptr->ostr); // fails due to lack of Copy
+    //takes_shared_u8(&gm_ptr->zu8); // fails due to lack of AsRef<_>
+    ug_ptr->uptr[0] = 42;
+    ug_ptr->zu8 = 43;
+}
+
+void struct_guided_ptr_with_guided_members(struct StructWithMembersA* gm_ptr) {
+    //takes_shared_str(gm_ptr->ostr); // fails due to lack of Copy
+    //takes_shared_u8(&gm_ptr->zu8); // fails due to lack of AsRef<_>
+    // XREF:struct_guided_ptr_with_guided_members
+    gm_ptr->uptr[0] = 42;
+    gm_ptr->zu8 = 43;
+}

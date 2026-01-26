@@ -33,6 +33,12 @@ extern "C" {
     static mut extern_int_unguided: ::core::ffi::c_int;
     static extern_int_nonmutbl: ::core::ffi::c_int;
 }
+#[derive(Copy, Clone)]
+#[repr(C)]
+pub struct StructWithMembersA {
+    pub uptr: *mut ::core::ffi::c_uchar,
+    pub zu8: ::core::ffi::c_uchar,
+}
 static static_int_nonmutbl: ::core::ffi::c_int = 0 as ::core::ffi::c_int;
 #[no_mangle]
 pub unsafe extern "C" fn use_global_ints() {
@@ -146,6 +152,20 @@ pub unsafe extern "C" fn guided_coerce_borrow_arg() {
 #[no_mangle]
 pub unsafe extern "C" fn unguided_coerce_asref(mut unguided: *mut ::core::ffi::c_uchar) {
     takes_shared_u8(unguided.as_ref().unwrap());
+}
+#[no_mangle]
+pub unsafe extern "C" fn struct_unguided_ptr_with_guided_members(
+    mut ug_ptr: *mut StructWithMembersA,
+) {
+    *(*ug_ptr).uptr.offset(0 as isize) = 42 as ::core::ffi::c_uchar;
+    (*ug_ptr).zu8 = 43 as ::core::ffi::c_uchar;
+}
+#[no_mangle]
+pub unsafe extern "C" fn struct_guided_ptr_with_guided_members(
+    mut gm_ptr: &mut StructWithMembersA,
+) {
+    *gm_ptr.uptr.offset(0 as isize) = 42 as ::core::ffi::c_uchar;
+    gm_ptr.zu8 = 43 as ::core::ffi::c_uchar;
 }
 fn xj_sprintf_Vec_u8(dest: &mut Vec<u8>, lim: Option<usize>, val: String) -> usize {
     if lim == Some(0) {

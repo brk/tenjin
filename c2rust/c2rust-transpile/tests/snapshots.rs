@@ -66,6 +66,7 @@ fn guidance_for_file(c_path: &Path) -> serde_json::Value {
                 "&Vec<u8>" : "*:rvu8",
                 "&mut Vec<u8>" : "*:xvu8",
                 "u8": "guided_static:u8",
+                "&mut StructWithMembersA": "*:gm_ptr",
                 "&u8": "*:ru8"
             },
 
