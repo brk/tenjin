@@ -149,10 +149,8 @@ int guided_2d_vec(int **x2d, int i, int j)
 //     return x;
 // }
 
-void takes_shared_str(const char* rstr)
-{
-    (void) rstr;
-}
+void takes_shared_str(const char* rstr) { (void) rstr; }
+void takes_shared_u8(unsigned char* ru8) { (void) ru8; }
 
 void guided_coerce_borrow_arg() {
     // XREF:guided_arg_coerce_borrow
@@ -162,4 +160,9 @@ void guided_coerce_borrow_arg() {
     // notyet:
     // (gets unneeded `.as_ref().unwrap()`)
     //takes_shared_str(guided_ret_ostr());
+}
+
+void unguided_coerce_asref(unsigned char* unguided) {
+    // XREF:unguided_arg_coerce_asref
+    takes_shared_u8(unguided);
 }

@@ -5892,6 +5892,7 @@ impl<'c> Translation<'c> {
                 // Have target guided type, but no expr guided type.
                 // If target is a borrow, we assume expr was a pointer.
                 if target_guided_type.is_shared_borrow() {
+                    // XREF:unguided_arg_coerce_asref
                     // Coerce to `.as_ref().unwrap()`
                     let opt = mk().method_call_expr(expr, "as_ref", Vec::<Box<Expr>>::new());
                     return mk().method_call_expr(opt, "unwrap", Vec::<Box<Expr>>::new());

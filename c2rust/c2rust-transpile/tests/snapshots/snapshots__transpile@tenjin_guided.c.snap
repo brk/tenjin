@@ -137,9 +137,15 @@ pub unsafe extern "C" fn guided_2d_vec(
 #[no_mangle]
 pub unsafe extern "C" fn takes_shared_str(mut rstr: &str) {}
 #[no_mangle]
+pub unsafe extern "C" fn takes_shared_u8(mut ru8: &u8) {}
+#[no_mangle]
 pub unsafe extern "C" fn guided_coerce_borrow_arg() {
     let mut ostr: String = guided_ret_ostr();
     takes_shared_str(&ostr);
+}
+#[no_mangle]
+pub unsafe extern "C" fn unguided_coerce_asref(mut unguided: *mut ::core::ffi::c_uchar) {
+    takes_shared_u8(unguided.as_ref().unwrap());
 }
 fn xj_sprintf_Vec_u8(dest: &mut Vec<u8>, lim: Option<usize>, val: String) -> usize {
     if lim == Some(0) {
