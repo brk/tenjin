@@ -96,6 +96,10 @@ pub unsafe extern "C" fn guided_c_assignment_string_pop(mut ostr: String) {
     ostr.pop();
 }
 #[no_mangle]
+pub unsafe extern "C" fn guided_c_strlen(mut ostr: String) -> ::core::ffi::c_ulong {
+    return ostr.len() as ::core::ffi::c_ulong;
+}
+#[no_mangle]
 pub unsafe extern "C" fn guided_vec_memset_zero_mulsizeof_ty(mut ovu8: Vec<u8>) {
     ovu8[..3].fill(0);
 }

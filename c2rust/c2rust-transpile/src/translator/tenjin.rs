@@ -1367,6 +1367,7 @@ impl Translation<'_> {
             // should be translated to
             // FOO.len()
             if let Some(var_cdecl_id) = self.c_expr_get_var_decl_id(cargs[0]) {
+                // XREF:guided_c_strlen
                 if self
                     .parsed_guidance
                     .borrow_mut()

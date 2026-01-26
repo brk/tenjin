@@ -78,6 +78,13 @@ void guided_c_assignment_string_pop(char* ostr)
     ostr[strlen(ostr) - 1] = '\0';
 }
 
+unsigned long guided_c_strlen(char* ostr)
+{
+    // XREF:guided_c_strlen
+    return strlen(ostr);
+}
+
+
 
 // void guided_vec_memset_zero_nosizeof(char* ovu8)
 // {
