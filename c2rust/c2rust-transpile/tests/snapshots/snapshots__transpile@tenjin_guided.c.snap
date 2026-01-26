@@ -30,6 +30,7 @@ extern "C" {
         c: ::core::ffi::c_int,
         n: ::core::ffi::c_long,
     ) -> *mut ::core::ffi::c_void;
+    fn isalnum(c: ::core::ffi::c_int) -> ::core::ffi::c_int;
     static mut extern_int_unguided: ::core::ffi::c_int;
     static extern_int_nonmutbl: ::core::ffi::c_int;
 }
@@ -98,6 +99,10 @@ pub unsafe extern "C" fn guided_c_assignment_string_pop(mut ostr: String) {
 #[no_mangle]
 pub unsafe extern "C" fn guided_c_strlen(mut ostr: String) -> ::core::ffi::c_ulong {
     return ostr.len() as ::core::ffi::c_ulong;
+}
+#[no_mangle]
+pub unsafe extern "C" fn guided_isalnum() -> ::core::ffi::c_int {
+    return xj_isalnum('A' as i32);
 }
 #[no_mangle]
 pub unsafe extern "C" fn guided_vec_memset_zero_mulsizeof_ty(mut ovu8: Vec<u8>) {
@@ -184,4 +189,12 @@ fn xj_sprintf_Vec_u8(dest: &mut Vec<u8>, lim: Option<usize>, val: String) -> usi
     dest.clear();
     dest.extend_from_slice(&bytes[..to_copy]);
     to_copy
+}
+fn xj_isalnum(c: core::ffi::c_int) -> core::ffi::c_int {
+    if c == -1 {
+        0
+    } else {
+        let c = c as u8 as char;
+        (c.is_ascii_alphanumeric()) as core::ffi::c_int
+    }
 }

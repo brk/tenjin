@@ -1444,6 +1444,7 @@ impl Translation<'_> {
     ) -> TranslationResult<Option<WithStmts<Box<Expr>>>> {
         if cargs.len() == 1 {
             if let Some(var_cdecl_id_foo) = self.c_expr_get_var_decl_id(cargs[0]) {
+                // XREF:guided_isalnum
                 if self
                     .parsed_guidance
                     .borrow_mut()

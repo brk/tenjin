@@ -5,6 +5,7 @@ int snprintf(char* buf, unsigned long, const char *fmt, ...);
 int sprintf(char* buf, const char *fmt, ...);
 long strlen(const char *s);
 void *memset(void *s, int c, long n);
+int isalnum(int c); // in ctype.h this is a macro but Tenjin can suppress its expansion.
 
 extern int extern_int_unguided;
 // XREF:extern_var_nonmutbl
@@ -84,6 +85,10 @@ unsigned long guided_c_strlen(char* ostr)
     return strlen(ostr);
 }
 
+int guided_isalnum() {
+    // XREF:guided_isalnum
+    return isalnum('A');
+}
 
 
 // void guided_vec_memset_zero_nosizeof(char* ovu8)
