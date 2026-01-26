@@ -31,6 +31,7 @@ extern "C" {
         n: ::core::ffi::c_long,
     ) -> *mut ::core::ffi::c_void;
     fn isalnum(c: ::core::ffi::c_int) -> ::core::ffi::c_int;
+    fn tolower(c: ::core::ffi::c_int) -> ::core::ffi::c_char;
     static mut extern_int_unguided: ::core::ffi::c_int;
     static extern_int_nonmutbl: ::core::ffi::c_int;
 }
@@ -103,6 +104,10 @@ pub unsafe extern "C" fn guided_c_strlen(mut ostr: String) -> ::core::ffi::c_ulo
 #[no_mangle]
 pub unsafe extern "C" fn guided_isalnum() -> ::core::ffi::c_int {
     return xj_isalnum('A' as i32);
+}
+#[no_mangle]
+pub unsafe extern "C" fn guided_tolower() -> ::core::ffi::c_int {
+    return xj_tolower('A' as i32) as ::core::ffi::c_int;
 }
 #[no_mangle]
 pub unsafe extern "C" fn guided_vec_memset_zero_mulsizeof_ty(mut ovu8: Vec<u8>) {
@@ -196,5 +201,12 @@ fn xj_isalnum(c: core::ffi::c_int) -> core::ffi::c_int {
     } else {
         let c = c as u8 as char;
         (c.is_ascii_alphanumeric()) as core::ffi::c_int
+    }
+}
+fn xj_tolower(c: core::ffi::c_int) -> core::ffi::c_int {
+    if c == -1 {
+        -1
+    } else {
+        (c as u8 as char).to_ascii_lowercase() as core::ffi::c_int
     }
 }
