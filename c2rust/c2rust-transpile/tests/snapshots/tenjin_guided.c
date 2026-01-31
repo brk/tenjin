@@ -76,6 +76,14 @@ void guided_array_vec()
     print_owned_vec_u8(ovu8);
 }
 
+void recognize_int_float_bitcast()
+{
+    // XREF:recognize_int_float_bitcast
+    unsigned int ui = 0x40490fdb; // bit pattern for float 3.1415927
+    float f = *((float*)&ui);
+    printf("float f = %f\n", f);
+}
+
 void guided_static()
 {
     // XREF:guided_static_globals

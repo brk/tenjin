@@ -11,6 +11,7 @@ input_file: c2rust-transpile/tests/snapshots/tenjin_guided.c
     unused_assignments,
     unused_mut
 )]
+#![feature(raw_ref_op)]
 extern "C" {
     fn printf(fmt: *const ::core::ffi::c_char, ...) -> ::core::ffi::c_int;
     fn snprintf(
@@ -98,6 +99,12 @@ pub unsafe extern "C" fn guided_array_vec() {
         4 as ::core::ffi::c_uchar,
     ];
     print_owned_vec_u8(ovu8);
+}
+#[no_mangle]
+pub unsafe extern "C" fn recognize_int_float_bitcast() {
+    let mut ui: ::core::ffi::c_uint = 0x40490fdb as ::core::ffi::c_int as ::core::ffi::c_uint;
+    let mut f: ::core::ffi::c_float = *(&raw mut ui as *mut ::core::ffi::c_float);
+    println!("float f = {:}", f as ::core::ffi::c_double as f64);
 }
 #[no_mangle]
 pub unsafe extern "C" fn guided_static() {
