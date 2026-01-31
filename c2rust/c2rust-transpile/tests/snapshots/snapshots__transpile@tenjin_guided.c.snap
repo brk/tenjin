@@ -69,6 +69,10 @@ pub unsafe extern "C" fn print_shared_vec_u8(mut rvu8: &Vec<u8>) {
     println!("{:>}", String::from_utf8_lossy(&rvu8));
 }
 #[no_mangle]
+pub unsafe extern "C" fn print_owned_vec_u8(mut ovu8: Vec<u8>) {
+    println!("{:>}", String::from_utf8_lossy(&ovu8));
+}
+#[no_mangle]
 pub unsafe extern "C" fn sprint_into_mutref_vec_u8(mut xvu8: &mut Vec<u8>) {
     xj_sprintf_Vec_u8(&mut xvu8, Some(24), format!("{:}", 42 as core::ffi::c_int));
     xj_sprintf_Vec_u8(&mut xvu8, None, format!("{:}", 42 as core::ffi::c_int));
@@ -84,6 +88,16 @@ pub unsafe extern "C" fn guided_str_init_lit() {
 pub unsafe extern "C" fn guided_str_init_empty_lit() {
     let mut ostr: String = String::new();
     print_owned_String(String::new());
+}
+#[no_mangle]
+pub unsafe extern "C" fn guided_array_vec() {
+    let mut ovu8: Vec<u8> = vec![
+        1 as ::core::ffi::c_uchar,
+        2 as ::core::ffi::c_uchar,
+        3 as ::core::ffi::c_uchar,
+        4 as ::core::ffi::c_uchar,
+    ];
+    print_owned_vec_u8(ovu8);
 }
 #[no_mangle]
 pub unsafe extern "C" fn guided_static() {
