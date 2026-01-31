@@ -10,7 +10,7 @@ use syn::{__private::ToTokens, punctuated::Punctuated, *};
 
 pub mod properties {
     use proc_macro2::Span;
-    use syn::{StaticMutability, Token};
+    use syn::{PointerMutability, StaticMutability, Token};
 
     pub trait ToToken {
         type Token;
@@ -34,6 +34,13 @@ pub mod properties {
     }
 
     impl Mutability {
+        pub fn to_pointer_mutability(&self, span: Span) -> PointerMutability {
+            match self {
+                Mutability::Mutable => PointerMutability::Mut(Token![mut](span)),
+                Mutability::Immutable => PointerMutability::Const(Token![const](span)),
+            }
+        }
+
         pub fn to_static_mutability(&self, span: Span) -> StaticMutability {
             match self {
                 Mutability::Mutable => StaticMutability::Mut(Token![mut](span)),
@@ -664,6 +671,17 @@ impl Builder {
         )))
     }
 
+    /// A convenience function for calling multiple methods in a chain.
+    pub fn method_chain_expr(
+        self,
+        expr: Box<Expr>,
+        calls: Vec<(PathSegment, Vec<Box<Expr>>)>,
+    ) -> Box<Expr> {
+        calls.into_iter().fold(expr, |expr, (seg, args)| {
+            mk().method_call_expr(expr, seg, args)
+        })
+    }
+
     pub fn tuple_expr(self, exprs: Vec<Box<Expr>>) -> Box<Expr> {
         Box::new(Expr::Tuple(ExprTuple {
             attrs: self.attrs,
@@ -863,11 +881,21 @@ impl Builder {
         self.path_expr(vec![name])
     }
 
-    pub fn addr_of_expr(self, e: Box<Expr>) -> Box<Expr> {
+    pub fn borrow_expr(self, e: Box<Expr>) -> Box<Expr> {
         Box::new(parenthesize_if_necessary(Expr::Reference(ExprReference {
             attrs: self.attrs,
             and_token: Token![&](self.span),
             mutability: self.mutbl.to_token(),
+            expr: e,
+        })))
+    }
+
+    pub fn raw_borrow_expr(self, e: Box<Expr>) -> Box<Expr> {
+        Box::new(parenthesize_if_necessary(Expr::RawAddr(ExprRawAddr {
+            attrs: self.attrs,
+            and_token: Token![&](self.span),
+            raw: Token![raw](self.span),
+            mutability: self.mutbl.to_pointer_mutability(self.span),
             expr: e,
         })))
     }
@@ -1684,28 +1712,6 @@ impl Builder {
         }))
     }
 
-    pub fn use_glob_item<Pa>(self, path: Pa) -> Box<Item>
-    where
-        Pa: Make<Path>,
-    {
-        let path = path.make(&self);
-        let leading_colon = path.leading_colon;
-        let tree = use_tree_with_prefix(
-            path,
-            UseTree::Glob(UseGlob {
-                star_token: Token![*](self.span),
-            }),
-        );
-        Box::new(Item::Use(ItemUse {
-            attrs: self.attrs,
-            vis: self.vis,
-            use_token: Token![use](self.span),
-            leading_colon,
-            semi_token: Token![;](self.span),
-            tree,
-        }))
-    }
-
     pub fn foreign_items(self, items: Vec<ForeignItem>) -> Box<Item> {
         let abi = self.get_abi();
 
@@ -2125,17 +2131,11 @@ impl Builder {
         self,
         capture: CaptureBy,
         mov: Movability,
-        decl: FnDecl,
+        inputs: Vec<Pat>,
+        output: ReturnType,
         body: Box<Expr>,
     ) -> Box<Expr> {
-        let (_name, inputs, _variadic, output) = decl;
-        let inputs = inputs
-            .into_iter()
-            .map(|e| match e {
-                FnArg::Receiver(_s) => panic!("found 'self' in closure arguments"),
-                FnArg::Typed(PatType { pat, .. }) => *pat,
-            })
-            .collect();
+        let inputs = inputs.into_iter().collect();
         let capture = match capture {
             CaptureBy::Ref => None,
             CaptureBy::Value => Some(Default::default()),

@@ -9,17 +9,18 @@ transpile:
   autogen: true
   tflags: --reorganize-definitions --disable-refactoring
 
+cargo.transpile:
+  autogen: true
+
 refactor:
   autogen: true
   transforms:
     - rename_unnamed
     - reorganize_definitions
+    - shorten_imported_paths
     - remove_literal_suffixes
     - convert_cast_as_ptr
     - remove_unnecessary_refs
-
-cargo.transpile:
-  autogen: true
 
 cargo.refactor:
   autogen: true

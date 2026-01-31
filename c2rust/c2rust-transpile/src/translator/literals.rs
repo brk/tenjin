@@ -161,8 +161,22 @@ impl Translation<'_> {
                 };
                 Ok(WithStmts::new_val(val))
             }
-            CLiteral::String(ref val, width) => {
-                self.convert_string_literal(ty, val, width, guided_type)
+
+            CLiteral::String(ref bytes, element_size) => {
+                //self.convert_string_literal(ty, bytes, element_size, guided_type)
+                let bytes_padded = self.string_literal_bytes(ty.ctype, bytes, element_size);
+
+                // std::mem::transmute::<[u8; size], ctype>(*b"xxxx")
+                let array_ty = mk().array_ty(
+                    mk().ident_ty("u8"),
+                    mk().lit_expr(bytes_padded.len() as u128),
+                );
+                let val = transmute_expr(
+                    array_ty,
+                    self.convert_type(ty.ctype)?,
+                    mk().unary_expr(UnOp::Deref(Default::default()), mk().lit_expr(bytes_padded)),
+                );
+                Ok(WithStmts::new_unsafe_val(val))
             }
         }
     }
@@ -235,6 +249,24 @@ impl Translation<'_> {
             return Some(mk().lit_expr(s));
         }
         None
+    }
+
+    /// Returns the bytes of a string literal, including any additional zero bytes to pad the
+    /// literal to the expected size.
+    pub fn string_literal_bytes(&self, ctype: CTypeId, bytes: &[u8], element_size: u8) -> Vec<u8> {
+        let num_elems = match self.ast_context.resolve_type(ctype).kind {
+            CTypeKind::ConstantArray(_, num_elems) => num_elems,
+            ref kind => {
+                panic!("String literal with unknown size: {bytes:?}, kind = {kind:?}")
+            }
+        };
+
+        let size = num_elems * (element_size as usize);
+        let mut bytes_padded = Vec::with_capacity(size);
+        bytes_padded.extend(bytes);
+        bytes_padded.resize(size, 0);
+
+        bytes_padded
     }
 
     /// Convert an initialization list into an expression. These initialization lists can be
@@ -342,21 +374,7 @@ impl Translation<'_> {
                 }
             }
             CTypeKind::Struct(struct_id) => {
-                let mut literal = self.convert_struct_literal(ctx, struct_id, ids.as_ref());
-                if self.ast_context.has_inner_struct_decl(struct_id) {
-                    // If the structure is split into an outer/inner,
-                    // wrap the inner initializer using the outer structure
-                    let outer_name = self
-                        .type_converter
-                        .borrow()
-                        .resolve_decl_name(struct_id)
-                        .unwrap();
-
-                    let outer_path = mk().path_expr(vec![outer_name]);
-                    literal = literal
-                        .map(|lit_ws| lit_ws.map(|lit| mk().call_expr(outer_path, vec![lit])));
-                };
-                literal
+                self.convert_struct_literal(ctx, struct_id, ids.as_ref())
             }
             CTypeKind::Union(union_id) => {
                 self.convert_union_literal(ctx, union_id, ids.as_ref(), ty, opt_union_field_id)

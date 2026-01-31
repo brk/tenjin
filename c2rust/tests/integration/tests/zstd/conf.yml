@@ -10,17 +10,18 @@ transpile:
   cflags: -Qunused-arguments
   tflags: --reorganize-definitions --disable-refactoring
 
+cargo.transpile:
+  autogen: true
+
 refactor:
   # TODO: re-enable once c2rust-refactor supports asm!
   # autogen: true
   transforms:
     - rename_unnamed
     - reorganize_definitions
+    - shorten_imported_paths
     - remove_unused_labels
     - remove_literal_suffixes
-
-cargo.transpile:
-  autogen: true
 
 cargo.refactor:
   autogen: true

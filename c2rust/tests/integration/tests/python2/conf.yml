@@ -17,19 +17,29 @@ requirements:
 
 transpile:
   autogen: true
+  tflags: --reorganize-definitions --disable-refactoring
   binary: python
-
-refactor:
-  autogen: true
-  transforms:
-    - remove_unused_labels
-    - remove_literal_suffixes
-    - convert_cast_as_ptr
-    - remove_unnecessary_refs
 
 cargo.transpile:
   autogen: true
   rustflags: "-C link-args=-Wl,-export-dynamic"
+
+refactor:
+  autogen: true
+  transforms:
+    - rename_unnamed
+    - reorganize_definitions
+    - shorten_imported_paths
+    - remove_unused_labels
+    - remove_null_terminator
+    - bytestr_to_str
+    - convert_format_args
+    - convert_printfs
+    - fix_unused_unsafe
+    - remove_redundant_casts
+    - remove_literal_suffixes
+    - convert_cast_as_ptr
+    - remove_unnecessary_refs
 
 cargo.refactor:
   autogen: true
