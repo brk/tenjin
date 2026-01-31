@@ -36,6 +36,11 @@ struct Args {
     #[clap(long)]
     debug_ast_exporter: bool,
 
+    /// Write map of C decls corresponding to each translated Rust item
+    /// alongside the transpiled output with the extension `.c_decls.json`.
+    #[clap(long)]
+    emit_c_decl_map: bool,
+
     /// Verbose mode
     #[clap(short = 'v', long)]
     verbose: bool,
@@ -100,6 +105,12 @@ struct Args {
     #[clap(short = 'e', long)]
     emit_build_files: bool,
 
+    /// If building from the c2rust repo, the path to it.
+    /// This is needed to use relative paths for up-to-date dependencies
+    /// (as opposed to what is published on crates.io).
+    #[clap(long)]
+    c2rust_dir: Option<PathBuf>,
+
     /// Path to output directory. Rust sources will be emitted in DIR/src/ and build files will be emitted in DIR/.
     #[clap(short = 'o', long, value_name = "DIR")]
     output_dir: Option<PathBuf>,
@@ -144,6 +155,10 @@ struct Args {
     #[clap(long)]
     emit_no_std: bool,
 
+    /// Disable running rustfmt after translation
+    #[clap(long)]
+    disable_rustfmt: bool,
+
     /// Disable running refactoring tool after translation
     #[clap(long)]
     disable_refactoring: bool,
@@ -159,6 +174,15 @@ struct Args {
     /// Fail when the control-flow graph generates branching constructs
     #[clap(long)]
     fail_on_multiple: bool,
+
+    #[clap(long, short = 'x')]
+    cross_checks: bool,
+
+    #[clap(long, short = 'X', multiple = true)]
+    cross_check_config: Vec<String>,
+
+    #[clap(long, value_enum, default_value_t)]
+    cross_check_backend: CrossCheckBackend,
 }
 
 // TODO Eventually move this code into `c2rust-transpile`
@@ -186,6 +210,30 @@ impl From<TranslateMacros> for c2rust_transpile::TranslateMacros {
             TranslateMacros::Conservative => c2rust_transpile::TranslateMacros::Conservative,
             TranslateMacros::Experimental => c2rust_transpile::TranslateMacros::Experimental,
         }
+    }
+}
+
+#[derive(Default, Debug, ValueEnum, Clone)]
+pub enum CrossCheckBackend {
+    DynamicDlsym,
+
+    #[default]
+    ZstdLogging,
+
+    LibclevrbufSys,
+
+    LibfakechecksSys,
+}
+
+impl From<CrossCheckBackend> for String {
+    fn from(x: CrossCheckBackend) -> String {
+        let s = match x {
+            CrossCheckBackend::DynamicDlsym => "dynamic-dlsym",
+            CrossCheckBackend::ZstdLogging => "zstd-logging",
+            CrossCheckBackend::LibclevrbufSys => "libclevrbuf-sys",
+            CrossCheckBackend::LibfakechecksSys => "libfakechecks-sys",
+        };
+        s.to_string()
     }
 }
 
@@ -229,6 +277,7 @@ fn main() {
         dump_cfg_liveness: args.dump_cfgs_liveness,
         dump_structures: args.dump_structures,
         debug_ast_exporter: args.debug_ast_exporter,
+        emit_c_decl_map: args.emit_c_decl_map,
         verbose: args.verbose,
 
         guidance_json,
@@ -238,6 +287,9 @@ fn main() {
         fail_on_multiple: args.fail_on_multiple,
         filter: args.filter,
         debug_relooper_labels: args.debug_labels,
+        cross_checks: args.cross_checks,
+        cross_check_backend: args.cross_check_backend.into(),
+        cross_check_configs: args.cross_check_config,
         prefix_function_names: args.prefix_function_names,
 
         // We used to guard asm translation with a command-line
@@ -252,6 +304,7 @@ fn main() {
 
         translate_const_macros: args.translate_const_macros.into(),
         translate_fn_macros: args.translate_fn_macros.into(),
+        disable_rustfmt: args.disable_rustfmt,
         disable_refactoring: args.disable_refactoring,
         preserve_unused_functions: args.preserve_unused_functions,
 
@@ -263,6 +316,7 @@ fn main() {
         reorganize_definitions: args.reorganize_definitions,
         emit_modules: args.emit_modules,
         emit_build_files: args.emit_build_files,
+        c2rust_dir: args.c2rust_dir,
         output_dir: args.output_dir,
         binaries: args.binary.unwrap_or_default(),
         panic_on_translator_failure: args.invalid_code == InvalidCodes::Panic,

@@ -4,7 +4,7 @@ use c2rust_ast_exporter::clang_ast::LRValue;
 use indexmap::{IndexMap, IndexSet};
 use itertools::Itertools;
 use std::cell::RefCell;
-use std::cmp::Ordering;
+use std::cmp::{Ordering, Reverse};
 use std::collections::{HashMap, HashSet};
 use std::fmt::{self, Debug, Display};
 use std::ops::Index;
@@ -141,6 +141,35 @@ impl<T> Located<T> {
     }
 }
 
+/// This holds a [`SrcLoc`] and its [`include_path`](TypedAstContext::include_path)
+/// such that it is naturally ordered.
+///
+/// The include path starts from where the item is first included,
+/// working its way back to the last include path,
+/// which contains the definition of the item.
+/// Thus, to compare them, we compare the include path first
+/// and then the definition's location.
+#[derive(PartialEq, Eq, Ord, Debug)]
+struct SrcLocInclude<'a> {
+    loc: SrcLoc,
+    include_path: &'a [SrcLoc],
+}
+
+impl SrcLocInclude<'_> {
+    fn cmp_iter<'a>(&'a self) -> impl Iterator<Item = SrcLoc> + 'a {
+        // See docs on `Self` for why this is the right comparison.
+        let Self { loc, include_path } = *self;
+        include_path.iter().copied().chain([loc])
+    }
+}
+
+impl PartialOrd for SrcLocInclude<'_> {
+    #[allow(clippy::non_canonical_partial_ord_impl)]
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp_iter().cmp(other.cmp_iter()))
+    }
+}
+
 impl TypedAstContext {
     // TODO: build the TypedAstContext during initialization, rather than
     // building an empty one and filling it later.
@@ -207,13 +236,31 @@ impl TypedAstContext {
         if cfg!(debug_assertions) {
             if let Some(root_include) = includes.first() {
                 let file_id = self.file_map[root_include.fileid as usize];
-                // Files included via `-include` may not have a path
+                // headers included via `-include` will not have an include path
                 if let Some(path) = self.get_file_path(file_id) {
                     assert_eq!(path, self.main_file.as_path());
                 }
             }
         }
         includes
+    }
+
+    /// Compare a [`SrcLoc`] based on its include path.
+    pub fn cmp_loc_include<'a>(&'a self, loc: SrcLoc) -> impl Ord + Debug + 'a {
+        SrcLocInclude {
+            loc,
+            include_path: self.include_path(loc),
+        }
+    }
+
+    /// Compare a [`SrcSpan`] based on its include path.
+    pub fn cmp_span_include<'a>(&'a self, span: &SrcSpan) -> impl Ord + Debug + 'a {
+        self.cmp_loc_include(span.begin())
+    }
+
+    /// Compare a [`Located`] based on its include path.
+    pub fn cmp_located_include<'a, T>(&'a self, located: &Located<T>) -> impl Ord + Debug + 'a {
+        located.loc.map(|span| self.cmp_span_include(&span))
     }
 
     pub fn loc_to_string(&self, loc: SrcLoc) -> String {
@@ -235,43 +282,6 @@ impl TypedAstContext {
             .chain(self.include_path(loc))
             .map(|&loc| self.loc_to_string(loc))
             .join("\n    included from ")
-    }
-
-    /// Compare two [`SrcLoc`]s based on their include path.
-    pub fn compare_src_locs(&self, a: &SrcLoc, b: &SrcLoc) -> Ordering {
-        /// Compare without regard to `fileid`.
-        fn cmp_pos(a: &SrcLoc, b: &SrcLoc) -> Ordering {
-            (a.line, a.column).cmp(&(b.line, b.column))
-        }
-
-        use Ordering::*;
-        let path_a = self.include_path(*a);
-        let path_b = self.include_path(*b);
-
-        // Find the first include that does not match between the two
-        let common_len = path_a.len().min(path_b.len());
-        let order = path_a[..common_len].cmp(&path_b[..common_len]);
-        if order != Equal {
-            return order;
-        }
-
-        // Either all parent includes are the same, or the include paths are of different lengths
-        // because .zip() stops when one of the iterators is empty.
-        match path_a.len().cmp(&path_b.len()) {
-            Less => {
-                // a has the shorter path, which means b was included in a's file
-                // so extract that include and compare the position to a
-                let b = &path_b[path_a.len()];
-                cmp_pos(a, b)
-            }
-            Equal => a.cmp(b), // a and b have the same include path and are thus in the same file
-            Greater => {
-                // b has the shorter path, which means a was included in b's file
-                // so extract that include and compare the position to b
-                let a = &path_a[path_b.len()];
-                cmp_pos(a, b)
-            }
-        }
     }
 
     pub fn get_file_include_line_number(&self, file: FileId) -> Option<u64> {
@@ -299,6 +309,90 @@ impl TypedAstContext {
             Decl(id) => self.index(id).loc,
             Type(id) => self.index(id).loc,
         }
+    }
+
+    /// Construct a map from top-level decls in the main file to their source ranges.
+    pub fn top_decl_locs(&self) -> IndexMap<CDeclId, (SrcLoc, SrcLoc)> {
+        let mut name_loc_map = IndexMap::new();
+        let mut prev_end_loc = SrcLoc {
+            fileid: 0,
+            line: 0,
+            column: 0,
+        };
+        // Sort decls by source location so we can reason about the possibly comment-containing gaps
+        // between them.
+        let mut decls_sorted = self.c_decls_top.clone();
+        decls_sorted.sort_by_key(|decl| self.c_decls[decl].begin_loc());
+        for decl_id in &decls_sorted {
+            let decl = &self.c_decls[decl_id];
+            let begin_loc: SrcLoc = decl.begin_loc().expect("no begin loc for top-level decl");
+            let end_loc: SrcLoc = decl.end_loc().expect("no end loc for top-level decl");
+
+            // Skip fileid 0; this is not a real file, so these source locations aren't important.
+            if begin_loc.fileid == 0 {
+                continue;
+            }
+            if begin_loc == end_loc {
+                log::warn!(
+                    "zero-length source range for top-level decl; skipping. source ranges for \
+                    top-level decls may be incorrect.\ndecl: {decl:?}"
+                );
+                continue;
+            }
+
+            // If encountering a new file, reset end of last top-level decl.
+            if prev_end_loc.fileid != begin_loc.fileid {
+                prev_end_loc = SrcLoc {
+                    fileid: begin_loc.fileid,
+                    line: 1,
+                    column: 1,
+                }
+            }
+
+            // This definition ends before the previous one does, i.e. it is nested.
+            // This does not generally occur for regular definitions, e.g. variables within
+            // functions, because the variables will not be top-level decls. But it can occur
+            // for macros defined inside functions, since all macros are top-level decls!
+            let is_nested = end_loc < prev_end_loc;
+
+            // Clang emits declarations of builtins (and opaque types such as when encountering
+            // `struct undeclared *`) at their first usage site. This means that they are usually
+            // nested within another function, and (at least with how the C AST is currently
+            // exported) they have an end location with line and column zero. Fix this up before
+            // continuing to maintain the invariant that begin is not ordered after end.
+            if is_nested
+                && end_loc.line == 0
+                && end_loc.column == 0
+                && !(begin_loc.line == 0 && begin_loc.column == 0)
+            {
+                log::debug!("skipping nested decl with zero end line/col: {decl:?}");
+                continue;
+            }
+
+            // If the beginning is not ordered after the end, skip this decl and warn.
+            if begin_loc > end_loc {
+                log::warn!(
+                    "backward source range for top-level decl; skipping. source ranges for \
+                    top-level decls may be incorrect.\ndecl: {decl:?}"
+                );
+                continue;
+            }
+
+            // End of the previous decl is the start of comments pertaining to the current one.
+            let new_begin_loc = if is_nested { begin_loc } else { prev_end_loc };
+
+            // Include only decls from the main file.
+            if self.c_decls_top.contains(decl_id)
+                && self.get_source_path(decl) == Some(&self.main_file)
+            {
+                let entry = (new_begin_loc, end_loc);
+                name_loc_map.insert(*decl_id, entry);
+            }
+            if !is_nested {
+                prev_end_loc = end_loc;
+            }
+        }
+        name_loc_map
     }
 
     pub fn iter_decls(&self) -> indexmap::map::Iter<'_, CDeclId, CDecl> {
@@ -349,81 +443,120 @@ impl TypedAstContext {
         .is_some()
     }
 
-    /// Follow a chain of typedefs and return true iff the last typedef is named
-    /// `__builtin_va_list` thus naming the type clang uses to represent `va_list`s.
-    pub fn is_builtin_va_list(&self, typ: CTypeId) -> bool {
-        match self.index(typ).kind {
-            CTypeKind::Typedef(decl) => match &self.index(decl).kind {
-                CDeclKind::Typedef {
-                    name: name_,
-                    typ: ty,
-                    ..
-                } => {
-                    if name_ == "__builtin_va_list" {
-                        true
-                    } else {
-                        self.is_builtin_va_list(ty.ctype)
-                    }
-                }
+    /// Returns whether `typ` is a chain of typedefs that ends in `__builtin_va_list`,
+    /// thus naming the type clang uses to represent `va_list`s.
+    /// This works on all architectures, but does not work in situations where typedefs are
+    /// resolved/bypassed, such as with array-to-pointer decay.
+    pub fn is_builtin_va_list(&self, mut typ: CTypeId) -> bool {
+        loop {
+            // Skip over Elaborated types
+            let mut kind = &self.index(typ).kind;
+
+            while let &CTypeKind::Elaborated(typ) = kind {
+                kind = &self.index(typ).kind;
+            }
+
+            // TODO: Rust 1.65: use let-else
+            let decl = match kind {
+                &CTypeKind::Typedef(decl) => decl,
+                _ => return false,
+            };
+            let (name, qtyp) = match &self.index(decl).kind {
+                &CDeclKind::Typedef { ref name, typ, .. } => (name, typ),
                 _ => panic!("Typedef decl did not point to a typedef"),
-            },
-            _ => false,
+            };
+
+            if name == "__builtin_va_list" {
+                return true;
+            }
+
+            typ = qtyp.ctype;
         }
     }
 
-    /// Predicate for types that are used to implement C's `va_list`.
-    /// FIXME: can we get rid of this method and use `is_builtin_va_list` instead?
+    /// Returns whether `typ` is the architecture-specific type used for `va_list`.
+    /// Returns `false` for architectures where `va_list` is a generic pointer type.
     pub fn is_va_list_struct(&self, typ: CTypeId) -> bool {
-        // detect `va_list`s based on typedef (should work across implementations)
-        //        if self.is_builtin_va_list(typ) {
-        //            return true;
-        //        }
-
-        // detect `va_list`s based on type (assumes struct-based implementation)
-        let resolved_ctype = self.resolve_type(typ);
-        use CTypeKind::*;
-        match resolved_ctype.kind {
-            Struct(record_id) => {
-                if let CDeclKind::Struct {
-                    name: Some(ref name_),
-                    ..
-                } = &self[record_id].kind
-                {
-                    name_ == "__va_list_tag" || name_ == "__va_list"
-                } else {
-                    false
-                }
-            }
-            // va_list is a 1 element array; return true iff element type is struct __va_list_tag
-            ConstantArray(typ, 1) => self.is_va_list(typ),
-            _ => false,
-        }
-    }
-
-    /// Predicate for pointers to types that are used to implement C's `va_list`.
-    pub fn is_va_list(&self, typ: CTypeId) -> bool {
         use BuiltinVaListKind::*;
+
         match self.va_list_kind {
-            CharPtrBuiltinVaList | VoidPtrBuiltinVaList | X86_64ABIBuiltinVaList => {
-                match self.resolve_type(typ).kind {
-                    CTypeKind::Pointer(CQualTypeId { ctype, .. })
-                    | CTypeKind::ConstantArray(ctype, _) => self.is_va_list_struct(ctype),
-                    _ => false,
-                }
+            // No special identification is possible with generic types.
+            CharPtrBuiltinVaList | VoidPtrBuiltinVaList => false,
+
+            // ARM32:
+            // typedef struct __va_list {
+            //     void *__ap;
+            // } __builtin_va_list;
+
+            // ARM64:
+            // typedef struct __va_list {
+            //     void *__stack;
+            //     void *__gr_top;
+            //     void *__vr_top;
+            //     int __gr_offs;
+            //     int __vr_offs;
+            // } __builtin_va_list;
+            AAPCSABIBuiltinVaList | AArch64ABIBuiltinVaList => {
+                // TODO: Rust 1.65: use let-else
+                let decl = match self.resolve_type(typ).kind {
+                    CTypeKind::Struct(decl) => decl,
+                    _ => return false,
+                };
+                let name = match &self[decl].kind {
+                    CDeclKind::Struct {
+                        name: Some(name), ..
+                    } => name,
+                    _ => return false,
+                };
+
+                name == "__va_list"
             }
 
-            AArch64ABIBuiltinVaList => self.is_va_list_struct(typ),
+            // X86-64:
+            // typedef struct __va_list_tag {
+            //     unsigned int gp_offset;
+            //     unsigned int fp_offset;
+            //     void *overflow_arg_area;
+            //     void *reg_save_area;
+            // } __builtin_va_list[1];
 
-            AAPCSABIBuiltinVaList => {
-                // The mechanism applies: va_list is a `struct __va_list { ... }` as per
-                // https://documentation-service.arm.com/static/5f201281bb903e39c84d7eae
-                // ("Procedure Call Standard for the Arm Architecture Release 2020Q2, Document
-                // number IHI 0042J") Section 8.1.4 "Additional Types"
-                self.is_va_list_struct(typ)
+            // Power:
+            // typedef struct __va_list_tag {
+            //     unsigned char gpr;
+            //     unsigned char fpr;
+            //     unsigned short reserved;
+            //     char *overflow_arg_area;
+            //     char *reg_save_area;
+            // } __builtin_va_list[1];
+            X86_64ABIBuiltinVaList | PowerABIBuiltinVaList => {
+                // TODO: Rust 1.65: use let-else
+                let inner = match self.resolve_type(typ).kind {
+                    CTypeKind::ConstantArray(inner, 1) => inner,
+                    // Account for array-to-pointer decay in function parameters.
+                    CTypeKind::Pointer(CQualTypeId { ctype: inner, .. }) => inner,
+                    _ => return false,
+                };
+                let decl = match self.resolve_type(inner).kind {
+                    CTypeKind::Struct(decl) => decl,
+                    _ => return false,
+                };
+                let name = match &self[decl].kind {
+                    CDeclKind::Struct {
+                        name: Some(name), ..
+                    } => name,
+                    _ => return false,
+                };
+
+                name == "__va_list_tag"
             }
 
             kind => unimplemented!("va_list type {:?} not yet implemented", kind),
         }
+    }
+
+    /// Returns whether `typ` is a C `va_list`.
+    pub fn is_va_list(&self, typ: CTypeId) -> bool {
+        self.is_builtin_va_list(typ) || self.is_va_list_struct(typ)
     }
 
     /// Predicate for function pointers
@@ -453,26 +586,54 @@ impl TypedAstContext {
         }
     }
 
-    /// Resolve expression value, ignoring any casts
-    pub fn resolve_expr(&self, expr_id: CExprId) -> (CExprId, &CExprKind) {
-        let expr = &self.index(expr_id).kind;
-        use CExprKind::*;
-        match expr {
-            ImplicitCast(_, subexpr, _, _, _)
-            | ExplicitCast(_, subexpr, _, _, _)
-            | Paren(_, subexpr) => self.resolve_expr(*subexpr),
-            _ => (expr_id, expr),
+    /// Returns the expression inside any number of nested parentheses.
+    pub fn resolve_parens(&self, mut expr_id: CExprId) -> CExprId {
+        while let CExprKind::Paren(_, subexpr) = self.index(expr_id).kind {
+            expr_id = subexpr;
         }
+
+        expr_id
     }
 
-    /// Find underlying expression beneath any implicit casts.
-    pub fn beneath_implicit_casts(&self, expr_id: CExprId) -> CExprId {
-        let expr = &self.index(expr_id).kind;
-        if let CExprKind::ImplicitCast(_, subexpr, _, _, _) = expr {
-            self.beneath_implicit_casts(*subexpr)
+    /// Returns the expression inside an `__extension__` operator.
+    pub fn resolve_extension(&self, expr_id: CExprId) -> CExprId {
+        if let CExprKind::Unary(_, UnOp::Extension, subexpr, _) = self.index(expr_id).kind {
+            subexpr
         } else {
             expr_id
         }
+    }
+
+    /// Unwraps a predefined expression, if there is one.
+    pub fn unwrap_predefined_ident(&self, mut expr_id: CExprId) -> CExprId {
+        expr_id = self.resolve_extension(self.resolve_parens(expr_id));
+
+        if let CExprKind::Predefined(_, subexpr) = self.index(expr_id).kind {
+            subexpr
+        } else {
+            expr_id
+        }
+    }
+
+    /// Unwraps the underlying expression beneath any casts.
+    pub fn unwrap_cast_expr(&self, mut expr_id: CExprId) -> CExprId {
+        while let CExprKind::Paren(_, subexpr)
+        | CExprKind::ImplicitCast(_, subexpr, _, _, _)
+        | CExprKind::ExplicitCast(_, subexpr, _, _, _) = self.index(expr_id).kind
+        {
+            expr_id = subexpr;
+        }
+
+        expr_id
+    }
+
+    /// Unwraps the underlying expression beneath any implicit casts.
+    pub fn unwrap_implicit_cast_expr(&self, mut expr_id: CExprId) -> CExprId {
+        while let CExprKind::ImplicitCast(_, subexpr, _, _, _) = self.index(expr_id).kind {
+            expr_id = subexpr;
+        }
+
+        expr_id
     }
 
     /// Resolve true expression type, iterating through any casts and variable
@@ -1020,17 +1181,7 @@ impl TypedAstContext {
     /// This preserves the order when we emit the converted declarations.
     pub fn sort_top_decls_for_emitting(&mut self) {
         let mut decls_top = mem::take(&mut self.c_decls_top);
-        decls_top.sort_unstable_by(|a, b| {
-            let a = self.index(*a);
-            let b = self.index(*b);
-            use Ordering::*;
-            match (&a.loc, &b.loc) {
-                (None, None) => Equal,
-                (None, _) => Less,
-                (_, None) => Greater,
-                (Some(a), Some(b)) => self.compare_src_locs(&a.begin(), &b.begin()),
-            }
-        });
+        decls_top.sort_unstable_by_key(|&decl| self.cmp_located_include(self.index(decl)));
         self.c_decls_top = decls_top;
     }
 
@@ -1098,9 +1249,10 @@ impl CommentContext {
         // Sort in REVERSE! Last element is the first in file source
         // ordering. This makes it easy to pop the next comment off.
         for comments in comments_by_file.values_mut() {
-            comments.sort_by(|a, b| {
-                ast_context.compare_src_locs(&b.loc.unwrap().begin(), &a.loc.unwrap().begin())
-            });
+            for comment in comments.iter() {
+                comment.loc.unwrap();
+            }
+            comments.sort_by_key(|comment| Reverse(ast_context.cmp_located_include(comment)));
         }
 
         let comments_by_file = comments_by_file
@@ -1124,7 +1276,10 @@ impl CommentContext {
                 .unwrap()
                 .begin_loc()
                 .expect("All comments must have a source location");
-            if ctx.compare_src_locs(&next_comment_loc, &loc) != Ordering::Less {
+
+            let loc = ctx.cmp_loc_include(loc);
+            let next_comment_loc = ctx.cmp_loc_include(next_comment_loc);
+            if next_comment_loc >= loc {
                 break;
             }
 
@@ -2573,6 +2728,8 @@ impl CTypeKind {
 
 #[cfg(test)]
 mod tests {
+    use std::cmp::Ordering;
+
     use super::*;
 
     #[track_caller]
@@ -2822,11 +2979,15 @@ c = {c}
 
         check_transitivity(
             locs,
-            |a, b| ctx.compare_src_locs(a, b),
+            |&a, &b| -> Ordering {
+                let a = ctx.cmp_loc_include(a);
+                let b = ctx.cmp_loc_include(b);
+                a.cmp(&b)
+            },
             |loc| format!("{loc}"),
         );
 
         // This should not panic.
-        locs.sort_unstable_by(|a, b| ctx.compare_src_locs(a, b));
+        locs.sort_unstable_by_key(|&loc| ctx.cmp_loc_include(loc));
     }
 }

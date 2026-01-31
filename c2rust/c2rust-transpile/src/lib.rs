@@ -72,12 +72,16 @@ pub struct TranspilerConfig {
     pub dump_structures: bool,
     pub verbose: bool,
     pub debug_ast_exporter: bool,
+    pub emit_c_decl_map: bool,
 
     // Options that control translation
     pub incremental_relooper: bool,
     pub fail_on_multiple: bool,
     pub filter: Option<Regex>,
     pub debug_relooper_labels: bool,
+    pub cross_checks: bool,
+    pub cross_check_backend: String,
+    pub cross_check_configs: Vec<String>,
     pub prefix_function_names: Option<String>,
     pub translate_asm: bool,
     pub use_c_loop_info: bool,
@@ -96,6 +100,7 @@ pub struct TranspilerConfig {
     pub output_dir: Option<PathBuf>,
     pub translate_const_macros: TranslateMacros,
     pub translate_fn_macros: TranslateMacros,
+    pub disable_rustfmt: bool,
     pub disable_refactoring: bool,
     pub preserve_unused_functions: bool,
     pub log_level: log::LevelFilter,
@@ -105,9 +110,12 @@ pub struct TranspilerConfig {
     // Options that control build files
     /// Emit `Cargo.toml` and `lib.rs`
     pub emit_build_files: bool,
+
     /// Names of translation units containing main functions that we should make
     /// into binaries
     pub binaries: Vec<String>,
+
+    pub c2rust_dir: Option<PathBuf>,
 }
 
 impl TranspilerConfig {
@@ -180,16 +188,23 @@ struct ExternCrateDetails {
     macro_use: bool,
     version: &'static str,
     features: Option<Vec<&'static str>>,
+    path: Option<PathBuf>,
 }
 
 impl ExternCrateDetails {
-    fn new(name: &'static str, version: &'static str, macro_use: bool) -> Self {
+    pub fn new(
+        name: &'static str,
+        version: &'static str,
+        macro_use: bool,
+        path: Option<PathBuf>,
+    ) -> Self {
         Self {
             name,
             ident: name.replace('-', "_"),
             macro_use,
             version,
             features: None,
+            path,
         }
     }
 
@@ -197,27 +212,39 @@ impl ExternCrateDetails {
         self.features = Some(features);
         self
     }
+
+    /// An external (to c2rust) dependency.
+    pub fn external(name: &'static str, version: &'static str, macro_use: bool) -> Self {
+        Self::new(name, version, macro_use, None)
+    }
+
+    /// An internal (to c2rust) dependency.
+    pub fn internal(name: &'static str, macro_use: bool, c2rust_dir: Option<&Path>) -> Self {
+        Self::new(
+            name,
+            env!("CARGO_PKG_VERSION"),
+            macro_use,
+            c2rust_dir.map(|dir| dir.join(name)),
+        )
+    }
 }
 
-impl From<ExternCrate> for ExternCrateDetails {
-    fn from(extern_crate: ExternCrate) -> Self {
-        match extern_crate {
-            ExternCrate::C2RustBitfields => {
-                Self::new("c2rust-bitfields", env!("CARGO_PKG_VERSION"), true)
-            }
-            ExternCrate::C2RustAsmCasts => {
-                Self::new("c2rust-asm-casts", env!("CARGO_PKG_VERSION"), true)
-            }
-            ExternCrate::F128 => Self::new("f128", "0.2", false),
-            ExternCrate::NumTraits => Self::new("num-traits", "0.2", true),
-            ExternCrate::Memoffset => Self::new("memoffset", "0.5", true),
-            ExternCrate::Libc => Self::new("libc", "0.2", false),
-            ExternCrate::Hexfloat2 => Self::new("hexfloat2", "0.2.0", false),
-            ExternCrate::XjScanf => Self::new("xj_scanf", "0.2.1", false),
-            ExternCrate::LibzRsSys => Self::new("libz-rs-sys", "0.5.1", false),
-            ExternCrate::Bytemuck => Self::new("bytemuck", "1.23.2", false)
+impl ExternCrate {
+    fn with_details(&self, c2rust_dir: Option<&Path>) -> ExternCrateDetails {
+        use ExternCrate::*;
+        match self {
+            C2RustBitfields => ExternCrateDetails::internal("c2rust-bitfields", true, c2rust_dir),
+            C2RustAsmCasts => ExternCrateDetails::internal("c2rust-asm-casts", true, c2rust_dir),
+            F128 => ExternCrateDetails::external("f128", "0.2", false),
+            NumTraits => ExternCrateDetails::external("num-traits", "0.2", true),
+            Memoffset => ExternCrateDetails::external("memoffset", "0.5", true),
+            Libc => ExternCrateDetails::external("libc", "0.2", false),
+            Hexfloat2 => ExternCrateDetails::external("hexfloat2", "0.2.0", false),
+            XjScanf => ExternCrateDetails::external("xj_scanf", "0.2.1", false),
+            LibzRsSys => ExternCrateDetails::external("libz-rs-sys", "0.5.1", false),
+            Bytemuck => ExternCrateDetails::external("bytemuck", "1.23.2", false)
                 .with_features(vec!["derive", "extern_crate_alloc"]),
-            ExternCrate::GPoint => Self::new("gpoint", "0.2.1", false),
+            GPoint => ExternCrateDetails::external("gpoint", "0.2.1", false),
         }
     }
 }
@@ -554,14 +581,18 @@ fn reorganize_definitions(
     }
 
     invoke_refactor(build_dir)?;
-    // fix the formatting of the output of `c2rust-refactor`
-    let status = Command::new("cargo")
-        .args(["fmt"])
-        .current_dir(build_dir)
-        .status()?;
-    if !status.success() {
-        warn!("cargo fmt failed, code may not be well-formatted");
+
+    if !tcfg.disable_rustfmt {
+        // fix the formatting of the output of `c2rust-refactor`
+        let status = Command::new("cargo")
+            .args(["fmt"])
+            .current_dir(build_dir)
+            .status()?;
+        if !status.success() {
+            warn!("cargo fmt failed, code may not be well-formatted");
+        }
     }
+
     Ok(())
 }
 
@@ -638,8 +669,29 @@ fn transpile_single(
 
     // Perform the translation
     let parent_fn_map = translator::parent_fn::compute_parent_fn_map(&typed_context);
-    let (translated_string, pragmas, crates) =
+    let (translated_string, maybe_decl_map, pragmas, crates) =
         translator::translate(typed_context, tcfg, input_path, parent_fn_map);
+
+    if let Some(decl_map) = maybe_decl_map {
+        let decl_map_path = output_path.with_extension("c_decls.json");
+        let file = match File::create(&decl_map_path) {
+            Ok(file) => file,
+            Err(e) => panic!(
+                "Unable to open file {} for writing: {}",
+                output_path.display(),
+                e
+            ),
+        };
+
+        match serde_json::ser::to_writer(file, &decl_map) {
+            Ok(()) => (),
+            Err(e) => panic!(
+                "Unable to write C declaration map to file {}: {}",
+                output_path.display(),
+                e
+            ),
+        };
+    }
 
     let mut file = match File::create(&output_path) {
         Ok(file) => file,
@@ -658,6 +710,10 @@ fn transpile_single(
             e
         ),
     };
+
+    if !tcfg.disable_rustfmt {
+        rustfmt(&output_path, build_dir);
+    }
 
     Ok((output_path, pragmas, crates))
 }
@@ -704,5 +760,19 @@ fn get_output_path(
         output_path
     } else {
         input_path
+    }
+}
+
+fn rustfmt(output_path: &Path, build_dir: &Path) {
+    let edition = "2021";
+
+    let status = Command::new("rustfmt")
+        .args(["--edition", edition])
+        .arg(output_path)
+        .current_dir(build_dir)
+        .status();
+
+    if !status.is_ok_and(|status| status.success()) {
+        warn!("rustfmt failed, code may not be well-formatted");
     }
 }

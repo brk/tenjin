@@ -14,7 +14,7 @@ use super::TranspilerConfig;
 use crate::CrateSet;
 use crate::ExternCrateDetails;
 use crate::PragmaSet;
-use crate::{get_module_name, WorkspaceCrateDetails};
+use crate::{get_module_name, rustfmt, WorkspaceCrateDetails};
 
 #[derive(Debug, Copy, Clone)]
 pub enum BuildDirectoryContents {
@@ -93,7 +93,15 @@ pub fn emit_build_files(
     }
     crate_cfg.and_then(|ccfg| {
         emit_build_rs(tcfg, &reg, build_dir, ccfg.link_cmd);
-        emit_lib_rs(tcfg, &reg, build_dir, &ccfg)
+        emit_lib_rs(
+            tcfg,
+            &reg,
+            build_dir,
+            ccfg.modules,
+            ccfg.pragmas,
+            &ccfg.crates,
+            ccfg.link_cmd,
+        )
     })
 }
 
@@ -194,8 +202,14 @@ fn convert_module_list(
     res
 }
 
-fn convert_dependencies_list(crates: CrateSet) -> Vec<ExternCrateDetails> {
-    crates.into_iter().map(|dep| dep.into()).collect()
+fn convert_dependencies_list(
+    crates: CrateSet,
+    c2rust_dir: Option<&Path>,
+) -> Vec<ExternCrateDetails> {
+    crates
+        .into_iter()
+        .map(|dep| dep.with_details(c2rust_dir))
+        .collect()
 }
 
 fn get_lib_rs_file_name(tcfg: &TranspilerConfig) -> &str {
@@ -218,7 +232,13 @@ fn emit_build_rs(
     });
     let output = reg.render("build.rs", &json).unwrap();
     let output_path = build_dir.join("build.rs");
-    maybe_write_to_file(&output_path, output, tcfg.overwrite_existing)
+    let path = maybe_write_to_file(&output_path, output, tcfg.overwrite_existing)?;
+
+    if !tcfg.disable_rustfmt {
+        rustfmt(&output_path, build_dir);
+    }
+
+    Some(path)
 }
 
 /// Emit lib.rs (main.rs) for a library (binary). Returns `Some(path)`
@@ -227,31 +247,45 @@ fn emit_lib_rs(
     tcfg: &TranspilerConfig,
     reg: &Handlebars,
     build_dir: &Path,
-    ccfg: &CrateConfig<'_>,
+    modules: Vec<PathBuf>,
+    pragmas: PragmaSet,
+    crates: &CrateSet,
+    link_cmd: &LinkCmd,
 ) -> Option<PathBuf> {
-    let modules = convert_module_list(
-        tcfg,
-        build_dir,
-        ccfg.modules.to_owned(),
-        ModuleSubset::Libraries,
-    );
-    let crates = convert_dependencies_list(ccfg.crates.clone());
-    let cdylib_crate_names = compute_cdylib_crate_names(ccfg.link_cmd);
+    let plugin_args = tcfg
+        .cross_check_configs
+        .iter()
+        .map(|ccc| format!("config_file = \"{}\"", ccc))
+        .collect::<Vec<String>>()
+        .join(", ");
+
+    let modules = convert_module_list(tcfg, build_dir, modules.to_owned(), ModuleSubset::Libraries);
+    let crates = convert_dependencies_list(crates.clone(), tcfg.c2rust_dir.as_deref());
+    let cdylib_crate_names = compute_cdylib_crate_names(link_cmd);
     let file_name = get_lib_rs_file_name(tcfg);
+    let rs_xcheck_backend = tcfg.cross_check_backend.replace("-", "_");
     let json = json!({
         "lib_rs_file": file_name,
         "reorganize_definitions": tcfg.reorganize_definitions,
         "translate_valist": tcfg.translate_valist,
+        "cross_checks": tcfg.cross_checks,
+        "cross_check_backend": rs_xcheck_backend,
+        "plugin_args": plugin_args,
         "modules": modules,
-        "pragmas": ccfg.pragmas,
+        "pragmas": pragmas,
         "crates": crates,
         "cdylib_crate_names": cdylib_crate_names,
     });
 
     let output_path = build_dir.join(file_name);
     let output = reg.render("lib.rs", &json).unwrap();
+    let path = maybe_write_to_file(&output_path, output, tcfg.overwrite_existing)?;
 
-    maybe_write_to_file(&output_path, output, tcfg.overwrite_existing)
+    if !tcfg.disable_rustfmt {
+        rustfmt(&output_path, build_dir);
+    }
+
+    Some(path)
 }
 
 /// If we translate variadic functions, the output will only compile
@@ -286,7 +320,8 @@ fn emit_cargo_toml(
             ccfg.modules.to_owned(),
             ModuleSubset::Binaries,
         );
-        let dependencies = convert_dependencies_list(ccfg.crates.clone());
+        let dependencies =
+            convert_dependencies_list(ccfg.crates.clone(), tcfg.c2rust_dir.as_deref());
         let cdylib_crate_names = compute_cdylib_crate_names(ccfg.link_cmd);
         let cdylib_path_dependencies: Vec<WorkspaceCrateDetails> = cdylib_crate_names
             .iter()
@@ -302,6 +337,8 @@ fn emit_cargo_toml(
             "is_library": "true", // ccfg.link_cmd.r#type.is_library(),
             "lib_rs_file": get_lib_rs_file_name(tcfg),
             "binaries": binaries,
+            "cross_checks": tcfg.cross_checks,
+            "cross_check_backend": tcfg.cross_check_backend,
             "dependencies": dependencies,
             "cdylib_path_dependencies": cdylib_path_dependencies,
         });

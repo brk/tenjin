@@ -35,11 +35,25 @@ name = "{{name}}"
 [dependencies]
 {{#each dependencies}}
 {{this.name}} = { version = "{{this.version}}"{{#if this.features}}, features = [{{#each
-this.features}}"{{this}}"{{#unless @last}}, {{/unless}}{{/each}}]{{/if}} }
+this.features}}"{{this}}"{{#unless @last}}, {{/unless}}{{/each}}]{{/if}}{{#if this.path}}, path = "{{this.path}}"{{/if}} }
 {{/each}}
 
 {{#each cdylib_path_dependencies~}}
 {{this.name}} = { path = "{{this.path}}" }
 {{/each}}
 
+{{#if cross_checks~}}
+[dependencies.c2rust-xcheck-plugin]
+version = "*"
+
+[dependencies.c2rust-xcheck-derive]
+version = "*"
+
+[dependencies.c2rust-xcheck-runtime]
+version = "*"
+features = ["libc-hash", "fixed-length-array-hash"]
+
+[dependencies.c2rust-xcheck-backend-{{cross_check_backend}}]
+version = "*"
+{{~/if}}
 {{~/if}}

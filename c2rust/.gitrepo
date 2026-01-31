@@ -6,7 +6,7 @@
 [subrepo]
 	remote = git@github.com:Aarno-Labs/c2rust.git
 	branch = tenjin
-	commit = 2e04a2021b1543be5d8a91b2abc8f430854e996c
+	commit = bb8748ba95df037fa82d7c1d8c9025e6a30641e8
 	parent = 2ba2ea30475ada20fe1bf43031e7502d6f7bedf0
 	method = merge
 	cmdver = 0.4.9

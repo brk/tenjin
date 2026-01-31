@@ -10,11 +10,15 @@ transpile:
   tflags: --reorganize-definitions --disable-refactoring
   binary: lua
 
+cargo.transpile:
+  autogen: true
+
 refactor:
   autogen: true
   transforms:
     - rename_unnamed
     - reorganize_definitions
+    - shorten_imported_paths
     - remove_unused_labels
     - remove_null_terminator
     - bytestr_to_str
@@ -26,9 +30,6 @@ refactor:
     - remove_unnecessary_refs
     - remove_literal_suffixes
     - noop
-
-cargo.transpile:
-  autogen: true
 
 cargo.refactor:
   autogen: true

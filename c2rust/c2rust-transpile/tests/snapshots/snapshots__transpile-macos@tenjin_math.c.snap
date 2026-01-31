@@ -11,6 +11,7 @@ input_file: c2rust-transpile/tests/snapshots/os-specific/tenjin_math.c
     unused_assignments,
     unused_mut
 )]
+#![feature(raw_ref_op)]
 use ::std::process::ExitCode;
 extern "C" {
     fn acosf(_: ::core::ffi::c_float) -> ::core::ffi::c_float;
@@ -124,12 +125,12 @@ unsafe extern "C" fn test_remainder_classify(mut x: ::core::ffi::c_float) -> ::c
 }
 unsafe extern "C" fn test_modf_split(mut x: ::core::ffi::c_float) -> ::core::ffi::c_float {
     let mut ipart: ::core::ffi::c_float = 0.;
-    let mut frac: ::core::ffi::c_float = modff(x, &mut ipart);
+    let mut frac: ::core::ffi::c_float = modff(x, &raw mut ipart);
     return ipart + frac;
 }
 unsafe extern "C" fn test_frexp_ldexp(mut x: ::core::ffi::c_float) -> ::core::ffi::c_float {
     let mut exp: ::core::ffi::c_int = 0;
-    let mut mant: ::core::ffi::c_float = frexpf(x, &mut exp);
+    let mut mant: ::core::ffi::c_float = frexpf(x, &raw mut exp);
     return ldexpf(mant, exp);
 }
 unsafe fn main_0() -> ::core::ffi::c_int {

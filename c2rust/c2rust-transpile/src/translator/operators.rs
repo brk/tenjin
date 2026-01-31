@@ -454,8 +454,6 @@ impl Translation<'_> {
             })
         };
 
-        let c_lhs = lhs;
-
         rhs_translation.and_then(|rhs| {
             lhs_translation.and_then(
                 |NamedReference {
@@ -534,75 +532,47 @@ impl Translation<'_> {
                         }
 
                         // Everything else
-                        AssignAdd if pointer_lhs.is_some() => {
-                            let mul = self.compute_size_of_expr(pointer_lhs.unwrap().ctype);
-                            let ptr = self.pointer_offset(
-                                Some(c_lhs),
+                        AssignAdd | AssignSubtract if pointer_lhs.is_some() => {
+                            let ptr = self.convert_pointer_offset(
+                                Some(lhs),
                                 write.clone(),
                                 rhs,
-                                mul,
-                                false,
-                                false,
-                            );
-                            WithStmts::new_unsafe_val(mk().assign_expr(write, ptr))
-                        }
-                        AssignSubtract if pointer_lhs.is_some() => {
-                            let mul = self.compute_size_of_expr(pointer_lhs.unwrap().ctype);
-                            let ptr = self.pointer_offset(
-                                Some(c_lhs),
-                                write.clone(),
-                                rhs,
-                                mul,
-                                true,
+                                pointer_lhs.unwrap().ctype,
+                                op == AssignSubtract,
                                 false,
                             );
-                            WithStmts::new_unsafe_val(mk().assign_expr(write, ptr))
+                            ptr.map(|ptr| mk().assign_expr(write, ptr))
                         }
 
                         _ => {
-                            if let (AssignAdd | AssignSubtract, Some(pointer_lhs)) =
-                                (op, pointer_lhs)
-                            {
-                                let mul = self.compute_size_of_expr(pointer_lhs.ctype);
-                                let ptr = self.pointer_offset(
-                                    Some(c_lhs),
-                                    write.clone(),
-                                    rhs,
-                                    mul,
-                                    op == AssignSubtract,
-                                    false,
-                                );
-                                WithStmts::new_unsafe_val(mk().assign_expr(write, ptr))
-                            } else {
-                                fn eq<Token: Default, F: Fn(Token) -> BinOp>(f: F) -> BinOp {
-                                    f(Default::default())
-                                }
-
-                                let (bin_op, bin_op_kind) = match op {
-                                    AssignAdd => (Add, eq(BinOp::AddAssign)),
-                                    AssignSubtract => (Subtract, eq(BinOp::SubAssign)),
-                                    AssignMultiply => (Multiply, eq(BinOp::MulAssign)),
-                                    AssignDivide => (Divide, eq(BinOp::DivAssign)),
-                                    AssignModulus => (Modulus, eq(BinOp::RemAssign)),
-                                    AssignBitXor => (BitXor, eq(BinOp::BitXorAssign)),
-                                    AssignShiftLeft => (ShiftLeft, eq(BinOp::ShlAssign)),
-                                    AssignShiftRight => (ShiftRight, eq(BinOp::ShrAssign)),
-                                    AssignBitOr => (BitOr, eq(BinOp::BitOrAssign)),
-                                    AssignBitAnd => (BitAnd, eq(BinOp::BitAndAssign)),
-                                    _ => panic!("Cannot convert non-assignment operator"),
-                                };
-                                self.convert_assignment_operator_aux(
-                                    bin_op_kind,
-                                    bin_op,
-                                    read.clone(),
-                                    write,
-                                    rhs,
-                                    compute_lhs_type_id.unwrap(),
-                                    compute_res_type_id.unwrap(),
-                                    expr_type_id,
-                                    rhs_type_id,
-                                )?
+                            fn eq<Token: Default, F: Fn(Token) -> BinOp>(f: F) -> BinOp {
+                                f(Default::default())
                             }
+
+                            let (bin_op, bin_op_kind) = match op {
+                                AssignAdd => (Add, eq(BinOp::AddAssign)),
+                                AssignSubtract => (Subtract, eq(BinOp::SubAssign)),
+                                AssignMultiply => (Multiply, eq(BinOp::MulAssign)),
+                                AssignDivide => (Divide, eq(BinOp::DivAssign)),
+                                AssignModulus => (Modulus, eq(BinOp::RemAssign)),
+                                AssignBitXor => (BitXor, eq(BinOp::BitXorAssign)),
+                                AssignShiftLeft => (ShiftLeft, eq(BinOp::ShlAssign)),
+                                AssignShiftRight => (ShiftRight, eq(BinOp::ShrAssign)),
+                                AssignBitOr => (BitOr, eq(BinOp::BitOrAssign)),
+                                AssignBitAnd => (BitAnd, eq(BinOp::BitAndAssign)),
+                                _ => panic!("Cannot convert non-assignment operator"),
+                            };
+                            self.convert_assignment_operator_aux(
+                                bin_op_kind,
+                                bin_op,
+                                read.clone(),
+                                write,
+                                rhs,
+                                compute_lhs_type_id.unwrap(),
+                                compute_res_type_id.unwrap(),
+                                expr_type_id,
+                                rhs_type_id,
+                            )?
                         }
                     };
 
@@ -748,25 +718,19 @@ impl Translation<'_> {
         rhs: Box<Expr>,
         lhs_rhs_ids: Option<(CExprId, CExprId)>,
     ) -> TranslationResult<WithStmts<Box<Expr>>> {
-        let lhs_type = &self.ast_context.resolve_type(lhs_type_id.ctype).kind;
-        let rhs_type = &self.ast_context.resolve_type(rhs_type_id.ctype).kind;
-
         let c_lhs = if let Some((lhs_id, _rhs_id)) = lhs_rhs_ids {
             Some(lhs_id)
         } else {
             None
         };
 
+        let lhs_type = &self.ast_context.resolve_type(lhs_type_id.ctype).kind;
+        let rhs_type = &self.ast_context.resolve_type(rhs_type_id.ctype).kind;
+
         if let &CTypeKind::Pointer(pointee) = lhs_type {
-            let mul = self.compute_size_of_expr(pointee.ctype);
-            Ok(WithStmts::new_unsafe_val(
-                self.pointer_offset(c_lhs, lhs, rhs, mul, false, false),
-            ))
+            Ok(self.convert_pointer_offset(c_lhs, lhs, rhs, pointee.ctype, false, false))
         } else if let &CTypeKind::Pointer(pointee) = rhs_type {
-            let mul = self.compute_size_of_expr(pointee.ctype);
-            Ok(WithStmts::new_unsafe_val(
-                self.pointer_offset(c_lhs, rhs, lhs, mul, false, false),
-            ))
+            Ok(self.convert_pointer_offset(c_lhs, rhs, lhs, pointee.ctype, false, false))
         } else if lhs_type.is_unsigned_integral_type() {
             Ok(WithStmts::new_val(mk().method_call_expr(
                 lhs,
@@ -791,14 +755,14 @@ impl Translation<'_> {
         rhs: Box<Expr>,
         lhs_rhs_ids: Option<(CExprId, CExprId)>,
     ) -> TranslationResult<WithStmts<Box<Expr>>> {
-        let lhs_type = &self.ast_context.resolve_type(lhs_type_id.ctype).kind;
-        let rhs_type = &self.ast_context.resolve_type(rhs_type_id.ctype).kind;
-
         let c_lhs = if let Some((lhs_id, _rhs_id)) = lhs_rhs_ids {
             Some(lhs_id)
         } else {
             None
         };
+
+        let lhs_type = &self.ast_context.resolve_type(lhs_type_id.ctype).kind;
+        let rhs_type = &self.ast_context.resolve_type(rhs_type_id.ctype).kind;
 
         if let &CTypeKind::Pointer(pointee) = rhs_type {
             let mut offset = mk().method_call_expr(lhs, "offset_from", vec![rhs]);
@@ -810,10 +774,7 @@ impl Translation<'_> {
 
             Ok(WithStmts::new_unsafe_val(mk().cast_expr(offset, ty)))
         } else if let &CTypeKind::Pointer(pointee) = lhs_type {
-            let mul = self.compute_size_of_expr(pointee.ctype);
-            Ok(WithStmts::new_unsafe_val(
-                self.pointer_offset(c_lhs, lhs, rhs, mul, true, false),
-            ))
+            Ok(self.convert_pointer_offset(c_lhs, lhs, rhs, pointee.ctype, true, false))
         } else if lhs_type.is_unsigned_integral_type() {
             Ok(WithStmts::new_val(mk().method_call_expr(
                 lhs,
@@ -975,214 +936,22 @@ impl Translation<'_> {
 
     pub fn convert_unary_operator(
         &self,
-        mut ctx: ExprContext,
+        ctx: ExprContext,
         name: c_ast::UnOp,
         cqual_type: CQualTypeId,
         arg: CExprId,
         lrvalue: LRValue,
     ) -> TranslationResult<WithStmts<Box<Expr>>> {
         let CQualTypeId { ctype, .. } = cqual_type;
-        let ty = self.convert_type(ctype)?;
         let resolved_ctype = self.ast_context.resolve_type(ctype);
 
         let mut unary = match name {
-            c_ast::UnOp::AddressOf => {
-                let arg_kind = &self.ast_context[arg].kind;
-
-                match arg_kind {
-                    // C99 6.5.3.2 para 4
-                    CExprKind::Unary(_, c_ast::UnOp::Deref, target, _) => {
-                        return self.convert_expr(ctx, *target, None)
-                    }
-                    // An AddrOf DeclRef/Member is safe to not decay if the translator isn't already giving a hard
-                    // yes to decaying (ie, BitCasts). So we only convert default to no decay.
-                    CExprKind::DeclRef(..) | CExprKind::Member(..) => {
-                        ctx.decay_ref.set_default_to_no()
-                    }
-                    _ => (),
-                };
-
-                // In this translation, there are only pointers to functions and
-                // & becomes a no-op when applied to a function.
-
-                let val = self.convert_expr(ctx.used().set_needs_address(true), arg, None)?;
-
-                if self.ast_context.is_function_pointer(ctype) {
-                    Ok(val.map(|x| mk().call_expr(mk().ident_expr("Some"), vec![x])))
-                } else {
-                    let pointee_ty =
-                        self.ast_context
-                            .get_pointee_qual_type(ctype)
-                            .ok_or_else(|| {
-                                TranslationError::generic("Address-of should return a pointer")
-                            })?;
-
-                    let expr_kind = &self.ast_context.index(arg).kind;
-                    let translate_as_macro = self
-                        .convert_const_macro_expansion(ctx, arg, None)
-                        .ok()
-                        .flatten()
-                        .is_some();
-
-                    // String literals are translated with a transmute, which produces a temporary.
-                    // Taking the address of a temporary leaves a dangling pointer. So instead,
-                    // cast the string literal directly so that its 'static lifetime is preserved.
-                    if let (
-                        &CExprKind::Literal(
-                            literal_cqual_type,
-                            CLiteral::String(ref bytes, element_size @ 1),
-                        ),
-                        false,
-                    ) = (expr_kind, translate_as_macro)
-                    {
-                        let num_elems =
-                            match self.ast_context.resolve_type(literal_cqual_type.ctype).kind {
-                                CTypeKind::ConstantArray(_, num_elems) => num_elems,
-                                ref kind => {
-                                    panic!(
-                                    "String literal with unknown size: {bytes:?}, kind = {kind:?}"
-                                )
-                                }
-                            };
-
-                        // Match the literal size to the expected size padding with zeros as needed
-                        let size = num_elems * (element_size as usize);
-                        let mut bytes_padded = Vec::with_capacity(size);
-                        bytes_padded.extend(bytes);
-                        bytes_padded.resize(size, 0);
-
-                        let array_ty = mk().array_ty(
-                            mk().ident_ty("u8"),
-                            mk().lit_expr(bytes_padded.len() as u128),
-                        );
-                        let bytes_literal = mk().lit_expr(bytes_padded);
-                        let val = mk().cast_expr(bytes_literal, mk().ptr_ty(array_ty));
-                        let val = mk().cast_expr(val, ty);
-                        return Ok(WithStmts::new_val(val));
-                    }
-
-                    let mutbl = if pointee_ty.qualifiers.is_const {
-                        Mutability::Immutable
-                    } else {
-                        Mutability::Mutable
-                    };
-
-                    val.result_map(|a| {
-                        let mut addr_of_arg: Box<Expr>;
-
-                        if ctx.is_static {
-                            // static variable initializers aren't able to use &mut,
-                            // so we work around that by using & and an extra cast
-                            // through & to *const to *mut
-                            addr_of_arg = mk().addr_of_expr(a);
-                            if let Mutability::Mutable = mutbl {
-                                let mut qtype = pointee_ty;
-                                qtype.qualifiers.is_const = true;
-                                let ty_ = self.type_converter.borrow_mut().convert_pointer(
-                                    &self.ast_context,
-                                    qtype,
-                                    &self.parsed_guidance.borrow(),
-                                )?;
-                                addr_of_arg = mk().cast_expr(addr_of_arg, ty_);
-                            }
-                        } else {
-                            // Normal case is allowed to use &mut if needed
-                            addr_of_arg = mk().set_mutbl(mutbl).addr_of_expr(a);
-
-                            // Avoid unnecessary reference to pointer decay in fn call args:
-                            if ctx.decay_ref.is_no() {
-                                return Ok(addr_of_arg);
-                            }
-                        }
-
-                        Ok(mk().cast_expr(addr_of_arg, ty))
-                    })
-                }
-            }
+            c_ast::UnOp::AddressOf => self.convert_address_of(ctx, cqual_type, arg),
             c_ast::UnOp::PreIncrement => self.convert_pre_increment(ctx, cqual_type, true, arg),
             c_ast::UnOp::PreDecrement => self.convert_pre_increment(ctx, cqual_type, false, arg),
             c_ast::UnOp::PostIncrement => self.convert_post_increment(ctx, cqual_type, true, arg),
             c_ast::UnOp::PostDecrement => self.convert_post_increment(ctx, cqual_type, false, arg),
-            c_ast::UnOp::Deref => {
-                match &self.ast_context[arg].kind {
-                    CExprKind::Unary(_, c_ast::UnOp::AddressOf, arg_, _) => {
-                        self.convert_expr(ctx.used(), *arg_, None)
-                    }
-                    argkind => {
-                        if let Some((dst_tykind, inner_exp)) =
-                            tenjin::is_bitcast_to_int_or_float(self, argkind)
-                        {
-                            self.convert_expr(ctx.used(), inner_exp, None)?.result_map(
-                                |val: Box<Expr>| {
-                                    match dst_tykind {
-                                        CTypeKind::Float => Ok(mk().call_expr(
-                                            // emit e.g. f32::from_bits(val)
-                                            mk().path_expr(vec![
-                                                "f32".to_string(),
-                                                "from_bits".into(),
-                                            ]),
-                                            vec![val],
-                                        )),
-                                        CTypeKind::Double => Ok(mk().call_expr(
-                                            mk().path_expr(vec![
-                                                "f64".to_string(),
-                                                "from_bits".into(),
-                                            ]),
-                                            vec![val],
-                                        )),
-                                        // TENJIN-TODO(intsizes): be more robust about determining actual int sizes
-                                        CTypeKind::ULongLong => {
-                                            // emit e.g. val.to_bits()
-                                            Ok(mk().method_call_expr(
-                                                val,
-                                                "to_bits".to_string(),
-                                                vec![],
-                                            ))
-                                        }
-                                        CTypeKind::LongLong => {
-                                            // emit e.g. val.to_bits() as i64
-                                            Ok(mk().cast_expr(
-                                                mk().method_call_expr(
-                                                    val,
-                                                    "to_bits".to_string(),
-                                                    vec![],
-                                                ),
-                                                mk().path_ty(vec!["i64".to_string()]),
-                                            ))
-                                        }
-                                        _ => Err(TranslationError::generic(
-                                            "Unexpected type in bitcast deref",
-                                        )),
-                                    }
-                                },
-                            )
-                        } else {
-                            self.convert_expr(ctx.used(), arg, None)?.result_map(
-                                |val: Box<Expr>| {
-                                    if let CTypeKind::Function(..) =
-                                        self.ast_context.resolve_type(ctype).kind
-                                    {
-                                        Ok(unwrap_function_pointer(val))
-                                    } else if let Some(_vla) = self.compute_size_of_expr(ctype) {
-                                        Ok(val)
-                                    } else {
-                                        let mut val =
-                                            mk().unary_expr(UnOp::Deref(Default::default()), val);
-
-                                        // If the type on the other side of the pointer we are dereferencing is volatile and
-                                        // this whole expression is not an LValue, we should make this a volatile read
-                                        if lrvalue.is_rvalue() && cqual_type.qualifiers.is_volatile
-                                        {
-                                            val = self.volatile_read(val, cqual_type)?
-                                        }
-                                        Ok(val)
-                                    }
-                                },
-                            )
-                        }
-                    }
-                }
-            }
+            c_ast::UnOp::Deref => self.convert_deref(ctx, cqual_type, arg, lrvalue),
             c_ast::UnOp::Plus => self.convert_expr(ctx.used(), arg, Some(cqual_type)), // promotion is explicit in the clang AST
 
             c_ast::UnOp::Negate => {
@@ -1213,17 +982,22 @@ impl Translation<'_> {
 
         // Some unused unary operators (`-foo()`) may have side effects, so we need
         // to add them to stmts when name is not increment/decrement operator.
-        if ctx.is_unused()
-            && !matches!(
-                name,
-                c_ast::UnOp::PreDecrement
-                    | c_ast::UnOp::PreIncrement
-                    | c_ast::UnOp::PostDecrement
-                    | c_ast::UnOp::PostIncrement
-            )
-        {
-            let v = unary.clone().into_value();
-            unary.add_stmt(mk().semi_stmt(v));
+        //
+        // `UnOp::Extension` (`__extension__`) is another exception since
+        // it's a no-op around the inner expression.
+        if !matches!(
+            name,
+            c_ast::UnOp::PreDecrement
+                | c_ast::UnOp::PreIncrement
+                | c_ast::UnOp::PostDecrement
+                | c_ast::UnOp::PostIncrement
+                | c_ast::UnOp::Extension
+        ) {
+            unary = self.convert_side_effects_expr(
+                ctx,
+                unary,
+                "Unary expression is not supposed to be used",
+            )?;
         }
         Ok(unary)
     }

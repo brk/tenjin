@@ -248,7 +248,20 @@ fn get_rustc_cargo_args(target_type: CargoTarget) -> Vec<RustcArgs> {
     use cargo_util::ProcessBuilder;
     use std::sync::Mutex;
 
-    let config = Config::default().unwrap();
+    let mut config = Config::default().unwrap();
+    config
+        .configure(
+            Default::default(),
+            Default::default(),
+            Default::default(),
+            Default::default(),
+            Default::default(),
+            Default::default(),
+            &Default::default(),
+            Default::default(),
+            Default::default(),
+        )
+        .unwrap();
     config.shell().set_verbosity(Verbosity::Quiet);
     let mode = CompileMode::Check { test: false };
     let mut compile_opts = CompileOptions::new(&config, mode).unwrap();
@@ -390,6 +403,9 @@ pub fn lib_main(opts: Options) -> interface::Result<()> {
     if let Some(toolchain_ver) = option_env!("RUSTUP_TOOLCHAIN") {
         env::set_var("RUSTUP_TOOLCHAIN", toolchain_ver);
     }
+
+    // If `$RUSTC_WRAPPER` is set, an extra `rustc` arg will be set, which we don't want.
+    env::remove_var("RUSTC_WRAPPER");
 
     // Shut the compiler up while refactoring
     let mut rustflags = env::var_os("RUSTFLAGS").unwrap_or_default();

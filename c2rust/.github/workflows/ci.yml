@@ -129,3 +129,76 @@ jobs:
           # `test_translator.py` does not rebuild,
           # so changing `RUSTFLAGS` will not trigger a full rebuild.
           ./scripts/test_translator.py tests/unit
+
+  check-postprocess:
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: c2rust-postprocess
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+
+      - run: uv sync
+
+      - run: uv run ruff format --check
+
+      - run: uv run ruff check
+
+      - run: uv run ty check
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build tools/split_rust
+        run: cargo build --release
+        working-directory: tools/split_rust
+      
+      - name: Build tools/merge_rust
+        run: cargo build --release
+        working-directory: tools/merge_rust
+
+      - name: Install packages
+        uses: awalsh128/cache-apt-pkgs-action@latest
+        with:
+          packages: |
+            bear
+
+      - run: uv run pytest -v
+
+  tools:
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        crate:
+          - merge_rust
+          - related_decls
+          - rust_util
+          - split_ffi_entry_points
+          - split_rust
+
+    env:
+      RUSTFLAGS: "-D warnings"
+      RUSTDOCFLAGS: "-D warnings"
+
+    defaults:
+      run:
+        working-directory: tools/${{ matrix.crate }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: tools/${{ matrix.crate }}
+
+      - run: cargo fmt --check
+
+      - run: cargo build --release
+
+      - run: cargo test --release
+
+      - run: cargo doc --document-private-items --no-deps
