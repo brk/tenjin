@@ -934,7 +934,7 @@ impl Translation<'_> {
 
                 Ok(mk().call_expr(
                     mk().path_expr(vec!["xj_sprintf_Vec_u8"]),
-                    vec![mk().mutbl().addr_of_expr(dest), size_expr, formatted_string],
+                    vec![mk().mutbl().borrow_expr(dest), size_expr, formatted_string],
                 ))
             }
             RecognizedCallForm::ScanfAddrTaken(fmt_arg, cargs) => {
@@ -960,7 +960,7 @@ impl Translation<'_> {
                 for carg in cargs {
                     let un_addr = self.c_expr_get_addr_of(carg).unwrap();
                     let arg = self.convert_expr(ctx, un_addr, None)?;
-                    let addr_mut_arg = arg.map(|arg| mk().mutbl().addr_of_expr(arg));
+                    let addr_mut_arg = arg.map(|arg| mk().mutbl().borrow_expr(arg));
                     args_tts.push(TokenTree::Punct(Punct::new(',', Alone)));
                     args_tts.push(TokenTree::Group(proc_macro2::Group::new(
                         proc_macro2::Delimiter::None,
@@ -1422,8 +1422,8 @@ impl Translation<'_> {
                     let strcspn_call = mk().call_expr(
                         mk().path_expr(vec!["strcspn_str"]),
                         vec![
-                            mk().addr_of_expr(expr_foo.to_expr()),
-                            mk().addr_of_expr(expr_bar.to_expr()),
+                            mk().borrow_expr(expr_foo.to_expr()),
+                            mk().borrow_expr(expr_bar.to_expr()),
                         ],
                     );
                     return Ok(Some(WithStmts::new_val(strcspn_call)));
@@ -1729,7 +1729,7 @@ impl Translation<'_> {
                     let fgets_stdin_bool_call = mk().call_expr(
                         mk().path_expr(vec!["fgets_stdin_bool"]),
                         vec![
-                            mk().mutbl().addr_of_expr(buf.to_expr()),
+                            mk().mutbl().borrow_expr(buf.to_expr()),
                             tenjin::expr_in_u64(lim.to_expr()),
                         ],
                     );

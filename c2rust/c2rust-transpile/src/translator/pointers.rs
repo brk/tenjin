@@ -102,7 +102,7 @@ impl<'c> Translation<'c> {
             .ast_context
             .get_pointee_qual_type(pointer_cty.ctype)
             .ok_or_else(|| TranslationError::generic("Address-of should return a pointer"))?;
-        let arg_is_macro = arg.map_or(false, |arg| {
+        let arg_is_macro = arg.is_some_and(|arg| {
             matches!(
                 self.convert_const_macro_expansion(ctx, arg, None),
                 Ok(Some(_))
@@ -164,9 +164,10 @@ impl<'c> Translation<'c> {
 
                 // If the target pointee type is different from the source element type,
                 // then we need to cast the ptr type as well.
-                if arg_cty_kind.element_ty().map_or(false, |arg_element_cty| {
-                    arg_element_cty != pointee_cty.ctype
-                }) {
+                if arg_cty_kind
+                    .element_ty()
+                    .is_some_and(|arg_element_cty| arg_element_cty != pointee_cty.ctype)
+                {
                     needs_cast = true;
                 }
             } else {
@@ -449,8 +450,10 @@ impl<'c> Translation<'c> {
     fn convert_pointee_type(&self, type_id: CTypeId) -> TranslationResult<Box<Type>> {
         self.import_type(type_id);
 
-        self.type_converter
-            .borrow_mut()
-            .convert_pointee(&self.ast_context, type_id)
+        self.type_converter.borrow_mut().convert_pointee(
+            &self.ast_context,
+            type_id,
+            &self.parsed_guidance.borrow(),
+        )
     }
 }
