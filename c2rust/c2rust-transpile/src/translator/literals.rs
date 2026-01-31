@@ -163,20 +163,7 @@ impl Translation<'_> {
             }
 
             CLiteral::String(ref bytes, element_size) => {
-                //self.convert_string_literal(ty, bytes, element_size, guided_type)
-                let bytes_padded = self.string_literal_bytes(ty.ctype, bytes, element_size);
-
-                // std::mem::transmute::<[u8; size], ctype>(*b"xxxx")
-                let array_ty = mk().array_ty(
-                    mk().ident_ty("u8"),
-                    mk().lit_expr(bytes_padded.len() as u128),
-                );
-                let val = transmute_expr(
-                    array_ty,
-                    self.convert_type(ty.ctype)?,
-                    mk().unary_expr(UnOp::Deref(Default::default()), mk().lit_expr(bytes_padded)),
-                );
-                Ok(WithStmts::new_unsafe_val(val))
+                self.convert_string_literal(ty, bytes, element_size, guided_type)
             }
         }
     }
@@ -185,45 +172,30 @@ impl Translation<'_> {
     pub fn convert_string_literal(
         &self,
         ty: CQualTypeId,
-        val: &Vec<u8>,
-        width: u8,
+        bytes: &[u8],
+        element_size: u8,
         guided_type: &Option<tenjin::GuidedType>,
     ) -> TranslationResult<WithStmts<Box<Expr>>> {
-        let mut val = val.to_owned();
-
-        let num_elems = match self.ast_context.resolve_type(ty.ctype).kind {
-            CTypeKind::ConstantArray(_elem_ty, num_elems) => num_elems,
-            ref kind => {
-                panic!("String literal with unknown size: {val:?}, kind = {kind:?}")
-            }
-        };
-
-        log::trace!(
-            "TENJIN TRACE: convert string literal, contents len {}, num elems {}",
-            val.len(),
-            num_elems
-        );
-
         if guided_type.as_ref().is_some_and(|g| g.pretty == "String") {
             // XREF:guided_string_sans_cast
             return Ok(WithStmts::new_val(
-                self.convert_literal_to_rust_string(&val, width),
+                self.convert_literal_to_rust_string(bytes, element_size),
             ));
         }
 
-        // Match the literal size to the expected size padding with zeros as needed
-        let size = num_elems * (width as usize);
-        val.resize(size, 0);
+        let bytes_padded = self.string_literal_bytes(ty.ctype, bytes, element_size);
 
         // std::mem::transmute::<[u8; size], ctype>(*b"xxxx")
-        let u8_ty = mk().path_ty(vec!["u8"]);
-        let width_lit = mk().lit_expr(mk().int_unsuffixed_lit(val.len() as u128));
-
-        Ok(WithStmts::new_unsafe_val(transmute_expr(
-            mk().array_ty(u8_ty, width_lit),
+        let array_ty = mk().array_ty(
+            mk().ident_ty("u8"),
+            mk().lit_expr(bytes_padded.len() as u128),
+        );
+        let val = transmute_expr(
+            array_ty,
             self.convert_type(ty.ctype)?,
-            mk().unary_expr(UnOp::Deref(Default::default()), mk().lit_expr(val)),
-        )))
+            mk().unary_expr(UnOp::Deref(Default::default()), mk().lit_expr(bytes_padded)),
+        );
+        Ok(WithStmts::new_unsafe_val(val))
     }
 
     /// Convert a C string literal to a Rust expression of type `String`

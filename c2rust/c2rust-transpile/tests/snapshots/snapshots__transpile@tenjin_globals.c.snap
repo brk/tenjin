@@ -30,19 +30,22 @@ unsafe fn main_0(
     return 0 as ::core::ffi::c_int;
 }
 pub fn main() -> ExitCode {
-    let mut args: Vec<*mut ::core::ffi::c_char> = Vec::new();
-    for arg in ::std::env::args() {
-        args.push(
+    let mut args_strings: Vec<Vec<u8>> = ::std::env::args()
+        .map(|arg| {
             ::std::ffi::CString::new(arg)
                 .expect("Failed to convert argument into CString.")
-                .into_raw(),
-        );
-    }
-    args.push(::core::ptr::null_mut());
+                .into_bytes_with_nul()
+        })
+        .collect();
+    let mut args_ptrs: Vec<*mut ::core::ffi::c_char> = args_strings
+        .iter_mut()
+        .map(|arg| arg.as_mut_ptr() as *mut ::core::ffi::c_char)
+        .chain(::core::iter::once(::core::ptr::null_mut()))
+        .collect();
     unsafe {
         ExitCode::from(main_0(
-            (args.len() - 1) as ::core::ffi::c_int,
-            args.as_mut_ptr() as *mut *mut ::core::ffi::c_char,
+            (args_ptrs.len() - 1) as ::core::ffi::c_int,
+            args_ptrs.as_mut_ptr() as *mut *mut ::core::ffi::c_char,
         ) as u8)
     }
 }

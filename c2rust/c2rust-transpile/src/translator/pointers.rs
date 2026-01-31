@@ -6,9 +6,9 @@ use failure::{err_msg, format_err};
 use syn::{BinOp, Expr, Type, UnOp};
 
 use crate::{
-    c_ast,
+    c_ast::{self},
     diagnostics::{TranslationError, TranslationErrorKind, TranslationResult},
-    translator::{cast_int, unwrap_function_pointer, ExprContext, Translation},
+    translator::{cast_int, tenjin::GuidedType, unwrap_function_pointer, ExprContext, Translation},
     with_stmts::WithStmts,
     CExprId, CExprKind, CLiteral, CQualTypeId, CTypeId, CTypeKind, CastKind,
 };
@@ -55,7 +55,7 @@ impl<'c> Translation<'c> {
             .get_qual_type()
             .ok_or_else(|| format_err!("bad source type"))?;
 
-        self.convert_address_of_common(ctx, Some(arg), arg_cty, cqual_type, val, false)
+        self.convert_address_of_common(ctx, Some(arg), arg_cty, cqual_type, val, false, &None)
     }
 
     pub fn convert_array_to_pointer_decay(
@@ -65,6 +65,7 @@ impl<'c> Translation<'c> {
         target_cty: CQualTypeId,
         val: WithStmts<Box<Expr>>,
         expr: Option<CExprId>,
+        guided_type: &Option<GuidedType>,
     ) -> TranslationResult<WithStmts<Box<Expr>>> {
         // Because va_list is sometimes defined as a single-element
         // array in order for it to allocate memory as a local variable
@@ -82,7 +83,7 @@ impl<'c> Translation<'c> {
             return Ok(val);
         }
 
-        self.convert_address_of_common(ctx, expr, source_cty, target_cty, val, true)
+        self.convert_address_of_common(ctx, expr, source_cty, target_cty, val, true, guided_type)
     }
 
     fn convert_address_of_common(
@@ -93,6 +94,7 @@ impl<'c> Translation<'c> {
         pointer_cty: CQualTypeId,
         mut val: WithStmts<Box<Expr>>,
         is_array_decay: bool,
+        guided_type: &Option<GuidedType>,
     ) -> TranslationResult<WithStmts<Box<Expr>>> {
         let arg_expr_kind = arg.map(|arg| {
             let arg = self.ast_context.unwrap_predefined_ident(arg);
@@ -123,6 +125,18 @@ impl<'c> Translation<'c> {
             Mutability::Mutable
         };
 
+        if let Some(CExprKind::DeclRef(_cqti, decl_id, _lrval)) = arg_expr_kind {
+            if self
+                .parsed_guidance
+                .borrow_mut()
+                .query_decl_type(self, *decl_id)
+                .is_some_and(|g| g.pretty == "String" || g.pretty_sans_refs().starts_with("Vec <"))
+            {
+                // XREF:guided_array_decay
+                return Ok(val);
+            }
+        }
+
         // String literals are translated with a transmute, which produces a temporary.
         // Taking the address of a temporary leaves a dangling pointer. So instead,
         // cast the string literal directly so that its 'static lifetime is preserved.
@@ -131,6 +145,13 @@ impl<'c> Translation<'c> {
             false,
         ) = (arg_expr_kind, arg_is_macro)
         {
+            if guided_type.as_ref().is_some_and(|g| g.pretty == "String") {
+                // XREF:guided_string_implicit_cast
+                return Ok(WithStmts::new_val(
+                    self.convert_literal_to_rust_string(bytes, element_size),
+                ));
+            }
+
             let bytes_padded = self.string_literal_bytes(literal_cty.ctype, bytes, element_size);
             let len = bytes_padded.len();
             val = WithStmts::new_val(mk().lit_expr(bytes_padded));
@@ -181,12 +202,15 @@ impl<'c> Translation<'c> {
             }
         } else {
             self.use_feature("raw_ref_op");
-            val = val.map(|val| mk().set_mutbl(mutbl).raw_borrow_expr(val));
-
             if is_array_decay {
-                // TODO: Call `ptr::as_[mut]_ptr` instead once that is available.
-                // (`array_ptr_get` feature added to nightly in January 2024)
-                needs_cast = true;
+                needs_cast = false;
+                let method = match mutbl {
+                    Mutability::Mutable => "as_mut_ptr",
+                    Mutability::Immutable => "as_ptr",
+                };
+                val = val.map(|val| mk().method_call_expr(val, method, vec![]));
+            } else {
+                val = val.map(|val| mk().set_mutbl(mutbl).raw_borrow_expr(val));
             }
         }
 
@@ -334,7 +358,14 @@ impl<'c> Translation<'c> {
 
                     // Don't dereference the offset if we're still within the variable portion
                     if let Some(elt_type_id) = var_elt_type_id {
-                        Ok(self.convert_pointer_offset(lhs, rhs, elt_type_id, false, deref))
+                        Ok(self.convert_pointer_offset(
+                            Some(arr),
+                            lhs,
+                            rhs,
+                            elt_type_id,
+                            false,
+                            deref,
+                        ))
                     } else {
                         Ok(WithStmts::new_val(
                             mk().index_expr(lhs, cast_int(rhs, "usize", false)),
@@ -343,6 +374,7 @@ impl<'c> Translation<'c> {
                 })
             } else {
                 // LHS must be ref decayed for the offset method call's self param
+                let c_lhs = Some(lhs);
                 let lhs = self.convert_expr(ctx.used().decay_ref(), lhs, None)?;
                 lhs.and_then(|lhs| {
                     // stmts.extend(lhs.stmts_mut());
@@ -362,8 +394,14 @@ impl<'c> Translation<'c> {
                         }
                     };
 
-                    let mut val =
-                        self.convert_pointer_offset(lhs, rhs, pointee_type_id.ctype, false, deref);
+                    let mut val = self.convert_pointer_offset(
+                        c_lhs,
+                        lhs,
+                        rhs,
+                        pointee_type_id.ctype,
+                        false,
+                        deref,
+                    );
                     // if the context wants a different type, add a cast
                     if let Some(expected_ty) = override_ty {
                         if expected_ty != pointee_type_id {
@@ -380,13 +418,23 @@ impl<'c> Translation<'c> {
     /// Pointer offset that casts its argument to isize
     pub fn convert_pointer_offset(
         &self,
+        c_ptr: Option<CExprId>,
         ptr: Box<Expr>,
         offset: Box<Expr>,
         pointee_cty: CTypeId,
         neg: bool,
         mut deref: bool,
     ) -> WithStmts<Box<Expr>> {
-        let mut offset = cast_int(offset, "isize", false);
+        let mut offset = offset;
+
+        if c_ptr.is_some_and(|ptr_id| self.can_subscript(ptr_id)) {
+            if neg {
+                offset = mk().unary_expr(UnOp::Neg(Default::default()), offset);
+            }
+            return WithStmts::new_val(mk().index_expr(ptr, cast_int(offset, "usize", false)));
+        }
+
+        offset = cast_int(offset, "isize", false);
 
         if let Some(mul) = self.compute_size_of_expr(pointee_cty) {
             let mul = cast_int(mul, "isize", false);

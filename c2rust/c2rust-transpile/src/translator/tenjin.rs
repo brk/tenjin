@@ -1893,6 +1893,44 @@ impl Translation<'_> {
         false
     }
 
+    pub fn coerce_borrow_guided(
+        &self,
+        expr: Box<Expr>,
+        cexpr: CExprId,
+        guided_type: &Option<tenjin::GuidedType>,
+    ) -> Box<Expr> {
+        if let Some(target_guided_type) = guided_type {
+            // XREF:guided_arg_coerce_borrow
+            if let Some(ref expr_guided_type) = self
+                .parsed_guidance
+                .borrow_mut()
+                .query_expr_type(self, cexpr)
+            {
+                if target_guided_type.is_shared_borrow() && !expr_guided_type.is_borrow() {
+                    return mk().borrow_expr(expr);
+                }
+
+                if target_guided_type.is_exclusive_borrow() && !expr_guided_type.is_borrow() {
+                    return mk().mutbl().borrow_expr(expr);
+                }
+            } else {
+                // Have target guided type, but no expr guided type.
+                // If target is a borrow, we assume expr was a pointer.
+                if target_guided_type.is_shared_borrow() {
+                    // XREF:unguided_arg_coerce_asref
+                    // Coerce to `.as_ref().unwrap()`
+                    let opt = mk().method_call_expr(expr, "as_ref", Vec::<Box<Expr>>::new());
+                    return mk().method_call_expr(opt, "unwrap", Vec::<Box<Expr>>::new());
+                } else if target_guided_type.is_exclusive_borrow() {
+                    // Coerce to `.as_mut().unwrap()`
+                    let opt = mk().method_call_expr(expr, "as_mut", Vec::<Box<Expr>>::new());
+                    return mk().method_call_expr(opt, "unwrap", Vec::<Box<Expr>>::new());
+                }
+            }
+        }
+        expr
+    }
+
     pub fn get_callee_function_arg_guidances(
         &self,
         func_id: CExprId,

@@ -4717,6 +4717,7 @@ impl<'c> Translation<'c> {
         exprs: &[CExprId],
         arg_tys: Option<&[CQualTypeId]>,
         is_variadic: bool,
+        arg_guidances: Option<Vec<Option<tenjin::GuidedType>>>,
     ) -> TranslationResult<WithStmts<Vec<Box<Expr>>>> {
         let arg_tys = if let Some(arg_tys) = arg_tys {
             if !is_variadic {
@@ -4728,37 +4729,21 @@ impl<'c> Translation<'c> {
             &[]
         };
 
-        exprs
-            .iter()
-            .enumerate()
-            .map(|(n, arg)| self.convert_call_arg(ctx, *arg, arg_tys.get(n).copied()))
-            .collect()
-    }
+        let guidance_for = |n: usize| match &arg_guidances {
+            None => None,
+            Some(guidances) => guidances.get(n).unwrap_or(&None).clone(),
+        };
 
-    // Fixing this would require major refactors for marginal benefit.
-    #[allow(clippy::vec_box)]
-    fn convert_exprs_guided(
-        &self,
-        ctx: ExprContext,
-        exprs: &[CExprId],
-        arg_tys: Option<&[CQualTypeId]>,
-        arg_guidances: Vec<Option<tenjin::GuidedType>>,
-    ) -> TranslationResult<WithStmts<Vec<Box<Expr>>>> {
-        // arg_guidances, which is based on the called function signature,
-        // may be shorter than exprs, e.g. for variadic functions.
-        // It may also be too long, for call sites which supply too few exprs.
         exprs
             .iter()
             .enumerate()
             .map(|(n, arg)| {
-                let guided_type = arg_guidances.get(n).unwrap_or(&None);
-                let expr = self.convert_expr_guided(
-                    ctx,
-                    *arg,
-                    arg_tys.and_then(|tys| tys.get(n).copied()),
-                    guided_type,
-                );
-                expr.map(|expr| expr.map(|expr| self.coerce_borrow_guided(expr, *arg, guided_type)))
+                let guided_type = guidance_for(n);
+                let res_ws_expr =
+                    self.convert_call_arg(ctx, *arg, arg_tys.get(n).copied(), &guided_type);
+                res_ws_expr.map(|ws_expr| {
+                    ws_expr.map(|expr| self.coerce_borrow_guided(expr, *arg, &guided_type))
+                })
             })
             .collect()
     }
@@ -5608,54 +5593,18 @@ impl<'c> Translation<'c> {
         match self.call_form_cases_preconversion(call_expr_ty.ctype, ctx, &func, cargs)? {
             Some(converted) => Ok(converted),
             None => {
-                let args = if let Some(arg_guidances) = arg_guidances {
-                    self.convert_exprs_guided(ctx.used(), cargs, carg_tys, arg_guidances)?
-                } else {
-                    self.convert_call_args(ctx.used(), cargs, carg_tys, is_variadic)?
-                };
+                let args = self.convert_call_args(
+                    ctx.used(),
+                    cargs,
+                    carg_tys,
+                    is_variadic,
+                    arg_guidances,
+                )?;
                 args.result_map(|args| {
                     self.convert_call_with_args(ctx, call_expr_ty, override_ty, func, args, cargs)
                 })
             }
         }
-    }
-
-    fn coerce_borrow_guided(
-        &self,
-        expr: Box<Expr>,
-        cexpr: CExprId,
-        guided_type: &Option<tenjin::GuidedType>,
-    ) -> Box<Expr> {
-        if let Some(target_guided_type) = guided_type {
-            // XREF:guided_arg_coerce_borrow
-            if let Some(ref expr_guided_type) = self
-                .parsed_guidance
-                .borrow_mut()
-                .query_expr_type(self, cexpr)
-            {
-                if target_guided_type.is_shared_borrow() && !expr_guided_type.is_borrow() {
-                    return mk().borrow_expr(expr);
-                }
-
-                if target_guided_type.is_exclusive_borrow() && !expr_guided_type.is_borrow() {
-                    return mk().mutbl().borrow_expr(expr);
-                }
-            } else {
-                // Have target guided type, but no expr guided type.
-                // If target is a borrow, we assume expr was a pointer.
-                if target_guided_type.is_shared_borrow() {
-                    // XREF:unguided_arg_coerce_asref
-                    // Coerce to `.as_ref().unwrap()`
-                    let opt = mk().method_call_expr(expr, "as_ref", Vec::<Box<Expr>>::new());
-                    return mk().method_call_expr(opt, "unwrap", Vec::<Box<Expr>>::new());
-                } else if target_guided_type.is_exclusive_borrow() {
-                    // Coerce to `.as_mut().unwrap()`
-                    let opt = mk().method_call_expr(expr, "as_mut", Vec::<Box<Expr>>::new());
-                    return mk().method_call_expr(opt, "unwrap", Vec::<Box<Expr>>::new());
-                }
-            }
-        }
-        expr
     }
 
     pub fn convert_constant(&self, constant: ConstIntExpr) -> TranslationResult<Box<Expr>> {
@@ -5678,6 +5627,7 @@ impl<'c> Translation<'c> {
         ctx: ExprContext,
         expr_id: CExprId,
         override_ty: Option<CQualTypeId>,
+        guided_ty: &Option<tenjin::GuidedType>,
     ) -> TranslationResult<WithStmts<Box<Expr>>> {
         let mut val;
 
@@ -5688,7 +5638,7 @@ impl<'c> Translation<'c> {
             val = self.convert_expr(ctx, expr_id, None)?;
             val = val.map(|val| mk().method_call_expr(val, "as_va_list", Vec::new()));
         } else {
-            val = self.convert_expr(ctx, expr_id, override_ty)?;
+            val = self.convert_expr_guided(ctx, expr_id, override_ty, guided_ty)?;
         }
 
         Ok(val)
@@ -6243,9 +6193,14 @@ impl<'c> Translation<'c> {
                 Ok(val.map(|x| mk().call_expr(mk().ident_expr("Some"), vec![x])))
             }
 
-            CastKind::ArrayToPointerDecay => {
-                self.convert_array_to_pointer_decay(ctx, source_cty, target_cty, val, expr)
-            }
+            CastKind::ArrayToPointerDecay => self.convert_array_to_pointer_decay(
+                ctx,
+                source_cty,
+                target_cty,
+                val,
+                expr,
+                guided_type,
+            ),
 
             CastKind::NullToPointer => {
                 assert!(val.stmts().is_empty());

@@ -138,10 +138,7 @@ pub unsafe extern "C" fn restart_valist(mut fmt: *const ::core::ffi::c_char, mut
 }
 #[no_mangle]
 pub unsafe extern "C" fn print_int(mut ap: *mut ::core::ffi::VaListImpl) {
-    printf(
-        b"%d\0" as *const u8 as *const ::core::ffi::c_char,
-        (*ap).arg::<::core::ffi::c_int>(),
-    );
+    print!("{:}", (*ap).arg::<::core::ffi::c_int>() as core::ffi::c_int);
 }
 #[no_mangle]
 pub unsafe extern "C" fn borrowed_valist(mut count: size_t, mut args: ...) {
