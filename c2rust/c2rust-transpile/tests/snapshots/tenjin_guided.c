@@ -9,6 +9,7 @@ unsigned long strcspn(const char *, const char *);
 // These are macros in <ctype.h> but Tenjin can translate the un-expanded form.
 int isalnum(int c);
 char tolower(int c);
+void exit(int status);
 
 extern int extern_int_unguided;
 // XREF:extern_var_nonmutbl
@@ -75,6 +76,8 @@ void guided_array_vec()
     // XREF:guided_array_decay
     print_owned_vec_u8(ovu8);
 }
+
+void recognize_call_exit() { exit(1); }
 
 void recognize_int_float_bitcast()
 {

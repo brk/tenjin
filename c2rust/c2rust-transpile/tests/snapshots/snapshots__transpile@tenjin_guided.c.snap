@@ -36,6 +36,7 @@ extern "C" {
     ) -> ::core::ffi::c_ulong;
     fn isalnum(c: ::core::ffi::c_int) -> ::core::ffi::c_int;
     fn tolower(c: ::core::ffi::c_int) -> ::core::ffi::c_char;
+    fn exit(status: ::core::ffi::c_int) -> !;
     static mut extern_int_unguided: ::core::ffi::c_int;
     static extern_int_nonmutbl: ::core::ffi::c_int;
 }
@@ -98,6 +99,10 @@ pub unsafe extern "C" fn guided_array_vec() {
         4 as ::core::ffi::c_uchar,
     ];
     print_owned_vec_u8(ovu8);
+}
+#[no_mangle]
+pub unsafe extern "C" fn recognize_call_exit() {
+    exit(1 as ::core::ffi::c_int);
 }
 #[no_mangle]
 pub unsafe extern "C" fn recognize_int_float_bitcast() {
