@@ -102,7 +102,7 @@ pub unsafe extern "C" fn guided_array_vec() {
 }
 #[no_mangle]
 pub unsafe extern "C" fn recognize_call_exit() {
-    exit(1 as ::core::ffi::c_int);
+    ::std::process::exit(1 as i32);
 }
 #[no_mangle]
 pub unsafe extern "C" fn recognize_int_float_bitcast() {

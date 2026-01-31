@@ -995,6 +995,10 @@ impl Translation<'_> {
     ) -> TranslationResult<Option<WithStmts<Box<Expr>>>> {
         if let Some(path) = tenjin::expr_get_path(func) {
             match () {
+                _ if tenjin::is_path_exactly_1(path, "exit") => {
+                    // TODO: should check source of symbol to ensure it's the C standard library exit()
+                    self.recognize_preconversion_call_exit(ctx, cargs)
+                }
                 _ if tenjin::is_path_exactly_1(path, "assert") => {
                     self.recognize_preconversion_call_assert(ctx, cargs)
                 }
@@ -1663,6 +1667,25 @@ impl Translation<'_> {
             let toascii_call =
                 mk().call_expr(mk().path_expr(vec!["xj_toascii"]), vec![expr_foo.to_expr()]);
             return Ok(Some(WithStmts::new_val(toascii_call)));
+        }
+
+        Ok(None)
+    }
+
+    #[allow(clippy::borrowed_box)]
+    fn recognize_preconversion_call_exit(
+        &self,
+        ctx: ExprContext,
+        cargs: &[CExprId],
+    ) -> TranslationResult<Option<WithStmts<Box<Expr>>>> {
+        if cargs.len() == 1 {
+            let c_int_val = self.convert_expr(ctx.used(), cargs[0], None)?;
+            let as_i32 = mk().cast_expr(c_int_val.to_expr(), mk().path_ty(vec!["i32"]));
+            let call = mk().call_expr(
+                mk().abs_path_expr(vec!["std", "process", "exit"]),
+                vec![as_i32],
+            );
+            return Ok(Some(WithStmts::new_val(call)));
         }
 
         Ok(None)
