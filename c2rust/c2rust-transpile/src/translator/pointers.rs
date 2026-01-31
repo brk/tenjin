@@ -467,11 +467,18 @@ impl<'c> Translation<'c> {
     ) -> WithStmts<Box<Expr>> {
         let mut offset = offset;
 
-        if c_ptr.is_some_and(|ptr_id| self.can_subscript(ptr_id)) {
-            if neg {
-                offset = mk().unary_expr(UnOp::Neg(Default::default()), offset);
-            }
-            return WithStmts::new_val(mk().index_expr(ptr, cast_int(offset, "usize", false)));
+        if !neg && c_ptr.is_some_and(|ptr_id| self.can_subscript(ptr_id)) {
+            let subscript = cast_int(offset, "usize", false);
+            let overall = if deref {
+                // ptr[idx]
+                mk().index_expr(ptr, subscript)
+            } else {
+                // XREF:guided_subscript_noderef
+                // &ptr[idx..]
+                mk().borrow_expr(mk().index_expr(ptr, mk().range_expr(Some(subscript), None)))
+            };
+
+            return WithStmts::new_val(overall);
         }
 
         offset = cast_int(offset, "isize", false);

@@ -181,6 +181,8 @@ int guided_mut_ref_neq(const char *xstr, const char *xstr2)
 
 int guided_1d_slice(int *x, int index)
 {
+    // XREF:guided_subscript_noderef
+    int* x2 = x + 3;
     return x[index];
 }
 
