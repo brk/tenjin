@@ -38,6 +38,11 @@ void print_shared_vec_u8(const char *rvu8)
     printf("%s\n", rvu8);
 }
 
+void print_owned_vec_u8(const char *ovu8)
+{
+    printf("%s\n", ovu8);
+}
+
 void sprint_into_mutref_vec_u8(const char *xvu8)
 {
     // XREF:sprint_into_mutref_vec_u8
@@ -62,6 +67,21 @@ void guided_str_init_empty_lit()
     char ostr[] = "";
     // XREF:guided_string_empty
     print_owned_String("");
+}
+
+void guided_array_vec()
+{
+    unsigned char ovu8[4] = { 1, 2, 3, 4 };
+    // XREF:guided_array_decay
+    print_owned_vec_u8(ovu8);
+}
+
+void recognize_int_float_bitcast()
+{
+    // XREF:recognize_int_float_bitcast
+    unsigned int ui = 0x40490fdb; // bit pattern for float 3.1415927
+    float f = *((float*)&ui);
+    printf("float f = %f\n", f);
 }
 
 void guided_static()
@@ -161,6 +181,8 @@ int guided_mut_ref_neq(const char *xstr, const char *xstr2)
 
 int guided_1d_slice(int *x, int index)
 {
+    // XREF:guided_subscript_noderef
+    int* x2 = x + 3;
     return x[index];
 }
 

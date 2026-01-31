@@ -8,7 +8,11 @@ use syn::{BinOp, Expr, Type, UnOp};
 use crate::{
     c_ast::{self},
     diagnostics::{TranslationError, TranslationErrorKind, TranslationResult},
-    translator::{cast_int, tenjin::GuidedType, unwrap_function_pointer, ExprContext, Translation},
+    translator::{
+        cast_int,
+        tenjin::{self, GuidedType},
+        unwrap_function_pointer, ExprContext, Translation,
+    },
     with_stmts::WithStmts,
     CExprId, CExprKind, CLiteral, CQualTypeId, CTypeId, CTypeKind, CastKind,
 };
@@ -242,6 +246,42 @@ impl<'c> Translation<'c> {
             return self.convert_expr(ctx.used(), arg, None);
         }
 
+        if let Some((dst_tykind, inner_exp)) =
+            tenjin::is_bitcast_to_int_or_float(self, arg_expr_kind)
+        {
+            return self
+                .convert_expr(ctx.used(), inner_exp, None)?
+                .result_map(|val: Box<Expr>| {
+                    match dst_tykind {
+                        // XREF:recognize_int_float_bitcast
+                        CTypeKind::Float => Ok(mk().call_expr(
+                            // emit e.g. f32::from_bits(val)
+                            mk().path_expr(vec!["f32".to_string(), "from_bits".into()]),
+                            vec![val],
+                        )),
+                        CTypeKind::Double => Ok(mk().call_expr(
+                            mk().path_expr(vec!["f64".to_string(), "from_bits".into()]),
+                            vec![val],
+                        )),
+                        // TENJIN-TODO(intsizes): be more robust about determining actual int sizes
+                        CTypeKind::ULongLong => {
+                            // emit e.g. val.to_bits()
+                            Ok(mk().method_call_expr(val, "to_bits".to_string(), vec![]))
+                        }
+                        CTypeKind::LongLong => {
+                            // emit e.g. val.to_bits() as i64
+                            Ok(mk().cast_expr(
+                                mk().method_call_expr(val, "to_bits".to_string(), vec![]),
+                                mk().path_ty(vec!["i64".to_string()]),
+                            ))
+                        }
+                        _ => Err(TranslationError::generic(
+                            "Unexpected type in bitcast deref",
+                        )),
+                    }
+                });
+        }
+
         self.convert_expr(ctx.used(), arg, None)?
             .result_map(|val: Box<Expr>| {
                 if let CTypeKind::Function(..) =
@@ -427,11 +467,18 @@ impl<'c> Translation<'c> {
     ) -> WithStmts<Box<Expr>> {
         let mut offset = offset;
 
-        if c_ptr.is_some_and(|ptr_id| self.can_subscript(ptr_id)) {
-            if neg {
-                offset = mk().unary_expr(UnOp::Neg(Default::default()), offset);
-            }
-            return WithStmts::new_val(mk().index_expr(ptr, cast_int(offset, "usize", false)));
+        if !neg && c_ptr.is_some_and(|ptr_id| self.can_subscript(ptr_id)) {
+            let subscript = cast_int(offset, "usize", false);
+            let overall = if deref {
+                // ptr[idx]
+                mk().index_expr(ptr, subscript)
+            } else {
+                // XREF:guided_subscript_noderef
+                // &ptr[idx..]
+                mk().borrow_expr(mk().index_expr(ptr, mk().range_expr(Some(subscript), None)))
+            };
+
+            return WithStmts::new_val(overall);
         }
 
         offset = cast_int(offset, "isize", false);
