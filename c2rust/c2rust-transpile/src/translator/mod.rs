@@ -1966,18 +1966,7 @@ mod refactor_format {
                         }
                     }
 
-                    // CStr::from_ptr(e as *const libc::c_char).to_str().unwrap()
-                    let e =
-                        mk().cast_expr(e, mk().ptr_ty(mk().path_ty(vec!["core", "ffi", "c_char"])));
-                    let cs = mk().call_expr(
-                        // TODO(kkysen) change `"std"` to `"core"` after `#![feature(core_c_str)]` is stabilized in `1.63.0`
-                        mk().path_expr(vec!["std", "ffi", "CStr", "from_ptr"]),
-                        vec![e],
-                    );
-                    let s = mk().method_call_expr(cs, "to_str", Vec::new());
-                    let call = mk().method_call_expr(s, "unwrap", Vec::new());
-                    let b = mk().unsafe_().block(vec![mk().expr_stmt(call)]);
-                    mk().span(span).block_expr(b)
+                    Self::cast_str(x, e)
                 }
                 CastType::None(c) => {
                     log::warn!(
@@ -1988,6 +1977,21 @@ mod refactor_format {
                     e
                 }
             }
+        }
+
+        fn cast_str(_: &Translation, e: Box<Expr>) -> Box<Expr> {
+            // CStr::from_ptr(e as *const libc::c_char).to_str().unwrap()
+            let span = e.span();
+            let e = mk().cast_expr(e, mk().ptr_ty(mk().path_ty(vec!["core", "ffi", "c_char"])));
+            let cs = mk().call_expr(
+                // TODO(kkysen) change `"std"` to `"core"` after `#![feature(core_c_str)]` is stabilized in `1.63.0`
+                mk().path_expr(vec!["std", "ffi", "CStr", "from_ptr"]),
+                vec![e],
+            );
+            let s = mk().method_call_expr(cs, "to_str", Vec::new());
+            let call = mk().method_call_expr(s, "unwrap", Vec::new());
+            let b = mk().unsafe_().block(vec![mk().expr_stmt(call)]);
+            mk().span(span).block_expr(b)
         }
 
         fn as_rust_ty(&self) -> Vec<&str> {
