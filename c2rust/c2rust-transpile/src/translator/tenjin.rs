@@ -284,6 +284,24 @@ pub fn expr_in_usize(expr: Box<Expr>) -> Box<Expr> {
     cast_box
 }
 
+fn expr_within_raw_addr(expr: &Expr) -> Option<&Expr> {
+    if let Expr::RawAddr(syn::ExprRawAddr { expr: inner, .. }) = expr {
+        return Some(inner);
+    }
+    None
+}
+
+pub fn expr_is_call_of_ctime_with_raw_addr(expr: &Expr) -> Option<Box<Expr>> {
+    if let Expr::Call(syn::ExprCall { func, args, .. }) = expr {
+        if tenjin::expr_is_ident(func, "ctime") && args.len() == 1 {
+            if let Some(inner) = tenjin::expr_within_raw_addr(&args[0]) {
+                return Some(Box::new(inner.clone()));
+            }
+        }
+    }
+    None
+}
+
 fn to_char_lossy(expr: Box<Expr>) -> Box<Expr> {
     // Converts an expression of integral type to char, using lossy conversion.
     // This is appropriate for calls to tolower() and similar functions,
