@@ -12,8 +12,8 @@ WANT = {
     # Note that 10j-more-deps builds against a specific version of LLVM, so before
     # upgrading the major version of 10j-llvm, update 10j-more-deps first.
     "10j-more-deps": "rev-d915905d0",
-    "10j-codehawk": "d7904d71d7743369fab9020fcaf3e8b15482152b",
-    "10j-codehawk-c": "46e378cfa34743f0345c28b9ababd9d9e48b8afd",
+    "10j-codehawk": "5414e06ea6461c759fe565db14e5c8ff64047725",
+    "10j-codehawk-c": "db010d1bab5381f9986dbf269ead9c036b55df07",
     # Keep in sync with the version in `xj-improve-multitool/rust-toolchain.toml`.
     "10j-xj-improve-multitool-toolchain": "nightly-2025-08-20",
     "10j-xj-default-rust-toolchain": "1.88.0",
