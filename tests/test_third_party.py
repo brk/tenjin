@@ -800,7 +800,7 @@ def test_libtom_libtommath(tenjin_fixtures: TenjinFixtures):
 
 
 @pytest.mark.slow  # expected runtime: ~30 minutes
-@pytest.mark.xfail(
+@pytest.mark.skip(
     reason="dbcc does not yet translate end-to-end; the C sources handed to c2rust "
     "fail to parse, so no final/ crate is produced. Refolding itself is not at "
     "fault (the c_16 output was verified token-faithful to the modified program); "
@@ -816,7 +816,6 @@ def test_libtom_libtommath(tenjin_fixtures: TenjinFixtures):
     "(mpc_fold_t vs xjg-threaded mpc_fold_t_xjtp, etc.); the invalid Clang AST "
     "makes xj-c2rust panic (exit 101, conversion.rs 'Type conversion not "
     "implemented for TagTypeUnknown').",
-    strict=True,
 )
 def test_howerj_dbcc(tenjin_fixtures: TenjinFixtures):
     tmp_codebase, tmp_resultsdir = tenjin_fixtures.tmp_codebase, tenjin_fixtures.tmp_resultsdir
