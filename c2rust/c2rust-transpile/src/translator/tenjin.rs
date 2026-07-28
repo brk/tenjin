@@ -1225,46 +1225,46 @@ impl Translation<'_> {
                     self.recognize_preconversion_call_strcspn_guided(ctx, func, cargs)
                 }
                 _ if tenjin::is_path_exactly_1(path, "isalnum") => {
-                    self.recognize_ctype_is_1(ctx, "isalnum", "c.is_ascii_alphanumeric()", cargs)
+                    self.recognize_ctype_is_1(ctx, "isalnum", "xjc.is_ascii_alphanumeric()", cargs)
                 }
                 _ if tenjin::is_path_exactly_1(path, "isalpha") => {
-                    self.recognize_ctype_is_1(ctx, "isalpha", "c.is_ascii_alphabetic()", cargs)
+                    self.recognize_ctype_is_1(ctx, "isalpha", "xjc.is_ascii_alphabetic()", cargs)
                 }
                 _ if tenjin::is_path_exactly_1(path, "islower") => {
-                    self.recognize_ctype_is_1(ctx, "islower", "c.is_ascii_lowercase()", cargs)
+                    self.recognize_ctype_is_1(ctx, "islower", "xjc.is_ascii_lowercase()", cargs)
                 }
                 _ if tenjin::is_path_exactly_1(path, "isupper") => {
-                    self.recognize_ctype_is_1(ctx, "isupper", "c.is_ascii_uppercase()", cargs)
+                    self.recognize_ctype_is_1(ctx, "isupper", "xjc.is_ascii_uppercase()", cargs)
                 }
                 _ if tenjin::is_path_exactly_1(path, "isdigit") => {
-                    self.recognize_ctype_is_1(ctx, "isdigit", "c.is_ascii_digit()", cargs)
+                    self.recognize_ctype_is_1(ctx, "isdigit", "xjc.is_ascii_digit()", cargs)
                 }
                 _ if tenjin::is_path_exactly_1(path, "isxdigit") => {
-                    self.recognize_ctype_is_1(ctx, "isxdigit", "c.is_ascii_hexdigit()", cargs)
+                    self.recognize_ctype_is_1(ctx, "isxdigit", "xjc.is_ascii_hexdigit()", cargs)
                 }
                 _ if tenjin::is_path_exactly_1(path, "iscntrl") => {
-                    self.recognize_ctype_is_1(ctx, "iscntrl", "c.is_ascii_control()", cargs)
+                    self.recognize_ctype_is_1(ctx, "iscntrl", "xjc.is_ascii_control()", cargs)
                 }
                 _ if tenjin::is_path_exactly_1(path, "isgraph") => {
-                    self.recognize_ctype_is_1(ctx, "isgraph", "c.is_ascii_graphic()", cargs)
+                    self.recognize_ctype_is_1(ctx, "isgraph", "xjc.is_ascii_graphic()", cargs)
                 }
                 _ if tenjin::is_path_exactly_1(path, "isspace") => self.recognize_ctype_is_1(
                     ctx,
                     "isspace",
-                    "(c.is_ascii_whitespace() || c == '\\x0b')",
+                    "(xjc.is_ascii_whitespace() || xjc == '\\x0b')",
                     cargs,
                 ),
                 _ if tenjin::is_path_exactly_1(path, "isprint") => self.recognize_ctype_is_1(
                     ctx,
                     "isprint",
-                    "(c.is_ascii_graphic() || c == ' ')",
+                    "(xjc.is_ascii_graphic() || xjc == ' ')",
                     cargs,
                 ),
                 _ if tenjin::is_path_exactly_1(path, "ispunct") => {
-                    self.recognize_ctype_is_1(ctx, "ispunct", "c.is_ascii_punctuation()", cargs)
+                    self.recognize_ctype_is_1(ctx, "ispunct", "xjc.is_ascii_punctuation()", cargs)
                 }
                 _ if tenjin::is_path_exactly_1(path, "isblank") => {
-                    self.recognize_ctype_is_1(ctx, "isblank", "(c == ' ' || c == '\\t')", cargs)
+                    self.recognize_ctype_is_1(ctx, "isblank", "(xjc == ' ' || xjc == '\\t')", cargs)
                 }
                 _ if tenjin::is_path_exactly_1(path, "iswprint") => {
                     self.recognize_preconversion_call_iswprint(ctx, func, cargs)
@@ -1755,7 +1755,7 @@ impl Translation<'_> {
                     let rust_helper_name = format!("{}_char_i", c_fn_name);
                     self.with_cur_file_item_store(|item_store| {
                         item_store.add_item_str_once(&format!(
-                            "fn {}(c: char) -> core::ffi::c_int {{ ({}) as core::ffi::c_int }}",
+                            "fn {}(xjc: char) -> core::ffi::c_int {{ ({}) as core::ffi::c_int }}",
                             rust_helper_name, rust_char_impl
                         ));
                     });
@@ -1773,7 +1773,7 @@ impl Translation<'_> {
             let rust_helper_name = format!("xj_{}", c_fn_name);
             self.with_cur_file_item_store(|item_store| {
             item_store.add_item_str_once(&format!(
-                "fn {}(c: core::ffi::c_int) -> core::ffi::c_int {{ if c == -1 {{ 0 }} else {{ let c = c as u8 as char; ({}) as core::ffi::c_int }} }}",
+                "fn {}(xjc: core::ffi::c_int) -> core::ffi::c_int {{ if xjc == -1 {{ 0 }} else {{ let xjc = xjc as u8 as char; ({}) as core::ffi::c_int }} }}",
                 rust_helper_name, rust_char_impl
             ));
         });
@@ -1840,7 +1840,7 @@ impl Translation<'_> {
                     // For now we return an integer code rather than a bool,
                     // to better match the C function signature.
                     item_store.add_item_str_once(
-                        "fn tolower_char_i(c: char) -> core::ffi::c_int { c.to_ascii_lowercase() as core::ffi::c_int }",
+                        "fn tolower_char_i(xjc: char) -> core::ffi::c_int { xjc.to_ascii_lowercase() as core::ffi::c_int }",
                     );
                 });
 
@@ -1858,7 +1858,7 @@ impl Translation<'_> {
 
             self.with_cur_file_item_store(|item_store| {
             item_store.add_item_str_once(
-                "fn xj_tolower(c: core::ffi::c_int) -> core::ffi::c_int { if c == -1 { -1 } else { (c as u8 as char).to_ascii_lowercase() as core::ffi::c_int } }",
+                "fn xj_tolower(xjc: core::ffi::c_int) -> core::ffi::c_int { if xjc == -1 { -1 } else { (xjc as u8 as char).to_ascii_lowercase() as core::ffi::c_int } }",
             );
         });
 
@@ -1890,7 +1890,7 @@ impl Translation<'_> {
                     // For now we return an integer code rather than a bool,
                     // to better match the C function signature.
                     item_store.add_item_str_once(
-                        "fn toupper_char_i(c: char) -> core::ffi::c_int { c.to_ascii_uppercase() as core::ffi::c_int }",
+                        "fn toupper_char_i(xjc: char) -> core::ffi::c_int { xjc.to_ascii_uppercase() as core::ffi::c_int }",
                     );
                 });
 
@@ -1908,7 +1908,7 @@ impl Translation<'_> {
 
             self.with_cur_file_item_store(|item_store| {
             item_store.add_item_str_once(
-                "fn xj_toupper(c: core::ffi::c_int) -> core::ffi::c_int { if c == -1 { -1 } else { (c as u8 as char).to_ascii_uppercase() as core::ffi::c_int } }",
+                "fn xj_toupper(xjc: core::ffi::c_int) -> core::ffi::c_int { if xjc == -1 { -1 } else { (xjc as u8 as char).to_ascii_uppercase() as core::ffi::c_int } }",
             );
         });
 
@@ -1938,7 +1938,7 @@ impl Translation<'_> {
                 {
                     self.with_cur_file_item_store(|item_store| {
                     item_store.add_item_str_once(
-                        "fn toascii_char_i(c: char) -> core::ffi::c_int { char::from_u32((c as u32) & 0x7f).unwrap() as core::ffi::c_int }",
+                        "fn toascii_char_i(xjc: char) -> core::ffi::c_int { char::from_u32((xjc as u32) & 0x7f).unwrap() as core::ffi::c_int }",
                     );
                 });
 
@@ -1956,7 +1956,7 @@ impl Translation<'_> {
 
             self.with_cur_file_item_store(|item_store| {
                 item_store.add_item_str_once(
-                    "fn xj_toascii(c: core::ffi::c_int) -> core::ffi::c_int { c & 0x7f }",
+                    "fn xj_toascii(xjc: core::ffi::c_int) -> core::ffi::c_int { xjc & 0x7f }",
                 );
             });
 
@@ -1978,7 +1978,7 @@ impl Translation<'_> {
         if cargs.len() == 1 {
             self.with_cur_file_item_store(|item_store| {
                 item_store.add_item_str_once(
-                "fn xj_isinf(f: f64) -> core::ffi::c_int { if f.is_infinite() { 1 } else { 0 } }",
+                "fn xj_isinf(xjf: f64) -> core::ffi::c_int { if xjf.is_infinite() { 1 } else { 0 } }",
             );
             });
             let e1 = self.convert_expr(ctx.used(), cargs[0], None)?;
@@ -1998,7 +1998,7 @@ impl Translation<'_> {
         if cargs.len() == 1 {
             self.with_cur_file_item_store(|item_store| {
                 item_store.add_item_str_once(
-                    "fn xj_isnan(f: f64) -> core::ffi::c_int { if f.is_nan() { 1 } else { 0 } }",
+                    "fn xj_isnan(xjf: f64) -> core::ffi::c_int { if xjf.is_nan() { 1 } else { 0 } }",
                 );
             });
             let e1 = self.convert_expr(ctx.used(), cargs[0], None)?;
