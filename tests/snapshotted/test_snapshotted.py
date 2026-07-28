@@ -151,6 +151,19 @@ def test_ffi_multifile_guidance(root: Path, test_dir: Path, tmp_resultsdir: Path
     run_snapshotted(root, src_dir, cmd_args, tmp_resultsdir)
 
 
+def test_knr_elimination(root: Path, test_dir: Path, tmp_resultsdir: Path):
+    src_dir = test_dir / "knr_elimination"
+    cmd_args = [
+        (root / "cli" / "10j").as_posix(),
+        "translate",
+        "--codebase",
+        (src_dir / "knr_elimination.c").as_posix(),
+        "--resultsdir",
+        tmp_resultsdir.as_posix(),
+    ]
+    run_snapshotted(root, src_dir, cmd_args, tmp_resultsdir)
+
+
 def test_pointer_param_reseat(root: Path, test_dir: Path, tmp_resultsdir: Path):
     src_dir = test_dir / "pointer_param_reseat"
     cmd_args = [

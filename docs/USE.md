@@ -192,6 +192,7 @@ Some notable passes:
 
 - [convert union bitcasts](passes/convert_union_bitcasts.md)
 - [errno localization](passes/errno_localization.md)
+- [K&R syntax elimination](passes/knr_elimination.md)
 - [mutable global localization](passes/mutable_global_localization.md)
 - [pointer arithmetic reduction](passes/pointer_arithmetic_reduction.md)
 
@@ -463,6 +464,11 @@ limitations to its support:
 
 * If you see `gcc: error: unrecognized command-line option ‘-fcoverage-mapping’`
   the project you're trying to translate is using GCC but we require Clang.
+
+* If you see `failed to load manifest for dependency 'ld_linux_x86_64_2'` the issue is probably that the
+project's build system is using `gcc` as the linker
+driver. For classic Make builds, try passing
+`--buildcmd 'make LD=cc'`.
 
 * If you see something like
 ```
