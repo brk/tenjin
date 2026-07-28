@@ -192,6 +192,7 @@ Some notable passes:
 
 - [convert union bitcasts](passes/convert_union_bitcasts.md)
 - [errno localization](passes/errno_localization.md)
+- [K&R syntax elimination](passes/knr_elimination.md)
 - [mutable global localization](passes/mutable_global_localization.md)
 - [pointer arithmetic reduction](passes/pointer_arithmetic_reduction.md)
 
