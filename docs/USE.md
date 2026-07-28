@@ -465,6 +465,11 @@ limitations to its support:
 * If you see `gcc: error: unrecognized command-line option ‘-fcoverage-mapping’`
   the project you're trying to translate is using GCC but we require Clang.
 
+* If you see `failed to load manifest for dependency 'ld_linux_x86_64_2'` the issue is probably that the
+project's build system is using `gcc` as the linker
+driver. For classic Make builds, try passing
+`--buildcmd 'make LD=cc'`.
+
 * If you see something like
 ```
 AssertionError: Link command missing target output: InterceptedCommand(entry={'type': 'ar', 'directory': ..., 'arguments': ['.../tenjin/_local/xj-llvm/bin/ar', 'cru', ...

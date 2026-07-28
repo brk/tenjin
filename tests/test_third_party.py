@@ -64,6 +64,55 @@ def test_nhjschulz_cfsm(tenjin_fixtures: TenjinFixtures):
     annotate_pytest_request_with_translation_notes(tenjin_fixtures)
 
 
+@pytest.mark.slow  # expected runtime: 180 s
+def test_cmatsuoka_figlet(tenjin_fixtures: TenjinFixtures):
+    tmp_codebase, tmp_resultsdir = tenjin_fixtures.tmp_codebase, tenjin_fixtures.tmp_resultsdir
+    codebase = cached_git_clone_at_commit(
+        "https://github.com/cmatsuoka/figlet.git", "202a0a8110650a943f1125f536b3bb455cf72ee1"
+    )
+    translation_preparation.copy_codebase(codebase, tmp_codebase)
+    translation.do_translate(
+        translation_types.TranslationFlags.simple(
+            root=tenjin_fixtures.root,
+            codebase=tmp_codebase,
+            resultsdir=tmp_resultsdir,
+            cratename="cmatsuoka_figlet",
+            buildcmd="make CC=cc LD=cc figlet",
+        ),
+        guidance_path_or_literal="{}",
+    )
+    run_cargo_on_final(tmp_resultsdir / "final", ["build"])
+    rs_prog_output = run_cargo_on_final(
+        tmp_resultsdir / "final",
+        [
+            "run",
+            "--",
+            "-f",
+            (codebase / "fonts" / "banner.flf").as_posix(),
+            "-C",
+            (codebase / "fonts" / "upper.flc").as_posix(),
+            "y0",
+        ],
+        capture_output=True,
+    )
+    # The test output includes absolute paths, so we just check that the last few lines look right.
+    stdout_b = rs_prog_output.stdout
+    assert stdout_b.split(b"\n") == [
+        b"#     #   ###   ",
+        b" #   #   #   #  ",
+        b"  # #   #     # ",
+        b"   #    #     # ",
+        b"   #    #     # ",
+        b"   #     #   #  ",
+        b"   #      ###   ",
+        b"                ",
+        b"",
+    ], f"Got: {rs_prog_output.stdout!r}"
+
+    clean_up_resultsdir(tmp_resultsdir)
+    annotate_pytest_request_with_translation_notes(tenjin_fixtures)
+
+
 @pytest.mark.slow  # expected runtime: 20 s
 def test_marc_q__libbmp(tenjin_fixtures: TenjinFixtures):
     tmp_codebase, tmp_resultsdir = tenjin_fixtures.tmp_codebase, tenjin_fixtures.tmp_resultsdir
