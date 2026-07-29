@@ -1004,7 +1004,7 @@ impl Translation<'_> {
         cargs: &[CExprId],
         ctx: ExprContext,
     ) -> RecognizedCallForm {
-        if tenjin::expr_is_ident(func, "puts") && !args.is_empty() {
+        if tenjin::expr_is_ident(func, "puts") && ctx.is_unused() && !args.is_empty() {
             return RecognizedCallForm::Puts;
         }
 
@@ -1053,6 +1053,7 @@ impl Translation<'_> {
         }
 
         if tenjin::expr_is_ident(func, "fprintf")
+            && ctx.is_unused()
             && args.len() >= 2
             && tenjin::expr_is_lit_str_or_bytes(tenjin::expr_strip_casts(&args[1]))
         {
