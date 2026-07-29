@@ -374,7 +374,22 @@ public:
   }
 
   void mark_modified_fn_ptr_decl(const DeclaratorDecl *DD) {
-    if (auto *VD = dyn_cast<VarDecl>(DD)) {
+    if (auto *PVD = dyn_cast<ParmVarDecl>(DD)) {
+      auto *FD = dyn_cast<FunctionDecl>(PVD->getDeclContext());
+      if (!FD) {
+        add_fn_ptr_type_loc(PVD);
+      } else {
+        unsigned param_index = PVD->getFunctionScopeIndex();
+        for (const FunctionDecl *Redecl : FD->redecls()) {
+          if (param_index < Redecl->getNumParams()) {
+            const ParmVarDecl *RedeclParam = Redecl->getParamDecl(param_index);
+            if (RedeclParam->getType()->isFunctionPointerType()) {
+              add_fn_ptr_type_loc(RedeclParam);
+            }
+          }
+        }
+      }
+    } else if (auto *VD = dyn_cast<VarDecl>(DD)) {
       for (const VarDecl *Redecl : VD->redecls()) {
         if (Redecl->getType()->isFunctionPointerType()) {
           add_fn_ptr_type_loc(Redecl);
