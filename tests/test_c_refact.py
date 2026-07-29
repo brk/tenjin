@@ -280,6 +280,49 @@ def test_localize_mutable_globals_phase1_clones_typedef_backed_field_types(root,
         assert "struct Holder { callback_t_xjtp cb; };" in rewritten
 
 
+def test_localize_mutable_globals_phase1_clones_typedef_in_function_redeclarations(
+    root, tmp_codebase
+):
+    current_codebase = tmp_codebase
+    prev_codebase = tmp_codebase.parent / "prev_codebase"
+    current_codebase.mkdir()
+    prev_codebase.mkdir()
+
+    source = (
+        "typedef int (*callback_t)(int);\n"
+        "int apply(callback_t cb, int x);\n"
+        "int foo(int x) { return x + 1; }\n"
+        "int apply(callback_t cb, int x) { return cb(x); }\n"
+        "int use(void) { return apply(foo, 1); }\n"
+    )
+    current_file = current_codebase / "sample.c"
+    prev_file = prev_codebase / "sample.c"
+    current_file.write_text(source, encoding="utf-8")
+    prev_file.write_text(source, encoding="utf-8")
+    write_compile_commands_for_sources(current_codebase, [current_file])
+
+    c_refact.localize_mutable_globals_phase1(
+        compdb=compilation_database.CompileCommands.from_json_file(
+            current_codebase / "compile_commands.json"
+        ),
+        j={
+            "mutated_globals": [],
+            "escaped_globals": [],
+            "call_graph_components": [],
+            "unique_filenames": {},
+            "mutable_global_tissue": {"tissue": ["foo"]},
+            "global_initializer_references": {},
+        },
+        current_codebase=current_codebase,
+        prev=prev_codebase,
+        nonmain_tissue_functions={"foo"},
+    )
+
+    rewritten = current_file.read_text(encoding="utf-8")
+    assert "int apply(callback_t_xjtp cb, int x);" in rewritten
+    assert "int apply(callback_t_xjtp cb, int x) {" in rewritten
+
+
 def test_findfnptrdecls_tracks_call_args_to_fnptr_params(root, tmp_codebase):
     tmp_codebase.mkdir()
     callbacks_c = tmp_codebase / "callbacks.c"
