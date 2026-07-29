@@ -515,6 +515,38 @@ def test_findfnptrdecls_inserts_wrapper_after_forward_declaration(root, tmp_code
     assert wrappers[0]["decl_post_offset"] == source.index(";") + 1
 
 
+def test_findfnptrdecls_deduplicates_wrapper_across_function_redeclarations(root, tmp_codebase):
+    tmp_codebase.mkdir()
+    callbacks_c = tmp_codebase / "callbacks.c"
+
+    source = (
+        "int bar(int x);\n"
+        "int foo(int x) { return x + 1; }\n"
+        "int apply(int (*cb)(int), int x) { return cb(x); }\n"
+        "int use_before(void) { return apply(foo, 1) + apply(bar, 2); }\n"
+        "int bar(int x) { return x + 2; }\n"
+        "int use_after(void) { return apply(bar, 3); }\n"
+    )
+    callbacks_c.write_text(source, encoding="utf-8")
+    write_compile_commands_for_sources(tmp_codebase, [callbacks_c])
+
+    output = c_refact.run_xj_prepare_findfnptrdecls(
+        tmp_codebase,
+        nonmain_tissue_functions={"foo"},
+        all_function_names={"apply", "bar", "foo", "use_after", "use_before"},
+    )
+
+    wrappers = output["unmod_fn_occ_wrappers"].get(callbacks_c.as_posix(), [])
+    assert len(wrappers) == 1, output
+    wrapper = wrappers[0]
+    assert wrapper["name"] == "bar"
+    assert wrapper["decl_post_offset"] == source.index(";") + 1
+    assert wrapper["occ_offsets"] == [
+        source.index("apply(bar, 2)") + len("apply("),
+        source.index("apply(bar, 3)") + len("apply("),
+    ]
+
+
 def test_findfnptrdecls_tracks_ampersand_call_args_to_fnptr_params(root, tmp_codebase):
     tmp_codebase.mkdir()
     callbacks_c = tmp_codebase / "callbacks.c"

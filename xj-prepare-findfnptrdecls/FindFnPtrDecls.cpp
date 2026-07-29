@@ -913,10 +913,15 @@ public:
 
       // The DeclaratorDecl of p.second is the location the fn occurrence is flowing to,
       // but we need the decl of the function itself.
-      const FunctionDecl* fdd = dyn_cast<FunctionDecl>(p.first->getDecl());
-      if (!fdd) {
+      const FunctionDecl *ReferencedFD =
+          dyn_cast<FunctionDecl>(p.first->getDecl());
+      if (!ReferencedFD) {
         return "<unmod fn decl was not a function?!>";
       }
+      // Occurrences on opposite sides of a redeclaration may refer to
+      // different FunctionDecl nodes. Always place and describe the wrapper
+      // using the first declaration so all records combine into one wrapper.
+      const FunctionDecl *fdd = ReferencedFD->getCanonicalDecl();
       bool declaration_has_body = fdd->doesThisDeclarationHaveABody();
       auto final_tok = declaration_has_body ? tok::r_brace : tok::semi;
       SourceLocation post_loc =
