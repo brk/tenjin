@@ -86,6 +86,11 @@ struct FnPtrDeclFlowEdge {
   const DeclaratorDecl *target;
 };
 
+struct FnPtrExplicitCastUse {
+  const ExplicitCastExpr *cast;
+  const DeclaratorDecl *target;
+};
+
 struct TypedefBackedFnPtrUseInfo {
   std::string written_typedef_name;
   SourceLocation written_name_loc;
@@ -123,7 +128,9 @@ public:
 
     if (auto *arg_expr = Result.Nodes.getNodeAs<Expr>("call_arg_expr")) {
       if (arg_expr->getBeginLoc().isValid()) {
-        handle_call_arg_to_fn_ptr_param(arg_expr, Result);
+        auto *call_expr =
+            Result.Nodes.getNodeAs<CallExpr>("call_with_fn_ptr_arg");
+        handle_call_arg_to_fn_ptr_param(arg_expr, call_expr, Result);
         return;
       }
     }
@@ -220,6 +227,7 @@ public:
     if (!lhs_dd || !lhs_dd->getType()->isFunctionPointerType()) {
       return;
     }
+    add_fn_ptr_explicit_cast_use(BO->getRHS(), lhs_dd);
 
     auto *rhs = try_get_fn_value_declref(BO->getRHS());
     if (rhs && rhs->getBeginLoc().isValid()) {
@@ -299,6 +307,8 @@ public:
         if (auto TSI = TargetField->getTypeSourceInfo()) {
           FunctionTypeLoc FTL;
           if (try_find_fn_ptr_TL(TSI->getTypeLoc(), FTL)) {
+            add_fn_ptr_explicit_cast_use(ILE->getInit(field_nums[i].idx),
+                                         TargetField);
             if (field_nums[i].source_decl) {
               add_fn_ptr_decl_flow(field_nums[i].source_decl, TargetField);
             } else if (field_nums[i].dre_fn_was_mod) {
@@ -324,13 +334,27 @@ public:
   // parameter. The parameter declaration is the targeted decl, mirroring how
   // member/declref assignment LHSes are treated.
   void handle_call_arg_to_fn_ptr_param(const Expr *arg_expr,
+                                       const CallExpr *call_expr,
                                        const MatchFinder::MatchResult &Result) {
     auto *param = Result.Nodes.getNodeAs<ParmVarDecl>("call_param");
     if (!param || !param->getType()->isFunctionPointerType()) {
       return;
     }
 
-    auto *arg_dre = try_get_fn_value_declref(arg_expr);
+    const Expr *matched_arg_expr = arg_expr;
+
+    // forEachArgumentWithParam matches through parentheses and casts. Recover
+    // the argument expression as written so type annotations on explicit
+    // casts remain available.
+    if (call_expr) {
+      unsigned param_index = param->getFunctionScopeIndex();
+      if (param_index < call_expr->getNumArgs()) {
+        arg_expr = call_expr->getArg(param_index);
+      }
+    }
+    add_fn_ptr_explicit_cast_use(arg_expr, param);
+
+    auto *arg_dre = try_get_fn_value_declref(matched_arg_expr);
     if (arg_dre) {
       std::string arg_name = arg_dre->getNameInfo().getName().getAsString();
       bool was_mod_fn = is_modified_fn_name(arg_name);
@@ -346,7 +370,7 @@ public:
     }
 
     if (const DeclaratorDecl *source =
-            try_get_fn_ptr_value_decl(arg_expr)) {
+            try_get_fn_ptr_value_decl(matched_arg_expr)) {
       add_fn_ptr_decl_flow(source, param);
     }
   }
@@ -356,6 +380,7 @@ public:
     if (!VD->getType()->isFunctionPointerType()) {
       return;
     }
+    add_fn_ptr_explicit_cast_use(VD->getInit(), VD);
 
     auto *rhs = try_get_fn_value_declref(VD->getInit());
     if (rhs) {
@@ -394,6 +419,10 @@ public:
           continue;
         }
       }
+      if (const auto *Cast = dyn_cast<ExplicitCastExpr>(E)) {
+        E = Cast->getSubExpr();
+        continue;
+      }
       break;
     }
     return nullptr;
@@ -420,6 +449,10 @@ public:
           continue;
         }
       }
+      if (const auto *Cast = dyn_cast<ExplicitCastExpr>(E)) {
+        E = Cast->getSubExpr();
+        continue;
+      }
       break;
     }
     return nullptr;
@@ -433,9 +466,42 @@ public:
           FnPtrDeclFlowEdge{.source = source, .target = target});
     }
   }
-  
-  void add_fn_ptr_type_loc(const DeclaratorDecl *DD) {
-    TypeSourceInfo *TSI = DD->getTypeSourceInfo();
+
+  const ExplicitCastExpr *try_get_fn_ptr_explicit_cast(const Expr *E) const {
+    while (E) {
+      E = E->IgnoreParens();
+      if (const auto *Cast = dyn_cast<ExplicitCastExpr>(E)) {
+        if (Cast->getType()->isFunctionPointerType() &&
+            Cast->getTypeInfoAsWritten()) {
+          return Cast;
+        }
+        E = Cast->getSubExpr();
+        continue;
+      }
+      if (const auto *Cast = dyn_cast<ImplicitCastExpr>(E)) {
+        E = Cast->getSubExpr();
+        continue;
+      }
+      if (const auto *UO = dyn_cast<UnaryOperator>(E)) {
+        if (UO->getOpcode() == UO_AddrOf) {
+          E = UO->getSubExpr();
+          continue;
+        }
+      }
+      break;
+    }
+    return nullptr;
+  }
+
+  void add_fn_ptr_explicit_cast_use(const Expr *E,
+                                    const DeclaratorDecl *target) {
+    if (const ExplicitCastExpr *Cast = try_get_fn_ptr_explicit_cast(E)) {
+      FnPtrExplicitCastUses.push_back(
+          FnPtrExplicitCastUse{.cast = Cast, .target = target});
+    }
+  }
+
+  void add_fn_ptr_type_loc(TypeSourceInfo *TSI) {
     if (!TSI) {
       return;
     }
@@ -454,6 +520,10 @@ public:
     }
 
     FnPtrTypeOpenParens[FTL.getLParenLoc()] = FTL.getRParenLoc();
+  }
+
+  void add_fn_ptr_type_loc(const DeclaratorDecl *DD) {
+    add_fn_ptr_type_loc(DD->getTypeSourceInfo());
   }
 
   void mark_modified_fn_ptr_decl(const DeclaratorDecl *DD) {
@@ -512,6 +582,14 @@ public:
         }
       }
     } while (changed);
+  }
+
+  void patch_modified_fn_ptr_explicit_cast_uses() {
+    for (const FnPtrExplicitCastUse &Use : FnPtrExplicitCastUses) {
+      if (is_modified_fn_ptr_decl(Use.target)) {
+        add_fn_ptr_type_loc(Use.cast->getTypeInfoAsWritten());
+      }
+    }
   }
 
   const DeclaratorDecl *canonicalize_decl_for_matching(const DeclaratorDecl *DD) const {
@@ -639,6 +717,7 @@ public:
     FnPtrTypeOpenParens.clear();
     ModifyingDeclIDs.clear();
     FnPtrDeclFlowEdges.clear();
+    FnPtrExplicitCastUses.clear();
     UnmodFnOccurrences.clear();
     FnPtrTypeOpenParens_PotentiallyMod.clear();
     // The byFile maps are not cleared; they accumulate across TUs.
@@ -657,6 +736,7 @@ public:
     }
 
     propagate_modified_fn_ptr_decls();
+    patch_modified_fn_ptr_explicit_cast_uses();
 
     collectMappedRangesByFile(byFile_fnptr_args, FnPtrTypeOpenParens);
     collectMappedRangesByFile(byFile_ho_fnptr_args, FnPtrTypeOpenParens_PotentiallyMod);
@@ -982,6 +1062,9 @@ private:
   SmallVector<FnPtrDeclFlowEdge>
       FnPtrDeclFlowEdges;
 
+  SmallVector<FnPtrExplicitCastUse>
+      FnPtrExplicitCastUses;
+
   std::vector<std::pair<const DeclRefExpr*, const DeclaratorDecl*>>
       UnmodFnOccurrences;
 
@@ -1153,7 +1236,8 @@ int main(int argc, const char **argv) {
                                           functionType()
                                       )
                                   ))))
-              .bind("call_param"))),
+              .bind("call_param")))
+          .bind("call_with_fn_ptr_arg"),
       &Callback
   );
 
