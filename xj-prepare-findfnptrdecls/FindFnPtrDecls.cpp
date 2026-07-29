@@ -702,19 +702,20 @@ public:
 
       // The DeclaratorDecl of p.second is the location the fn occurrence is flowing to,
       // but we need the decl of the function itself.
-      const DeclaratorDecl* fdd = dyn_cast<DeclaratorDecl>(p.first->getDecl());
+      const FunctionDecl* fdd = dyn_cast<FunctionDecl>(p.first->getDecl());
       if (!fdd) {
-        return "<unmod fn decl was not a declarator?!>";
+        return "<unmod fn decl was not a function?!>";
       }
-      auto final_tok = fdd->hasBody() ? tok::r_brace : tok::semi ;
+      bool declaration_has_body = fdd->doesThisDeclarationHaveABody();
+      auto final_tok = declaration_has_body ? tok::r_brace : tok::semi;
       SourceLocation post_loc =
           Lexer::findLocationAfterToken(
                         fdd->getEndLoc(),
                         final_tok,
                         *SM,
                         Ctx->getLangOpts(),
-                        /*SkipTrailingWhitespaceAndNewline=*/ true);
-      if (fdd->hasBody()) {
+                        /*SkipTrailingWhitespaceAndNewline=*/ false);
+      if (declaration_has_body) {
           llvm::errs() << "For body-having function decl of " << fdd->getNameAsString() << "\n";
           llvm::errs() << "post_loc for body after rbrace was " << post_loc.printToString(*SM) << "\n";
           llvm::errs() << "end_loc for body               was " << fdd->getEndLoc().printToString(*SM) << "\n";
