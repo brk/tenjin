@@ -75,9 +75,15 @@ bool is_unmodified_fn_name(const std::string &s) {
 //       typedef T, we may need to change the types independently.
 
 struct InitListOccurrence {
-   unsigned idx;
-   const DeclRefExpr* dre;
-   bool dre_fn_was_mod; 
+  unsigned idx;
+  const DeclRefExpr *dre;
+  const DeclaratorDecl *source_decl;
+  bool dre_fn_was_mod;
+};
+
+struct FnPtrDeclFlowEdge {
+  const DeclaratorDecl *source;
+  const DeclaratorDecl *target;
 };
 
 struct TypedefBackedFnPtrUseInfo {
@@ -205,31 +211,36 @@ public:
       return;
     }
 
+    // MemberExpr in Clang has ValueDecl for the member, but for C it will
+    // always be a FieldDecl (which is a DeclaratorDecl).
+    auto *lhs_dd = Result.Nodes.getNodeAs<DeclaratorDecl>("lhs_value_decl");
+    if (!lhs_dd) {
+      lhs_dd = Result.Nodes.getNodeAs<DeclaratorDecl>("lhs_dcrr_decl");
+    }
+    if (!lhs_dd || !lhs_dd->getType()->isFunctionPointerType()) {
+      return;
+    }
+
     auto *rhs = try_get_fn_value_declref(BO->getRHS());
     if (rhs && rhs->getBeginLoc().isValid()) {
       std::string rhs_name = rhs->getNameInfo().getName().getAsString();
       bool was_mod_fn = is_modified_fn_name(rhs_name);
       bool was_unmod_fn = is_unmodified_fn_name(rhs_name);
-      if (!was_mod_fn && !was_unmod_fn) {
-          return;
+      if (was_mod_fn) {
+        mark_modified_fn_ptr_decl(lhs_dd);
+        return;
       }
+      if (was_unmod_fn) {
+        // found a non-modified function occurrence; record its location
+        // and the targeted declaration, so we can correlate in phase 2.
+        UnmodFnOccurrences.push_back(std::make_pair(rhs, lhs_dd));
+        return;
+      }
+    }
 
-      // MemberExpr in Clang has ValueDecl for the member, but for C it will
-      // always be a FieldDecl (which is a DeclaratorDecl).
-      auto *lhs_dd = Result.Nodes.getNodeAs<DeclaratorDecl>("lhs_value_decl");
-      if (!lhs_dd) {
-          lhs_dd = Result.Nodes.getNodeAs<DeclaratorDecl>("lhs_dcrr_decl");
-      }
-      
-      if (lhs_dd && lhs_dd->getType()->isFunctionPointerType()) {
-          if (was_mod_fn) {
-              mark_modified_fn_ptr_decl(lhs_dd);
-          } else {
-              // found a non-modified function occurrence; record its location
-              // and the targeted declaration, so we can correlate in phase 2.
-              UnmodFnOccurrences.push_back(std::make_pair(rhs, lhs_dd));
-          }
-      }
+    if (const DeclaratorDecl *source =
+            try_get_fn_ptr_value_decl(BO->getRHS())) {
+      add_fn_ptr_decl_flow(source, lhs_dd);
     }
   }
 
@@ -241,10 +252,36 @@ public:
       if (const DeclRefExpr *dre = try_get_fn_value_declref(ILE->getInit(i))) {
         std::string name = dre->getDecl()->getNameAsString();
         if (is_modified_fn_name(name)) {
-          field_nums.push_back(InitListOccurrence { .idx = i, .dre = dre, .dre_fn_was_mod = true });
+          field_nums.push_back(InitListOccurrence{
+              .idx = i,
+              .dre = dre,
+              .source_decl = nullptr,
+              .dre_fn_was_mod = true,
+          });
         } else if (is_unmodified_fn_name(name)) {
-          field_nums.push_back(InitListOccurrence { .idx = i, .dre = dre, .dre_fn_was_mod = false });
-        } // else not a fn, ignore it
+          field_nums.push_back(InitListOccurrence{
+              .idx = i,
+              .dre = dre,
+              .source_decl = nullptr,
+              .dre_fn_was_mod = false,
+          });
+        } else if (const DeclaratorDecl *source =
+                       try_get_fn_ptr_value_decl(ILE->getInit(i))) {
+          field_nums.push_back(InitListOccurrence{
+              .idx = i,
+              .dre = nullptr,
+              .source_decl = source,
+              .dre_fn_was_mod = false,
+          });
+        }
+      } else if (const DeclaratorDecl *source =
+                     try_get_fn_ptr_value_decl(ILE->getInit(i))) {
+        field_nums.push_back(InitListOccurrence{
+            .idx = i,
+            .dre = nullptr,
+            .source_decl = source,
+            .dre_fn_was_mod = false,
+        });
       }
     }
 
@@ -262,13 +299,16 @@ public:
         if (auto TSI = TargetField->getTypeSourceInfo()) {
           FunctionTypeLoc FTL;
           if (try_find_fn_ptr_TL(TSI->getTypeLoc(), FTL)) {
-              if (field_nums[i].dre_fn_was_mod) {
-                mark_modified_fn_ptr_decl(TargetField);
-              } else {
-                // found a non-modified function occurrence; record its location
-                // and the targeted declaration, so we can correlate in phase 2.
-                UnmodFnOccurrences.push_back(std::make_pair(field_nums[i].dre, TargetField));
-              }
+            if (field_nums[i].source_decl) {
+              add_fn_ptr_decl_flow(field_nums[i].source_decl, TargetField);
+            } else if (field_nums[i].dre_fn_was_mod) {
+              mark_modified_fn_ptr_decl(TargetField);
+            } else {
+              // found a non-modified function occurrence; record its location
+              // and the targeted declaration, so we can correlate in phase 2.
+              UnmodFnOccurrences.push_back(
+                  std::make_pair(field_nums[i].dre, TargetField));
+            }
           } else {
             llvm::errs() << "unable to find fn ptr lparen loc for InitListExpr"
                          << "\n";
@@ -285,48 +325,56 @@ public:
   // member/declref assignment LHSes are treated.
   void handle_call_arg_to_fn_ptr_param(const Expr *arg_expr,
                                        const MatchFinder::MatchResult &Result) {
-    auto *arg_dre = try_get_fn_value_declref(arg_expr);
-    if (!arg_dre) {
-      return;
-    }
-
-    std::string arg_name = arg_dre->getNameInfo().getName().getAsString();
-    bool was_mod_fn = is_modified_fn_name(arg_name);
-    bool was_unmod_fn = is_unmodified_fn_name(arg_name);
-    if (!was_mod_fn && !was_unmod_fn) {
-      return;
-    }
-
     auto *param = Result.Nodes.getNodeAs<ParmVarDecl>("call_param");
     if (!param || !param->getType()->isFunctionPointerType()) {
       return;
     }
 
-    if (was_mod_fn) {
-      mark_modified_fn_ptr_decl(param);
-    } else {
-      UnmodFnOccurrences.push_back(std::make_pair(arg_dre, param));
+    auto *arg_dre = try_get_fn_value_declref(arg_expr);
+    if (arg_dre) {
+      std::string arg_name = arg_dre->getNameInfo().getName().getAsString();
+      bool was_mod_fn = is_modified_fn_name(arg_name);
+      bool was_unmod_fn = is_unmodified_fn_name(arg_name);
+      if (was_mod_fn) {
+        mark_modified_fn_ptr_decl(param);
+        return;
+      }
+      if (was_unmod_fn) {
+        UnmodFnOccurrences.push_back(std::make_pair(arg_dre, param));
+        return;
+      }
+    }
+
+    if (const DeclaratorDecl *source =
+            try_get_fn_ptr_value_decl(arg_expr)) {
+      add_fn_ptr_decl_flow(source, param);
     }
   }
 
   void handle_fn_ptr_var_init(const VarDecl *VD,
                               const MatchFinder::MatchResult &Result) {
+    if (!VD->getType()->isFunctionPointerType()) {
+      return;
+    }
+
     auto *rhs = try_get_fn_value_declref(VD->getInit());
-    if (!rhs || !VD->getType()->isFunctionPointerType()) {
-      return;
+    if (rhs) {
+      std::string rhs_name = rhs->getNameInfo().getName().getAsString();
+      bool was_mod_fn = is_modified_fn_name(rhs_name);
+      bool was_unmod_fn = is_unmodified_fn_name(rhs_name);
+      if (was_mod_fn) {
+        mark_modified_fn_ptr_decl(VD);
+        return;
+      }
+      if (was_unmod_fn) {
+        UnmodFnOccurrences.push_back(std::make_pair(rhs, VD));
+        return;
+      }
     }
 
-    std::string rhs_name = rhs->getNameInfo().getName().getAsString();
-    bool was_mod_fn = is_modified_fn_name(rhs_name);
-    bool was_unmod_fn = is_unmodified_fn_name(rhs_name);
-    if (!was_mod_fn && !was_unmod_fn) {
-      return;
-    }
-
-    if (was_mod_fn) {
-      mark_modified_fn_ptr_decl(VD);
-    } else {
-      UnmodFnOccurrences.push_back(std::make_pair(rhs, VD));
+    if (const DeclaratorDecl *source =
+            try_get_fn_ptr_value_decl(VD->getInit())) {
+      add_fn_ptr_decl_flow(source, VD);
     }
   }
 
@@ -349,6 +397,41 @@ public:
       break;
     }
     return nullptr;
+  }
+
+  const DeclaratorDecl *try_get_fn_ptr_value_decl(const Expr *E) const {
+    while (E) {
+      E = E->IgnoreParenImpCasts();
+      if (const auto *DRE = dyn_cast<DeclRefExpr>(E)) {
+        if (const auto *DD = dyn_cast<DeclaratorDecl>(DRE->getDecl())) {
+          return DD->getType()->isFunctionPointerType() ? DD : nullptr;
+        }
+        return nullptr;
+      }
+      if (const auto *ME = dyn_cast<MemberExpr>(E)) {
+        if (const auto *DD = dyn_cast<DeclaratorDecl>(ME->getMemberDecl())) {
+          return DD->getType()->isFunctionPointerType() ? DD : nullptr;
+        }
+        return nullptr;
+      }
+      if (const auto *UO = dyn_cast<UnaryOperator>(E)) {
+        if (UO->getOpcode() == UO_AddrOf) {
+          E = UO->getSubExpr();
+          continue;
+        }
+      }
+      break;
+    }
+    return nullptr;
+  }
+
+  void add_fn_ptr_decl_flow(const DeclaratorDecl *source,
+                            const DeclaratorDecl *target) {
+    if (source && target && source->getType()->isFunctionPointerType() &&
+        target->getType()->isFunctionPointerType()) {
+      FnPtrDeclFlowEdges.push_back(
+          FnPtrDeclFlowEdge{.source = source, .target = target});
+    }
   }
   
   void add_fn_ptr_type_loc(const DeclaratorDecl *DD) {
@@ -374,10 +457,15 @@ public:
   }
 
   void mark_modified_fn_ptr_decl(const DeclaratorDecl *DD) {
+    if (is_modified_fn_ptr_decl(DD)) {
+      return;
+    }
+
     if (auto *PVD = dyn_cast<ParmVarDecl>(DD)) {
       auto *FD = dyn_cast<FunctionDecl>(PVD->getDeclContext());
       if (!FD) {
         add_fn_ptr_type_loc(PVD);
+        ModifyingDeclIDs.insert(canonicalize_decl_for_matching(PVD));
       } else {
         unsigned param_index = PVD->getFunctionScopeIndex();
         for (const FunctionDecl *Redecl : FD->redecls()) {
@@ -385,6 +473,8 @@ public:
             const ParmVarDecl *RedeclParam = Redecl->getParamDecl(param_index);
             if (RedeclParam->getType()->isFunctionPointerType()) {
               add_fn_ptr_type_loc(RedeclParam);
+              ModifyingDeclIDs.insert(
+                  canonicalize_decl_for_matching(RedeclParam));
             }
           }
         }
@@ -393,12 +483,35 @@ public:
       for (const VarDecl *Redecl : VD->redecls()) {
         if (Redecl->getType()->isFunctionPointerType()) {
           add_fn_ptr_type_loc(Redecl);
+          ModifyingDeclIDs.insert(canonicalize_decl_for_matching(Redecl));
         }
       }
     } else {
       add_fn_ptr_type_loc(DD);
+      ModifyingDeclIDs.insert(canonicalize_decl_for_matching(DD));
     }
-    ModifyingDeclIDs.insert(canonicalize_decl_for_matching(DD));
+  }
+
+  bool is_modified_fn_ptr_decl(const DeclaratorDecl *DD) const {
+    return ModifyingDeclIDs.count(canonicalize_decl_for_matching(DD)) > 0;
+  }
+
+  void propagate_modified_fn_ptr_decls() {
+    bool changed;
+    do {
+      changed = false;
+      for (const FnPtrDeclFlowEdge &Edge : FnPtrDeclFlowEdges) {
+        if (is_modified_fn_ptr_decl(Edge.source) &&
+            !is_modified_fn_ptr_decl(Edge.target)) {
+          mark_modified_fn_ptr_decl(Edge.target);
+          changed = true;
+        } else if (is_modified_fn_ptr_decl(Edge.target) &&
+                   !is_modified_fn_ptr_decl(Edge.source)) {
+          mark_modified_fn_ptr_decl(Edge.source);
+          changed = true;
+        }
+      }
+    } while (changed);
   }
 
   const DeclaratorDecl *canonicalize_decl_for_matching(const DeclaratorDecl *DD) const {
@@ -525,6 +638,7 @@ public:
     Ctx = nullptr;
     FnPtrTypeOpenParens.clear();
     ModifyingDeclIDs.clear();
+    FnPtrDeclFlowEdges.clear();
     UnmodFnOccurrences.clear();
     FnPtrTypeOpenParens_PotentiallyMod.clear();
     // The byFile maps are not cleared; they accumulate across TUs.
@@ -541,6 +655,8 @@ public:
           "End of TU -- no SourceManager but had identified open parens");
       return;
     }
+
+    propagate_modified_fn_ptr_decls();
 
     collectMappedRangesByFile(byFile_fnptr_args, FnPtrTypeOpenParens);
     collectMappedRangesByFile(byFile_ho_fnptr_args, FnPtrTypeOpenParens_PotentiallyMod);
@@ -862,6 +978,9 @@ private:
   // we know we need to generate a wrapper for that function.
   DenseSet<const DeclaratorDecl*>
      ModifyingDeclIDs;
+
+  SmallVector<FnPtrDeclFlowEdge>
+      FnPtrDeclFlowEdges;
 
   std::vector<std::pair<const DeclRefExpr*, const DeclaratorDecl*>>
       UnmodFnOccurrences;
