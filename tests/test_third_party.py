@@ -1,3 +1,4 @@
+import hashlib
 from pathlib import Path
 import shutil
 import platform
@@ -614,6 +615,60 @@ def test_ronomon_pure_cli_g0(tenjin_fixtures: TenjinFixtures):
         n_tests_passed += 1
 
     print(f"ronomon_pure_cli passed {n_tests_passed} test vectors.")
+
+    clean_up_resultsdir(tmp_resultsdir)
+    annotate_pytest_request_with_translation_notes(tenjin_fixtures)
+
+
+@pytest.mark.slow
+def test_uxnmin(tenjin_fixtures: TenjinFixtures):
+    tmp_codebase, tmp_resultsdir = tenjin_fixtures.tmp_codebase, tenjin_fixtures.tmp_resultsdir
+
+    codebase = cached_git_clone_at_commit(
+        "https://github.com/brk/uxnzoo.git", "617697ebe9c6e178db66fcb5b203ab5a3d05607c"
+    )
+    translation_preparation.copy_codebase(codebase, tmp_codebase)
+    translation.do_translate(
+        translation_types.TranslationFlags.simple(
+            root=tenjin_fixtures.root,
+            codebase=tmp_codebase / "uxnmin" / "src" / "uxnmin.c",
+            resultsdir=tmp_resultsdir,
+        ),
+        guidance_path_or_literal="{}",
+    )
+
+    hermetic.run_cargo_on_translated_code(
+        ["build"],
+        cwd=tmp_resultsdir / "final",
+        capture_output=False,
+        check=True,
+    )
+
+    unxmin_exe = tmp_resultsdir / "final" / "target" / "debug" / "uxnmin"
+
+    hermetic.run(
+        f"{unxmin_exe.as_posix()} ./uxnmin/etc/utils/xh.txt < drifblim/etc/drifloon.rom.txt > drifloon.rom",
+        cwd=tmp_codebase,
+        check=True,
+        capture_output=False,
+        shell=True,
+    )
+
+    drifloon_rom_hash = hashlib.sha256(open(tmp_codebase / "drifloon.rom", "rb").read()).hexdigest()
+    assert drifloon_rom_hash == "ffb639c0b52e212402e3f88897e9b3a16df472a1c00d73fe914f78f00c54330f"
+
+    hermetic.run(
+        f"{unxmin_exe.as_posix()} drifloon.rom < tictactoe.tal > tictactoe.rom",
+        cwd=tmp_codebase,
+        check=True,
+        capture_output=False,
+        shell=True,
+    )
+
+    tictactoe_rom_hash = hashlib.sha256(
+        open(tmp_codebase / "tictactoe.rom", "rb").read()
+    ).hexdigest()
+    assert tictactoe_rom_hash == "15d387e1d8568d53cf996190aabf7f5119d5bcd9a5f775711c8a8b1e6cbe4d4e"
 
     clean_up_resultsdir(tmp_resultsdir)
     annotate_pytest_request_with_translation_notes(tenjin_fixtures)
