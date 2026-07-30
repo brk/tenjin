@@ -75,9 +75,20 @@ bool is_unmodified_fn_name(const std::string &s) {
 //       typedef T, we may need to change the types independently.
 
 struct InitListOccurrence {
-   unsigned idx;
-   const DeclRefExpr* dre;
-   bool dre_fn_was_mod; 
+  unsigned idx;
+  const DeclRefExpr *dre;
+  const DeclaratorDecl *source_decl;
+  bool dre_fn_was_mod;
+};
+
+struct FnPtrDeclFlowEdge {
+  const DeclaratorDecl *source;
+  const DeclaratorDecl *target;
+};
+
+struct FnPtrExplicitCastUse {
+  const ExplicitCastExpr *cast;
+  const DeclaratorDecl *target;
 };
 
 struct TypedefBackedFnPtrUseInfo {
@@ -117,7 +128,9 @@ public:
 
     if (auto *arg_expr = Result.Nodes.getNodeAs<Expr>("call_arg_expr")) {
       if (arg_expr->getBeginLoc().isValid()) {
-        handle_call_arg_to_fn_ptr_param(arg_expr, Result);
+        auto *call_expr =
+            Result.Nodes.getNodeAs<CallExpr>("call_with_fn_ptr_arg");
+        handle_call_arg_to_fn_ptr_param(arg_expr, call_expr, Result);
         return;
       }
     }
@@ -205,31 +218,37 @@ public:
       return;
     }
 
+    // MemberExpr in Clang has ValueDecl for the member, but for C it will
+    // always be a FieldDecl (which is a DeclaratorDecl).
+    auto *lhs_dd = Result.Nodes.getNodeAs<DeclaratorDecl>("lhs_value_decl");
+    if (!lhs_dd) {
+      lhs_dd = Result.Nodes.getNodeAs<DeclaratorDecl>("lhs_dcrr_decl");
+    }
+    if (!lhs_dd || !lhs_dd->getType()->isFunctionPointerType()) {
+      return;
+    }
+    add_fn_ptr_explicit_cast_use(BO->getRHS(), lhs_dd);
+
     auto *rhs = try_get_fn_value_declref(BO->getRHS());
     if (rhs && rhs->getBeginLoc().isValid()) {
       std::string rhs_name = rhs->getNameInfo().getName().getAsString();
       bool was_mod_fn = is_modified_fn_name(rhs_name);
       bool was_unmod_fn = is_unmodified_fn_name(rhs_name);
-      if (!was_mod_fn && !was_unmod_fn) {
-          return;
+      if (was_mod_fn) {
+        mark_modified_fn_ptr_decl(lhs_dd);
+        return;
       }
+      if (was_unmod_fn) {
+        // found a non-modified function occurrence; record its location
+        // and the targeted declaration, so we can correlate in phase 2.
+        UnmodFnOccurrences.push_back(std::make_pair(rhs, lhs_dd));
+        return;
+      }
+    }
 
-      // MemberExpr in Clang has ValueDecl for the member, but for C it will
-      // always be a FieldDecl (which is a DeclaratorDecl).
-      auto *lhs_dd = Result.Nodes.getNodeAs<DeclaratorDecl>("lhs_value_decl");
-      if (!lhs_dd) {
-          lhs_dd = Result.Nodes.getNodeAs<DeclaratorDecl>("lhs_dcrr_decl");
-      }
-      
-      if (lhs_dd && lhs_dd->getType()->isFunctionPointerType()) {
-          if (was_mod_fn) {
-              mark_modified_fn_ptr_decl(lhs_dd);
-          } else {
-              // found a non-modified function occurrence; record its location
-              // and the targeted declaration, so we can correlate in phase 2.
-              UnmodFnOccurrences.push_back(std::make_pair(rhs, lhs_dd));
-          }
-      }
+    if (const DeclaratorDecl *source =
+            try_get_fn_ptr_value_decl(BO->getRHS())) {
+      add_fn_ptr_decl_flow(source, lhs_dd);
     }
   }
 
@@ -241,10 +260,36 @@ public:
       if (const DeclRefExpr *dre = try_get_fn_value_declref(ILE->getInit(i))) {
         std::string name = dre->getDecl()->getNameAsString();
         if (is_modified_fn_name(name)) {
-          field_nums.push_back(InitListOccurrence { .idx = i, .dre = dre, .dre_fn_was_mod = true });
+          field_nums.push_back(InitListOccurrence{
+              .idx = i,
+              .dre = dre,
+              .source_decl = nullptr,
+              .dre_fn_was_mod = true,
+          });
         } else if (is_unmodified_fn_name(name)) {
-          field_nums.push_back(InitListOccurrence { .idx = i, .dre = dre, .dre_fn_was_mod = false });
-        } // else not a fn, ignore it
+          field_nums.push_back(InitListOccurrence{
+              .idx = i,
+              .dre = dre,
+              .source_decl = nullptr,
+              .dre_fn_was_mod = false,
+          });
+        } else if (const DeclaratorDecl *source =
+                       try_get_fn_ptr_value_decl(ILE->getInit(i))) {
+          field_nums.push_back(InitListOccurrence{
+              .idx = i,
+              .dre = nullptr,
+              .source_decl = source,
+              .dre_fn_was_mod = false,
+          });
+        }
+      } else if (const DeclaratorDecl *source =
+                     try_get_fn_ptr_value_decl(ILE->getInit(i))) {
+        field_nums.push_back(InitListOccurrence{
+            .idx = i,
+            .dre = nullptr,
+            .source_decl = source,
+            .dre_fn_was_mod = false,
+        });
       }
     }
 
@@ -262,13 +307,18 @@ public:
         if (auto TSI = TargetField->getTypeSourceInfo()) {
           FunctionTypeLoc FTL;
           if (try_find_fn_ptr_TL(TSI->getTypeLoc(), FTL)) {
-              if (field_nums[i].dre_fn_was_mod) {
-                mark_modified_fn_ptr_decl(TargetField);
-              } else {
-                // found a non-modified function occurrence; record its location
-                // and the targeted declaration, so we can correlate in phase 2.
-                UnmodFnOccurrences.push_back(std::make_pair(field_nums[i].dre, TargetField));
-              }
+            add_fn_ptr_explicit_cast_use(ILE->getInit(field_nums[i].idx),
+                                         TargetField);
+            if (field_nums[i].source_decl) {
+              add_fn_ptr_decl_flow(field_nums[i].source_decl, TargetField);
+            } else if (field_nums[i].dre_fn_was_mod) {
+              mark_modified_fn_ptr_decl(TargetField);
+            } else {
+              // found a non-modified function occurrence; record its location
+              // and the targeted declaration, so we can correlate in phase 2.
+              UnmodFnOccurrences.push_back(
+                  std::make_pair(field_nums[i].dre, TargetField));
+            }
           } else {
             llvm::errs() << "unable to find fn ptr lparen loc for InitListExpr"
                          << "\n";
@@ -284,49 +334,72 @@ public:
   // parameter. The parameter declaration is the targeted decl, mirroring how
   // member/declref assignment LHSes are treated.
   void handle_call_arg_to_fn_ptr_param(const Expr *arg_expr,
+                                       const CallExpr *call_expr,
                                        const MatchFinder::MatchResult &Result) {
-    auto *arg_dre = try_get_fn_value_declref(arg_expr);
-    if (!arg_dre) {
-      return;
-    }
-
-    std::string arg_name = arg_dre->getNameInfo().getName().getAsString();
-    bool was_mod_fn = is_modified_fn_name(arg_name);
-    bool was_unmod_fn = is_unmodified_fn_name(arg_name);
-    if (!was_mod_fn && !was_unmod_fn) {
-      return;
-    }
-
     auto *param = Result.Nodes.getNodeAs<ParmVarDecl>("call_param");
     if (!param || !param->getType()->isFunctionPointerType()) {
       return;
     }
 
-    if (was_mod_fn) {
-      mark_modified_fn_ptr_decl(param);
-    } else {
-      UnmodFnOccurrences.push_back(std::make_pair(arg_dre, param));
+    const Expr *matched_arg_expr = arg_expr;
+
+    // forEachArgumentWithParam matches through parentheses and casts. Recover
+    // the argument expression as written so type annotations on explicit
+    // casts remain available.
+    if (call_expr) {
+      unsigned param_index = param->getFunctionScopeIndex();
+      if (param_index < call_expr->getNumArgs()) {
+        arg_expr = call_expr->getArg(param_index);
+      }
+    }
+    add_fn_ptr_explicit_cast_use(arg_expr, param);
+
+    auto *arg_dre = try_get_fn_value_declref(matched_arg_expr);
+    if (arg_dre) {
+      std::string arg_name = arg_dre->getNameInfo().getName().getAsString();
+      bool was_mod_fn = is_modified_fn_name(arg_name);
+      bool was_unmod_fn = is_unmodified_fn_name(arg_name);
+      if (was_mod_fn) {
+        mark_modified_fn_ptr_decl(param);
+        return;
+      }
+      if (was_unmod_fn) {
+        UnmodFnOccurrences.push_back(std::make_pair(arg_dre, param));
+        return;
+      }
+    }
+
+    if (const DeclaratorDecl *source =
+            try_get_fn_ptr_value_decl(matched_arg_expr)) {
+      add_fn_ptr_decl_flow(source, param);
     }
   }
 
   void handle_fn_ptr_var_init(const VarDecl *VD,
                               const MatchFinder::MatchResult &Result) {
+    if (!VD->getType()->isFunctionPointerType()) {
+      return;
+    }
+    add_fn_ptr_explicit_cast_use(VD->getInit(), VD);
+
     auto *rhs = try_get_fn_value_declref(VD->getInit());
-    if (!rhs || !VD->getType()->isFunctionPointerType()) {
-      return;
+    if (rhs) {
+      std::string rhs_name = rhs->getNameInfo().getName().getAsString();
+      bool was_mod_fn = is_modified_fn_name(rhs_name);
+      bool was_unmod_fn = is_unmodified_fn_name(rhs_name);
+      if (was_mod_fn) {
+        mark_modified_fn_ptr_decl(VD);
+        return;
+      }
+      if (was_unmod_fn) {
+        UnmodFnOccurrences.push_back(std::make_pair(rhs, VD));
+        return;
+      }
     }
 
-    std::string rhs_name = rhs->getNameInfo().getName().getAsString();
-    bool was_mod_fn = is_modified_fn_name(rhs_name);
-    bool was_unmod_fn = is_unmodified_fn_name(rhs_name);
-    if (!was_mod_fn && !was_unmod_fn) {
-      return;
-    }
-
-    if (was_mod_fn) {
-      mark_modified_fn_ptr_decl(VD);
-    } else {
-      UnmodFnOccurrences.push_back(std::make_pair(rhs, VD));
+    if (const DeclaratorDecl *source =
+            try_get_fn_ptr_value_decl(VD->getInit())) {
+      add_fn_ptr_decl_flow(source, VD);
     }
   }
 
@@ -346,13 +419,89 @@ public:
           continue;
         }
       }
+      if (const auto *Cast = dyn_cast<ExplicitCastExpr>(E)) {
+        E = Cast->getSubExpr();
+        continue;
+      }
       break;
     }
     return nullptr;
   }
-  
-  void add_fn_ptr_type_loc(const DeclaratorDecl *DD) {
-    TypeSourceInfo *TSI = DD->getTypeSourceInfo();
+
+  const DeclaratorDecl *try_get_fn_ptr_value_decl(const Expr *E) const {
+    while (E) {
+      E = E->IgnoreParenImpCasts();
+      if (const auto *DRE = dyn_cast<DeclRefExpr>(E)) {
+        if (const auto *DD = dyn_cast<DeclaratorDecl>(DRE->getDecl())) {
+          return DD->getType()->isFunctionPointerType() ? DD : nullptr;
+        }
+        return nullptr;
+      }
+      if (const auto *ME = dyn_cast<MemberExpr>(E)) {
+        if (const auto *DD = dyn_cast<DeclaratorDecl>(ME->getMemberDecl())) {
+          return DD->getType()->isFunctionPointerType() ? DD : nullptr;
+        }
+        return nullptr;
+      }
+      if (const auto *UO = dyn_cast<UnaryOperator>(E)) {
+        if (UO->getOpcode() == UO_AddrOf) {
+          E = UO->getSubExpr();
+          continue;
+        }
+      }
+      if (const auto *Cast = dyn_cast<ExplicitCastExpr>(E)) {
+        E = Cast->getSubExpr();
+        continue;
+      }
+      break;
+    }
+    return nullptr;
+  }
+
+  void add_fn_ptr_decl_flow(const DeclaratorDecl *source,
+                            const DeclaratorDecl *target) {
+    if (source && target && source->getType()->isFunctionPointerType() &&
+        target->getType()->isFunctionPointerType()) {
+      FnPtrDeclFlowEdges.push_back(
+          FnPtrDeclFlowEdge{.source = source, .target = target});
+    }
+  }
+
+  const ExplicitCastExpr *try_get_fn_ptr_explicit_cast(const Expr *E) const {
+    while (E) {
+      E = E->IgnoreParens();
+      if (const auto *Cast = dyn_cast<ExplicitCastExpr>(E)) {
+        if (Cast->getType()->isFunctionPointerType() &&
+            Cast->getTypeInfoAsWritten()) {
+          return Cast;
+        }
+        E = Cast->getSubExpr();
+        continue;
+      }
+      if (const auto *Cast = dyn_cast<ImplicitCastExpr>(E)) {
+        E = Cast->getSubExpr();
+        continue;
+      }
+      if (const auto *UO = dyn_cast<UnaryOperator>(E)) {
+        if (UO->getOpcode() == UO_AddrOf) {
+          E = UO->getSubExpr();
+          continue;
+        }
+      }
+      break;
+    }
+    return nullptr;
+  }
+
+  void add_fn_ptr_explicit_cast_use(const Expr *E,
+                                    const DeclaratorDecl *target) {
+    if (const ExplicitCastExpr *Cast = try_get_fn_ptr_explicit_cast(E)) {
+      FnPtrExplicitCastUses.push_back(
+          FnPtrExplicitCastUse{.cast = Cast, .target = target});
+    }
+  }
+
+  void add_fn_ptr_type_loc(TypeSourceInfo *TSI) {
     if (!TSI) {
       return;
     }
@@ -373,17 +522,74 @@ public:
     FnPtrTypeOpenParens[FTL.getLParenLoc()] = FTL.getRParenLoc();
   }
 
+  void add_fn_ptr_type_loc(const DeclaratorDecl *DD) {
+    add_fn_ptr_type_loc(DD->getTypeSourceInfo());
+  }
+
   void mark_modified_fn_ptr_decl(const DeclaratorDecl *DD) {
-    if (auto *VD = dyn_cast<VarDecl>(DD)) {
+    if (is_modified_fn_ptr_decl(DD)) {
+      return;
+    }
+
+    if (auto *PVD = dyn_cast<ParmVarDecl>(DD)) {
+      auto *FD = dyn_cast<FunctionDecl>(PVD->getDeclContext());
+      if (!FD) {
+        add_fn_ptr_type_loc(PVD);
+        ModifyingDeclIDs.insert(canonicalize_decl_for_matching(PVD));
+      } else {
+        unsigned param_index = PVD->getFunctionScopeIndex();
+        for (const FunctionDecl *Redecl : FD->redecls()) {
+          if (param_index < Redecl->getNumParams()) {
+            const ParmVarDecl *RedeclParam = Redecl->getParamDecl(param_index);
+            if (RedeclParam->getType()->isFunctionPointerType()) {
+              add_fn_ptr_type_loc(RedeclParam);
+              ModifyingDeclIDs.insert(
+                  canonicalize_decl_for_matching(RedeclParam));
+            }
+          }
+        }
+      }
+    } else if (auto *VD = dyn_cast<VarDecl>(DD)) {
       for (const VarDecl *Redecl : VD->redecls()) {
         if (Redecl->getType()->isFunctionPointerType()) {
           add_fn_ptr_type_loc(Redecl);
+          ModifyingDeclIDs.insert(canonicalize_decl_for_matching(Redecl));
         }
       }
     } else {
       add_fn_ptr_type_loc(DD);
+      ModifyingDeclIDs.insert(canonicalize_decl_for_matching(DD));
     }
-    ModifyingDeclIDs.insert(canonicalize_decl_for_matching(DD));
+  }
+
+  bool is_modified_fn_ptr_decl(const DeclaratorDecl *DD) const {
+    return ModifyingDeclIDs.count(canonicalize_decl_for_matching(DD)) > 0;
+  }
+
+  void propagate_modified_fn_ptr_decls() {
+    bool changed;
+    do {
+      changed = false;
+      for (const FnPtrDeclFlowEdge &Edge : FnPtrDeclFlowEdges) {
+        if (is_modified_fn_ptr_decl(Edge.source) &&
+            !is_modified_fn_ptr_decl(Edge.target)) {
+          mark_modified_fn_ptr_decl(Edge.target);
+          changed = true;
+        } else if (is_modified_fn_ptr_decl(Edge.target) &&
+                   !is_modified_fn_ptr_decl(Edge.source)) {
+          mark_modified_fn_ptr_decl(Edge.source);
+          changed = true;
+        }
+      }
+    } while (changed);
+  }
+
+  void patch_modified_fn_ptr_explicit_cast_uses() {
+    for (const FnPtrExplicitCastUse &Use : FnPtrExplicitCastUses) {
+      if (is_modified_fn_ptr_decl(Use.target)) {
+        add_fn_ptr_type_loc(Use.cast->getTypeInfoAsWritten());
+      }
+    }
   }
 
   const DeclaratorDecl *canonicalize_decl_for_matching(const DeclaratorDecl *DD) const {
@@ -510,6 +716,8 @@ public:
     Ctx = nullptr;
     FnPtrTypeOpenParens.clear();
     ModifyingDeclIDs.clear();
+    FnPtrDeclFlowEdges.clear();
+    FnPtrExplicitCastUses.clear();
     UnmodFnOccurrences.clear();
     FnPtrTypeOpenParens_PotentiallyMod.clear();
     // The byFile maps are not cleared; they accumulate across TUs.
@@ -526,6 +734,9 @@ public:
           "End of TU -- no SourceManager but had identified open parens");
       return;
     }
+
+    propagate_modified_fn_ptr_decls();
+    patch_modified_fn_ptr_explicit_cast_uses();
 
     collectMappedRangesByFile(byFile_fnptr_args, FnPtrTypeOpenParens);
     collectMappedRangesByFile(byFile_ho_fnptr_args, FnPtrTypeOpenParens_PotentiallyMod);
@@ -702,19 +913,25 @@ public:
 
       // The DeclaratorDecl of p.second is the location the fn occurrence is flowing to,
       // but we need the decl of the function itself.
-      const DeclaratorDecl* fdd = dyn_cast<DeclaratorDecl>(p.first->getDecl());
-      if (!fdd) {
-        return "<unmod fn decl was not a declarator?!>";
+      const FunctionDecl *ReferencedFD =
+          dyn_cast<FunctionDecl>(p.first->getDecl());
+      if (!ReferencedFD) {
+        return "<unmod fn decl was not a function?!>";
       }
-      auto final_tok = fdd->hasBody() ? tok::r_brace : tok::semi ;
+      // Occurrences on opposite sides of a redeclaration may refer to
+      // different FunctionDecl nodes. Always place and describe the wrapper
+      // using the first declaration so all records combine into one wrapper.
+      const FunctionDecl *fdd = ReferencedFD->getCanonicalDecl();
+      bool declaration_has_body = fdd->doesThisDeclarationHaveABody();
+      auto final_tok = declaration_has_body ? tok::r_brace : tok::semi;
       SourceLocation post_loc =
           Lexer::findLocationAfterToken(
                         fdd->getEndLoc(),
                         final_tok,
                         *SM,
                         Ctx->getLangOpts(),
-                        /*SkipTrailingWhitespaceAndNewline=*/ true);
-      if (fdd->hasBody()) {
+                        /*SkipTrailingWhitespaceAndNewline=*/ false);
+      if (declaration_has_body) {
           llvm::errs() << "For body-having function decl of " << fdd->getNameAsString() << "\n";
           llvm::errs() << "post_loc for body after rbrace was " << post_loc.printToString(*SM) << "\n";
           llvm::errs() << "end_loc for body               was " << fdd->getEndLoc().printToString(*SM) << "\n";
@@ -846,6 +1063,12 @@ private:
   // we know we need to generate a wrapper for that function.
   DenseSet<const DeclaratorDecl*>
      ModifyingDeclIDs;
+
+  SmallVector<FnPtrDeclFlowEdge>
+      FnPtrDeclFlowEdges;
+
+  SmallVector<FnPtrExplicitCastUse>
+      FnPtrExplicitCastUses;
 
   std::vector<std::pair<const DeclRefExpr*, const DeclaratorDecl*>>
       UnmodFnOccurrences;
@@ -1018,7 +1241,8 @@ int main(int argc, const char **argv) {
                                           functionType()
                                       )
                                   ))))
-              .bind("call_param"))),
+              .bind("call_param")))
+          .bind("call_with_fn_ptr_arg"),
       &Callback
   );
 
