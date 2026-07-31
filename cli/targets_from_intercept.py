@@ -207,7 +207,8 @@ def is_system_lib(path: str) -> bool:
 
 def shared_object_basename(path: str) -> str | None:
     # Versioned shared libraries can have filenames like "libfoo.so.1.2.3"
-    if path.endswith(".so") or ".so." in path:
+    # but we don't want to count a path like "build/libfoo.so.deps/foo.c.o".
+    if path.endswith(".so") or ".so." in Path(path).name:
         return Path(path).name.split(".so", 1)[0]
     if path.endswith(".dylib") or path.endswith(".dll"):
         return Path(path).name
