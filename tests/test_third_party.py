@@ -1440,3 +1440,77 @@ def test_xiph_speex_speexenc_only(tenjin_fixtures: TenjinFixtures):
 
     clean_up_resultsdir(tmp_resultsdir)
     annotate_pytest_request_with_translation_notes(tenjin_fixtures)
+
+
+@pytest.mark.slow  # expected runtime: 650 s
+def test_xiph_speex_libspeex(tenjin_fixtures: TenjinFixtures):
+    tmp_codebase, tmp_resultsdir = tenjin_fixtures.tmp_codebase, tenjin_fixtures.tmp_resultsdir
+    codebase = cached_git_clone_at_commit(
+        "https://github.com/xiph/speex.git", "05895229896dc942d453446eba6f9f5ddcf95422"
+    )
+    translation_preparation.copy_codebase(codebase, tmp_codebase)
+
+    # temporary hack
+    tenjin_fixtures.monkeypatch.setenv("XJ_EXTRA_PREPARATION_PASSES", "0")
+
+    translation.do_translate(
+        translation_types.TranslationFlags.simple(
+            root=tenjin_fixtures.root,
+            codebase=tmp_codebase,
+            resultsdir=tmp_resultsdir,
+            prebuildcmd="meson setup builddir -Dsse=disabled",
+            buildcmd="ninja -C builddir libspeex/libspeex.so.1.5.2",
+        ),
+        guidance_path_or_literal="{}",
+    )
+
+    builddir = tmp_resultsdir / "_build_1" / "builddir"
+
+    # Build speexenc and speexdec binaries; these embed a dependency on
+    # their in-tree copies of libspeex.so
+    hermetic.run(
+        ["ninja", "src/speexenc", "src/speexdec"],
+        cwd=str(builddir),
+        check=True,
+    )
+
+    download("https://speex.org/samples/audio/male.wav", Path(tmp_codebase, "male.wav"))
+
+    # Do one round-trip test with the pure-C versions of everything
+    hermetic.run(
+        [str(builddir / "src/speexenc"), "male.wav", "male.c.spx"],
+        cwd=str(tmp_codebase),
+        check=True,
+        capture_output=False,
+    )
+    male_c_wav: bytes = hermetic.run(
+        [str(builddir / "src/speexdec"), "male.c.spx", "-"],
+        cwd=str(tmp_codebase),
+        check=True,
+        capture_output=True,
+    ).stdout
+
+    hermetic.run_cargo_on_translated_code(["build"], cwd=tmp_resultsdir / "final", check=True)
+
+    shutil.copyfile(
+        tmp_resultsdir / "final" / "target" / "debug" / "libspeex_1_5_2.so",
+        builddir / "libspeex" / "libspeex.so.1.5.2",
+    )
+
+    hermetic.run(
+        [str(builddir / "src/speexenc"), "male.wav", "male.rs.spx"],
+        cwd=str(tmp_codebase),
+        check=True,
+        capture_output=False,
+    )
+    male_rs_wav = hermetic.run(
+        [str(builddir / "src/speexdec"), "male.rs.spx", "-"],
+        cwd=str(tmp_codebase),
+        check=True,
+        capture_output=True,
+    ).stdout
+
+    assert male_rs_wav == male_c_wav, "wav file via Rust library did not have the same output"
+
+    clean_up_resultsdir(tmp_resultsdir)
+    annotate_pytest_request_with_translation_notes(tenjin_fixtures)
