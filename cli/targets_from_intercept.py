@@ -164,6 +164,10 @@ def convert_intercepted_entry(entry: intercept_exec.InterceptedCommandInfo) -> I
         elif is_shared_lib_flag(arg):
             ei.shared_lib = True
 
+        elif arg == "-install_name":
+            ei.args.link_only.append(arg)
+            ei.args.link_only.append(next(arg_iter))
+
         elif arg == "-static":
             ei.static_lib = True
 
