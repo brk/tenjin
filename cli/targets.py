@@ -358,8 +358,10 @@ class BuildInfo:
         self, current_codebase: Path, link_cmd_handling=LinkCommandHandling.EXCLUDE
     ) -> compilation_database.CompileCommands:
         """Return a compilation database for all targets combined."""
+        target_map = self._process_targets()
         return self._compdb_for_commands_within(
             self._intercepted_commands,
+            set(target_map.keys()),
             current_codebase,
             link_cmd_handling=link_cmd_handling,
             extra_compile_or_link_flags=None,
@@ -384,6 +386,7 @@ class BuildInfo:
         _, cmds = target_map[target_key]
         return self._compdb_for_commands_within(
             cmds,
+            set(target_map.keys()),
             current_codebase,
             link_cmd_handling=link_cmd_handling,
             extra_compile_or_link_flags=None,
@@ -392,6 +395,7 @@ class BuildInfo:
     def _compdb_for_commands_within(
         self,
         commands: list[targets_from_intercept.InterceptedCommand],
+        all_target_keys: set[BuildTargetKey] | None,
         current_codebase: Path,
         link_cmd_handling: LinkCommandHandling,
         extra_compile_or_link_flags: ExtraCompileOrLinkFlags | None,
@@ -417,6 +421,7 @@ class BuildInfo:
                 link_cmd_handling,
                 extra_compile_or_link_flags,
                 exe_target_outputs,
+                all_target_keys,
             )
             for c in commands
             if c.compile_only
@@ -436,6 +441,7 @@ class BuildInfo:
         )
         return self._compdb_for_commands_within(
             self._intercepted_commands,
+            None,
             current_codebase,
             link_cmd_handling=LinkCommandHandling.INCLUDE,
             extra_compile_or_link_flags=ExtraCompileOrLinkFlags(
@@ -459,6 +465,7 @@ def _CompileCommand_from_intercepted_command(
     link_cmd_handling: LinkCommandHandling,
     extra_compile_or_link_flags: ExtraCompileOrLinkFlags | None,
     exe_target_outputs: set[str],
+    all_target_keys: set[BuildTargetKey] | None,
 ) -> compilation_database.CompileCommand:
     """Convert an InterceptedCommand to a CompileCommand."""
 
@@ -571,6 +578,21 @@ def _CompileCommand_from_intercepted_command(
         assert icmd.output is not None, "Link command must have an output"
         assert not icmd.c_inputs, f"Link command should not have c_inputs: {icmd}"
 
+        # If we see a shared library specified in `rest_inputs` and there isn't
+        # a corresponding target being passed to c2rust, it should be treated as
+        # being an external dependency, not a sibling crate.
+        link_info_switched_libs = []
+        if all_target_keys:
+            for inp in icmd.rest_inputs:
+                if (
+                    targets_from_intercept.shared_object_basename(inp)
+                    and inp not in all_target_keys
+                ):
+                    link_info_switched_libs.append(inp)
+            icmd.rest_inputs = [
+                inp for inp in icmd.rest_inputs if inp not in link_info_switched_libs
+            ]
+
         # XREF:c2rust_target_link_type
         if icmd.shared_lib:
             link_type = "shared"
@@ -583,7 +605,10 @@ def _CompileCommand_from_intercepted_command(
                 drop_lib_prefix(legalize_output_name_for_rust(inp)) for inp in icmd.rest_inputs
             ],  # FIXME: wrong order???
             "c_files": [],
-            "libs": [drop_lib_prefix(lib) for lib in icmd.libs],
+            "libs": [
+                drop_lib_prefix(legalize_name_for_ld(Path(lib).name))
+                for lib in icmd.libs + link_info_switched_libs
+            ],
             "lib_dirs": icmd.lib_dirs,
             "type": link_type,
             # TODO: parse and add in other linker flags
@@ -617,6 +642,14 @@ def _CompileCommand_from_intercepted_command(
         arguments=[update_arg(arg) for arg in raw_arguments],
         output=drop_lib_prefix(output),
     )
+
+
+def legalize_name_for_ld(name: str) -> str:
+    # A flag like "-lfoo.so.1.2.3" will not find a file name "libfoo.so.1.2.3"
+    # so we simply drop the suffix for now, which will end up producing "-lfoo".
+    if ".so" in name:
+        return name.split(".so", 1)[0]
+    return name
 
 
 def legalize_output_name_for_rust(output: str) -> str:

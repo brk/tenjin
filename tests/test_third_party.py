@@ -17,6 +17,7 @@ import translation_preparation
 import translation_types
 import translation
 import hermetic
+from provisioning import download
 
 
 def suckless_sbase_git_clone() -> Path:
@@ -1339,6 +1340,177 @@ def test_file_file(tenjin_fixtures: TenjinFixtures):
                 f"{label}: stderr differed; Rust error was: {rs_proc.stderr!r}, "
                 f"C error was: {c_proc.stderr!r}"
             )
+
+    clean_up_resultsdir(tmp_resultsdir)
+    annotate_pytest_request_with_translation_notes(tenjin_fixtures)
+
+
+@pytest.mark.slow  # expected runtime: 40 s
+def test_xiph_speex_speexenc_only(tenjin_fixtures: TenjinFixtures):
+    tmp_codebase, tmp_resultsdir = tenjin_fixtures.tmp_codebase, tenjin_fixtures.tmp_resultsdir
+    codebase = cached_git_clone_at_commit(
+        "https://github.com/xiph/speex.git", "05895229896dc942d453446eba6f9f5ddcf95422"
+    )
+    translation_preparation.copy_codebase(codebase, tmp_codebase)
+
+    # We have to do a pretty careful dance to translate just the test executable(s)
+    # and then run them against the C version of the library.
+
+    hermetic.run(
+        ["meson", "setup", "builddir", "-Dsse=disabled"], cwd=str(tmp_codebase), check=True
+    )
+    # In this configuration, we pre-build the libspeex library so that
+    # we only capture the commands for building speexenc itself.
+    hermetic.run(
+        ["ninja", "-C", "builddir", "libspeex/libspeex.so.1.5.2"], cwd=str(tmp_codebase), check=True
+    )
+
+    translation.do_translate(
+        translation_types.TranslationFlags.simple(
+            root=tenjin_fixtures.root,
+            codebase=tmp_codebase,
+            resultsdir=tmp_resultsdir,
+            buildcmd="ninja -C builddir src/speexenc",
+        ),
+        guidance_path_or_literal="{}",
+    )
+
+    hermetic.run(["ninja", "-C", "builddir", "src/speexenc"], cwd=str(tmp_codebase), check=True)
+
+    # modify cargo config to add an unconditional link search flag
+    target_dir_str = (tmp_resultsdir / "final" / "target").as_posix()
+    config_toml_path = tmp_resultsdir / "final" / ".cargo" / "config.toml"
+    config_toml_path.write_text(
+        config_toml_path.read_text().replace(
+            "rustflags = [",
+            f'rustflags = ["-L", "{target_dir_str}", ',
+        )
+    )
+
+    # Copy the prebuilt shared library so Cargo will find it when it links.
+    # XREF:legalize_name_for_ld in `cli/targets.py`
+    (tmp_resultsdir / "final" / "target").mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(
+        tmp_codebase / "builddir" / "libspeex" / "libspeex.so.1.5.2",
+        tmp_resultsdir / "final" / "target" / "libspeex.so",
+    )
+
+    hermetic.run_cargo_on_translated_code(["build"], cwd=tmp_resultsdir / "final", check=True)
+
+    download("https://speex.org/samples/audio/male.wav", Path(tmp_codebase, "male.wav"))
+
+    male_c_spx: bytes = hermetic.run(
+        ["builddir/src/speexenc", "male.wav", "-"],
+        cwd=str(tmp_codebase),
+        check=True,
+        capture_output=True,
+    ).stdout
+
+    male_rs_spx: bytes = hermetic.run(
+        [(tmp_resultsdir / "final" / "target" / "debug" / "speexenc").as_posix(), "male.wav", "-"],
+        cwd=str(tmp_codebase),
+        check=True,
+        capture_output=True,
+    ).stdout
+
+    def normalize_spx_for_compare(data: bytes) -> bytes:
+        # speexenc seeds rand() with the current time, so its output is
+        # not fully deterministic.
+        # Zeros Ogg stream serial numbers and page CRCs for bytewise comparison.
+        out = bytearray(data)
+        pos = 0
+
+        while pos < len(out):
+            if out[pos : pos + 4] != b"OggS":
+                raise ValueError(f"expected Ogg page at offset {pos}")
+
+            page_segments = out[pos + 26]
+            header_len = 27 + page_segments
+            body_len = sum(out[pos + 27 : pos + header_len])
+
+            out[pos + 14 : pos + 18] = b"\0" * 4  # stream serial number
+            out[pos + 22 : pos + 26] = b"\0" * 4  # page checksum
+            pos += header_len + body_len
+
+        return bytes(out)
+
+    assert normalize_spx_for_compare(male_rs_spx) == normalize_spx_for_compare(male_c_spx), (
+        "Rust and C outputs for speexenc differ"
+    )
+
+    clean_up_resultsdir(tmp_resultsdir)
+    annotate_pytest_request_with_translation_notes(tenjin_fixtures)
+
+
+@pytest.mark.slow  # expected runtime: 650 s
+def test_xiph_speex_libspeex(tenjin_fixtures: TenjinFixtures):
+    tmp_codebase, tmp_resultsdir = tenjin_fixtures.tmp_codebase, tenjin_fixtures.tmp_resultsdir
+    codebase = cached_git_clone_at_commit(
+        "https://github.com/xiph/speex.git", "05895229896dc942d453446eba6f9f5ddcf95422"
+    )
+    translation_preparation.copy_codebase(codebase, tmp_codebase)
+
+    # temporary hack
+    tenjin_fixtures.monkeypatch.setenv("XJ_EXTRA_PREPARATION_PASSES", "0")
+
+    translation.do_translate(
+        translation_types.TranslationFlags.simple(
+            root=tenjin_fixtures.root,
+            codebase=tmp_codebase,
+            resultsdir=tmp_resultsdir,
+            prebuildcmd="meson setup builddir -Dsse=disabled",
+            buildcmd="ninja -C builddir libspeex/libspeex.so.1.5.2",
+        ),
+        guidance_path_or_literal="{}",
+    )
+
+    builddir = tmp_resultsdir / "_build_1" / "builddir"
+
+    # Build speexenc and speexdec binaries; these embed a dependency on
+    # their in-tree copies of libspeex.so
+    hermetic.run(
+        ["ninja", "src/speexenc", "src/speexdec"],
+        cwd=str(builddir),
+        check=True,
+    )
+
+    download("https://speex.org/samples/audio/male.wav", Path(tmp_codebase, "male.wav"))
+
+    # Do one round-trip test with the pure-C versions of everything
+    hermetic.run(
+        [str(builddir / "src/speexenc"), "male.wav", "male.c.spx"],
+        cwd=str(tmp_codebase),
+        check=True,
+        capture_output=False,
+    )
+    male_c_wav: bytes = hermetic.run(
+        [str(builddir / "src/speexdec"), "male.c.spx", "-"],
+        cwd=str(tmp_codebase),
+        check=True,
+        capture_output=True,
+    ).stdout
+
+    hermetic.run_cargo_on_translated_code(["build"], cwd=tmp_resultsdir / "final", check=True)
+
+    shutil.copyfile(
+        tmp_resultsdir / "final" / "target" / "debug" / "libspeex_1_5_2.so",
+        builddir / "libspeex" / "libspeex.so.1.5.2",
+    )
+
+    hermetic.run(
+        [str(builddir / "src/speexenc"), "male.wav", "male.rs.spx"],
+        cwd=str(tmp_codebase),
+        check=True,
+        capture_output=False,
+    )
+    male_rs_wav = hermetic.run(
+        [str(builddir / "src/speexdec"), "male.rs.spx", "-"],
+        cwd=str(tmp_codebase),
+        check=True,
+        capture_output=True,
+    ).stdout
+
+    assert male_rs_wav == male_c_wav, "wav file via Rust library did not have the same output"
 
     clean_up_resultsdir(tmp_resultsdir)
     annotate_pytest_request_with_translation_notes(tenjin_fixtures)
