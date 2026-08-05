@@ -512,7 +512,7 @@ impl<'c> Translation<'c> {
         let arg_guidances: Option<Vec<Option<tenjin::GuidedType>>> =
             self.get_callee_function_arg_guidances(func_id);
 
-        let call = func.and_then(|func| {
+        let call = func.and_then_try(|func| {
             // We want to decay refs only when function is variadic
             ctx.decay_ref = DecayRef::from(is_variadic);
 

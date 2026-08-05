@@ -116,7 +116,7 @@ impl Translation<'_> {
             .query_expr_type(self, reference);
         let reference =
             self.convert_expr_guided(ctx.used(), reference, Some(reference_ty), &ctx_guided_type)?;
-        reference.and_then(|reference| {
+        reference.and_then_try(|reference| {
             if !uses_read && is_lvalue(&reference) {
                 Ok(WithStmts::new_val(NamedReference {
                     lvalue: reference,
