@@ -136,7 +136,7 @@ fn transpile_snapshot(
     expect_compile_error: bool,
     imported_crates: &[&str],
 ) {
-    let cfg = config(edition, guidance_for_file(c_path));
+    let c_file_name = c_path.file_name().unwrap().to_str().unwrap();
     let c_file_name = sanitize_file_name(c_file_name);
 
     // Some versions of clang can produce results different from their snapshots,
@@ -156,7 +156,7 @@ fn transpile_snapshot(
         (0.., _) => "clang15",
     };
 
-    et cfg = config(edition, guidance_for_file(c_path));
+    let cfg = config(edition, guidance_for_file(c_path));
     compile_and_transpile_file(c_path, cfg);
     let cwd = current_dir().unwrap();
     // The crate name can't have `.`s in it, so use the file stem.

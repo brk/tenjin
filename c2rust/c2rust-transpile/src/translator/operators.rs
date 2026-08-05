@@ -303,7 +303,7 @@ impl Translation<'_> {
             let neither_ptr =
                 !lhs_resolved_ty.kind.is_pointer() && !rhs_resolved_ty.kind.is_pointer();
 
-            op.underlying_assignment().map_or(true, |op| {
+            op.underlying_assignment().is_none_or(|op| {
                 if op.is_pointer_arithmetic() {
                     neither_ptr
                 } else {
@@ -401,7 +401,7 @@ impl Translation<'_> {
 
         let is_unsigned_arith = op
             .underlying_assignment()
-            .map_or(false, |op| op.is_arithmetic())
+            .is_some_and(|op| op.is_arithmetic())
             && compute_resolved_ty.kind.is_unsigned_integral_type();
 
         let lhs_translation = if initial_lhs_type_id.ctype != expr_or_comp_type_id.ctype
@@ -607,7 +607,9 @@ impl Translation<'_> {
                 bool_to_int(expr)
             }
 
-            op if op.is_arithmetic() || op.is_bitwise() || op.is_bitshift() => mk().binary_expr(BinOp::from(op), lhs, rhs),
+            op if op.is_arithmetic() || op.is_bitwise() || op.is_bitshift() => {
+                mk().binary_expr(BinOp::from(op), lhs, rhs)
+            }
 
             op if op.is_comparison() => bool_to_int(mk().binary_expr(BinOp::from(op), lhs, rhs)),
 
