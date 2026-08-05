@@ -1459,17 +1459,15 @@ impl Translation<'_> {
                 None => (cargs[0], None),
             };
             let expr = self.convert_condition(ctx.used(), true, ccond)?;
-            return expr
-                .and_then(|expr| {
-                    let mut mac_args = vec![expr];
-                    mac_args.extend(opt_message);
-                    Ok(WithStmts::new_val(mk().mac_expr(mk().mac(
-                        mk().path("assert"),
-                        mac_call_exprs_tt(mac_args),
-                        MacroDelimiter::Paren(Default::default()),
-                    ))))
-                })
-                .map(Some);
+            return Ok(Some(expr.and_then(|expr| {
+                let mut mac_args = vec![expr];
+                mac_args.extend(opt_message);
+                WithStmts::new_val(mk().mac_expr(mk().mac(
+                    mk().path("assert"),
+                    mac_call_exprs_tt(mac_args),
+                    MacroDelimiter::Paren(Default::default()),
+                )))
+            })));
         }
 
         Ok(None)
@@ -1508,15 +1506,9 @@ impl Translation<'_> {
     ) -> TranslationResult<Option<WithStmts<Box<Expr>>>> {
         if cargs.len() == 1 {
             let expr_x = self.convert_expr(ctx.used(), cargs[0], None)?;
-            return expr_x
-                .and_then(|expr_x| {
-                    Ok(WithStmts::new_val(mk().method_call_expr(
-                        expr_x,
-                        method_name,
-                        Vec::new(),
-                    )))
-                })
-                .map(Some);
+            return Ok(Some(expr_x.and_then(|expr_x| {
+                WithStmts::new_val(mk().method_call_expr(expr_x, method_name, Vec::new()))
+            })));
         }
 
         Ok(None)
@@ -1532,15 +1524,13 @@ impl Translation<'_> {
         if cargs.len() == 2 {
             let expr_x = self.convert_expr(ctx.used(), cargs[0], None)?;
             let expr_y = self.convert_expr(ctx.used(), cargs[1], None)?;
-            return expr_x
-                .and_then(|expr_x| {
-                    Ok(WithStmts::new_val(mk().method_call_expr(
-                        expr_x,
-                        method_name,
-                        vec![expr_y.to_expr()],
-                    )))
-                })
-                .map(Some);
+            return Ok(Some(expr_x.and_then(|expr_x| {
+                WithStmts::new_val(mk().method_call_expr(
+                    expr_x,
+                    method_name,
+                    vec![expr_y.to_expr()],
+                ))
+            })));
         }
 
         Ok(None)
@@ -1561,15 +1551,13 @@ impl Translation<'_> {
             // x % y
             let expr_x = self.convert_expr(ctx.used(), cargs[0], None)?;
             let expr_y = self.convert_expr(ctx.used(), cargs[1], None)?;
-            return expr_x
-                .and_then(|expr_x| {
-                    Ok(WithStmts::new_val(mk().binary_expr(
-                        BinOp::Rem(Default::default()),
-                        expr_x,
-                        expr_y.to_expr(),
-                    )))
-                })
-                .map(Some);
+            return Ok(Some(expr_x.and_then(|expr_x| {
+                WithStmts::new_val(mk().binary_expr(
+                    BinOp::Rem(Default::default()),
+                    expr_x,
+                    expr_y.to_expr(),
+                ))
+            })));
         }
 
         Ok(None)
@@ -2376,8 +2364,8 @@ impl Translation<'_> {
                 let src_expr = self.convert_expr(ctx.used(), src_expr_id, None)?;
                 let dst_expr = self.convert_expr(ctx.used(), dst_assign_expr_id, None)?;
 
-                let res = src_expr.and_then(move |src_expr| {
-                    dst_expr.and_then(|dst_expr| {
+                let res = src_expr.and_then_try(move |src_expr| {
+                    Ok(dst_expr.and_then(|dst_expr| {
                         let bits_ty = if dst_float_bits == 32 {
                             mk().path_ty(vec!["u32"])
                         } else {
@@ -2395,8 +2383,8 @@ impl Translation<'_> {
                         } else {
                             dst_expr
                         };
-                        Ok(WithStmts::new_val(mk().assign_expr(lhs, float_expr)))
-                    })
+                        WithStmts::new_val(mk().assign_expr(lhs, float_expr))
+                    }))
                 });
 
                 return res.map(Some);
@@ -2413,9 +2401,9 @@ impl Translation<'_> {
                 let dst_expr = self.convert_expr(ctx.used(), dst_assign_expr_id, None)?;
                 let dst_ty = self.convert_type(dst_type_id)?;
 
-                let res = src_expr.and_then(move |src_expr| {
+                let res = src_expr.and_then_try(move |src_expr| {
                     let dst_ty = dst_ty.clone();
-                    dst_expr.and_then(|dst_expr| {
+                    Ok(dst_expr.and_then(|dst_expr| {
                         let to_bits = mk().method_call_expr(src_expr, "to_bits", vec![]);
                         let casted = mk().cast_expr(to_bits, dst_ty);
                         let lhs = if dst_is_ptr {
@@ -2423,8 +2411,8 @@ impl Translation<'_> {
                         } else {
                             dst_expr
                         };
-                        Ok(WithStmts::new_val(mk().assign_expr(lhs, casted)))
-                    })
+                        WithStmts::new_val(mk().assign_expr(lhs, casted))
+                    }))
                 });
 
                 return res.map(Some);

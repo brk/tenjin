@@ -177,9 +177,9 @@ impl Translation<'_> {
                     let rhs_val = self.convert_expr(rhs_ctx, rhs, Some(rhs_type_id))?;
 
                     lhs_val.zip(rhs_val).and_then_try(|(lhs_val, rhs_val)| {
-                                    let lhs_rhs_ids = Some((lhs, rhs));
+                        let lhs_rhs_ids = Some((lhs, rhs));
                         self.convert_binary_operator(
-                                        ctx,
+                            ctx,
                             op,
                             ty,
                             expr_type_id.ctype,
@@ -187,7 +187,7 @@ impl Translation<'_> {
                             rhs_type_id,
                             lhs_val,
                             rhs_val,
-                                        lhs_rhs_ids,
+                            lhs_rhs_ids,
                         )
                     })
                 }

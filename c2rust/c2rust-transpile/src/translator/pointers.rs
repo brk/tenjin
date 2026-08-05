@@ -420,14 +420,7 @@ impl<'c> Translation<'c> {
 
                     // Don't dereference the offset if we're still within the variable portion
                     if let Some(elt_type_id) = var_elt_type_id {
-                        self.convert_pointer_offset(
-                            Some(arr),
-                            lhs,
-                            rhs,
-                            elt_type_id,
-                            false,
-                            deref,
-                        )
+                        self.convert_pointer_offset(Some(arr), lhs, rhs, elt_type_id, false, deref)
                     } else {
                         WithStmts::new_val(mk().index_expr(lhs, cast_int(rhs, "usize", false)))
                     }
