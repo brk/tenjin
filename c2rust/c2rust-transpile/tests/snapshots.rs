@@ -345,6 +345,11 @@ fn test_atomics() {
 }
 
 #[test]
+fn test_auto_type() {
+    transpile("auto_type.c").run();
+}
+
+#[test]
 fn test_bitfields() {
     transpile("bitfields.c").expect_compile_error(true).run();
 }
@@ -453,8 +458,28 @@ fn test_static_assert() {
 }
 
 #[test]
+fn test_frame_address() {
+    transpile("frame_address.c").run();
+}
+
+#[test]
+fn test_return_address() {
+    transpile("return_address.c").run();
+}
+
+#[test]
+fn test_return_addr_helpers() {
+    transpile("return_addr_helpers.c").run();
+}
+
+#[test]
 fn test_str_init() {
     transpile("str_init.c").run();
+}
+
+#[test]
+fn test_types_compatible() {
+    transpile("types_compatible.c").run();
 }
 
 #[test]

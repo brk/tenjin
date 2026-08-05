@@ -21,17 +21,43 @@ mod conversion;
 pub mod iterators;
 mod print;
 
-#[derive(Eq, PartialEq, Ord, PartialOrd, Hash, Debug, Copy, Clone)]
+#[derive(Eq, PartialEq, Ord, PartialOrd, Hash, Copy, Clone)]
 pub struct CTypeId(pub u64);
 
-#[derive(Eq, PartialEq, Ord, PartialOrd, Hash, Debug, Copy, Clone)]
+#[derive(Eq, PartialEq, Ord, PartialOrd, Hash, Copy, Clone)]
 pub struct CExprId(pub u64);
 
-#[derive(Eq, PartialEq, Ord, PartialOrd, Hash, Debug, Copy, Clone)]
+#[derive(Eq, PartialEq, Ord, PartialOrd, Hash, Copy, Clone)]
 pub struct CDeclId(pub u64);
 
-#[derive(Eq, PartialEq, Ord, PartialOrd, Hash, Debug, Copy, Clone)]
+#[derive(Eq, PartialEq, Ord, PartialOrd, Hash, Copy, Clone)]
 pub struct CStmtId(pub u64);
+
+// Custom Debug implementations that don't add newlines even in pretty-printed format
+
+impl Debug for CTypeId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "CTypeId({})", self.0)
+    }
+}
+
+impl Debug for CExprId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "CExprId({})", self.0)
+    }
+}
+
+impl Debug for CDeclId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "CDeclId({})", self.0)
+    }
+}
+
+impl Debug for CStmtId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "CStmtId({})", self.0)
+    }
+}
 
 // These are references into particular variants of AST nodes
 pub type CLabelId = CStmtId; // Labels point into the 'StmtKind::Label' that declared the label
@@ -735,6 +761,7 @@ impl TypedAstContext {
                 CDeclKind::Typedef { typ: ty, .. } => ty.ctype,
                 _ => panic!("Typedef decl did not point to a typedef"),
             },
+            Auto(ty) => ty,
             _ => return typ,
         };
         self.resolve_type_id(ty)
@@ -753,6 +780,7 @@ impl TypedAstContext {
             Decayed(ty) => ty,
             TypeOf(ty) => ty,
             Paren(ty) => ty,
+            Auto(ty) => ty,
             _ => return typ,
         };
         self.resolve_type_id_no_typedef(ty)
@@ -2525,6 +2553,9 @@ pub enum CTypeKind {
     SSize,
     PtrDiff,
     WChar,
+
+    // `__auto_type` with its deduced actual type.
+    Auto(CTypeId),
 }
 
 impl CTypeKind {
@@ -2654,6 +2685,8 @@ impl CTypeKind {
             Float128 => false,
 
             // Non-scalars.
+            // TODO: we should investigate if all of these are dead code,
+            // and replace them with panics in that case.
             Complex(_) => false,
             Pointer(_) => false,
             Reference(_) => false,
@@ -2676,6 +2709,7 @@ impl CTypeKind {
             Vector(_, _) => false,
             UnhandledSveType => false,
             Atomic(_) => false,
+            Auto(_) => false,
         }
     }
 
@@ -2763,6 +2797,7 @@ impl CTypeKind {
             SSize => false,
             PtrDiff => false,
             WChar => false,
+            Auto(_) => false,
         }
     }
 }
