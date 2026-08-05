@@ -30,6 +30,10 @@ WANT = {
 
 XJ_GUIDANCE_FILENAME = "xj-guidance.json"
 
+# Results handed from xj-prepare-pointertransform to
+# xj-prepare-slicetransform. Keep in sync with
+PTR_INDEX_METADATA_FILENAME = "xj-ptrindex.json"
+
 # Subdirectory of hermetic.xj_llvm_root()
 SYSROOT_NAME = "sysroot"
 

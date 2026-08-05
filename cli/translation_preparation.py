@@ -33,7 +33,7 @@ import llvm_bitcode_linking
 import targets_from_intercept
 from targets import BuildInfo, TargetType
 from caching_file_contents import CachingFileContents
-from constants import WANT, XJ_GUIDANCE_FILENAME
+from constants import WANT, XJ_GUIDANCE_FILENAME, PTR_INDEX_METADATA_FILENAME
 from tenj_types import FileContentsStr, FilePathStr, RelativeFilePathStr
 import tenj_types
 from translation_types import TranslationFlags
@@ -2097,13 +2097,22 @@ def run_preparation_passes(
         return cp
 
     def prep_pointertransform(prev: Path, current_codebase: Path, store: PrepPassResultStore):
-        builddir = hermetic.xj_prepare_pointertransform_build_dir(repo_root.localdir())
-        assert builddir.exists(), (
-            f"Build directory {builddir} does not exist, should have been built already"
-        )
+        """Pointer arithmetic reduction + RustSlice signature reshaping."""
+        ptr_builddir = hermetic.xj_prepare_pointertransform_build_dir(repo_root.localdir())
+        slice_builddir = hermetic.xj_prepare_slicetransform_build_dir(repo_root.localdir())
+        for builddir in (ptr_builddir, slice_builddir):
+            assert builddir.exists(), (
+                f"Build directory {builddir} does not exist, should have been built already"
+            )
 
-        # Keep in sync with `xj-prepare-pointertransform/CMakeLists.txt`
-        binary_path = builddir / "xj-prepare-pointertransform"
+        # Keep in sync with the tools' CMakeLists.txt
+        PTR_TOOL_NAME = "xj-prepare-pointertransform"
+        SLICE_TOOL_NAME = "xj-prepare-slicetransform"
+        ptr_binary = ptr_builddir / PTR_TOOL_NAME
+        slice_binary = slice_builddir / SLICE_TOOL_NAME
+        # Either tool can be the one that fails, so the pass reports
+        # under a name covering both; the stderr is labelled per tool.
+        pass_name = f"{PTR_TOOL_NAME}+{SLICE_TOOL_NAME}"
 
         compdb_path = current_codebase / "compile_commands.json"
         store.build_info.compdb_for_all_targets_within(current_codebase).to_json_file(compdb_path)
@@ -2122,36 +2131,74 @@ def run_preparation_passes(
             .strip()
         )
 
-        xj_start = time.time()
-        cp = run_modifying_subprocess_or_restore_prev(
-            prev,
-            current_codebase,
-            "xj-prepare-pointertransform",
-            lambda: hermetic.run(
+        # Side-file handed from the pointer tool to the slice tool; must
+        # not outlive this pass, lest later passes or builds see it.
+        metadata_path = current_codebase / PTR_INDEX_METADATA_FILENAME
+
+        common_args = [
+            "--inplace",
+            "-p",
+            current_codebase.as_posix(),
+            "--extra-arg=-Wno-zero-length-array",
+            "--extra-arg=-Wno-implicit-int-conversion",
+            "--extra-arg=-Wno-unused-function",
+            f"--extra-arg=-resource-dir={xj_clang_resource_dir}",
+            *source_files,
+        ]
+
+        def labelled(tool_name: str, stderr: bytes) -> bytes:
+            if not stderr:
+                return b""
+            return f"--- {tool_name} stderr ---\n".encode() + stderr
+
+        def run_both():
+            cp = hermetic.run(
                 [
-                    binary_path.as_posix(),
-                    "--inplace",
-                    "-p",
-                    current_codebase.as_posix(),
-                    "--extra-arg=-Wno-zero-length-array",
-                    "--extra-arg=-Wno-implicit-int-conversion",
-                    "--extra-arg=-Wno-unused-function",
-                    f"--extra-arg=-resource-dir={xj_clang_resource_dir}",
-                    *source_files,
+                    ptr_binary.as_posix(),
+                    f"--metadata-out={metadata_path.as_posix()}",
+                    *common_args,
                 ],
                 cwd=current_codebase,
                 check=True,
                 capture_output=True,
-            ),
-        )
+            )
+            ptr_stderr = labelled(PTR_TOOL_NAME, cp.stderr)
+            metadata_args = (
+                [f"--metadata-in={metadata_path.as_posix()}"] if metadata_path.exists() else []
+            )
+            try:
+                cp_slice = hermetic.run(
+                    [slice_binary.as_posix(), *metadata_args, *common_args],
+                    cwd=current_codebase,
+                    check=True,
+                    capture_output=True,
+                )
+            except CalledProcessError as e:
+                # The pointer tool's warnings usually explain why the
+                # slice tool could not re-parse its output, so carry
+                # them through rather than reporting the failing tool's
+                # stderr alone.
+                e.stderr = ptr_stderr + labelled(SLICE_TOOL_NAME, e.stderr or b"")
+                raise
+            cp_slice.stderr = ptr_stderr + labelled(SLICE_TOOL_NAME, cp_slice.stderr)
+            return cp_slice
+
+        xj_start = time.time()
+        try:
+            cp = run_modifying_subprocess_or_restore_prev(
+                prev,
+                current_codebase,
+                pass_name,
+                run_both,
+            )
+        finally:
+            metadata_path.unlink(missing_ok=True)
         xj_elapsed = time.time() - xj_start
         if cp.returncode == 0:
-            print(f"xj-prepare-pointertransform completed in {xj_elapsed:.1f} seconds")
+            print(f"{pass_name} completed in {xj_elapsed:.1f} seconds")
         else:
-            print(
-                f"xj-prepare-pointertransform failed in {xj_elapsed:.1f} seconds; restored previous contents"
-            )
-        print("xj-prepare-pointertransform stderr:")
+            print(f"{pass_name} failed in {xj_elapsed:.1f} seconds; restored previous contents")
+        print(f"{pass_name} stderr:")
         print(cp.stderr.decode("utf-8"))
         return cp
 

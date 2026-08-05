@@ -194,7 +194,7 @@ Some notable passes:
 - [errno localization](passes/errno_localization.md)
 - [K&R syntax elimination](passes/knr_elimination.md)
 - [mutable global localization](passes/mutable_global_localization.md)
-- [pointer arithmetic reduction](passes/pointer_arithmetic_reduction.md)
+- [pointer arithmetic reduction & slice reshaping](passes/pointer_arithmetic_reduction.md)
 
 Tenjin also applies a suite of transformations on the generated Rust code to improve its
 safety and/or idiomaticity:
