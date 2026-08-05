@@ -812,6 +812,21 @@ impl ConversionContext {
                     self.processed_nodes.insert(new_id, expected_ty);
                 }
 
+                TypeTag::TagPredefinedSugarType => {
+                    let kind = from_value(ty_node.extras[0].clone())
+                        .expect("Predefined sugar type kind not found");
+
+                    // See `clang::PredefinedSugarKind`.
+                    let predef_sugar_ty = match kind {
+                        0 => CTypeKind::Size,
+                        1 => CTypeKind::SSize,
+                        2 => CTypeKind::PtrDiff,
+                        _ => panic!("Predefined sugar type kind {kind} not known"),
+                    };
+                    self.add_type(new_id, not_located(predef_sugar_ty));
+                    self.processed_nodes.insert(new_id, expected_ty);
+                }
+
                 TypeTag::TagEnumType if expected_ty & OTHER_TYPE != 0 => {
                     let decl = from_value(ty_node.extras[0].clone()).expect("Enum decl not found");
                     let decl_new = CDeclId(self.visit_node_type(decl, ENUM_DECL));
@@ -1981,6 +1996,19 @@ impl ConversionContext {
                     self.expr_possibly_as_stmt(expected_ty, new_id, node, e)
                 }
 
+                ASTEntryTag::TagGenericExpr if expected_ty & (EXPR | STMT) != 0 => {
+                    let wrapped = node.children[0].expect("Expected generic expression");
+                    let ty_old = node.type_id.expect("Expected expression to have type");
+                    let ty = self.visit_qualified_type(ty_old);
+
+                    // Use the existing `Paren` kind instead of adding a new one
+                    // that would just be a no-op wrapper around the inner
+                    // expression
+                    let expr = CExprKind::Paren(ty, self.visit_expr(wrapped));
+
+                    self.expr_possibly_as_stmt(expected_ty, new_id, node, expr);
+                }
+
                 // Declarations
                 ASTEntryTag::TagFunctionDecl if expected_ty & OTHER_DECL != 0 => {
                     let name = from_value::<String>(node.extras[0].clone())
@@ -2372,27 +2400,21 @@ impl ConversionContext {
                 {
                     let name = from_value::<String>(node.extras[0].clone())
                         .expect("Macros must have a name");
+                    let raw_params = from_value::<Vec<Value>>(node.extras[1].clone())
+                        .expect("Macros must have a parameter list");
+                    let params: Vec<String> = raw_params
+                        .into_iter()
+                        .map(|v| from_value(v).expect("param name"))
+                        .collect();
 
                     let mac_object = match node.tag {
                         ASTEntryTag::TagMacroObjectDef => CDeclKind::MacroObject { name },
-                        ASTEntryTag::TagMacroFunctionDef => CDeclKind::MacroFunction { name },
+                        ASTEntryTag::TagMacroFunctionDef => {
+                            CDeclKind::MacroFunction { name, params }
+                        }
                         _ => unreachable!("Unexpected tag for macro"),
                     };
 
-                    self.add_decl(new_id, located(node, mac_object));
-                    self.processed_nodes.insert(new_id, MACRO_DECL);
-
-                    // Macros aren't technically top-level decls, so clang
-                    // doesn't put them in top_nodes, but we do need to process
-                    // them early.
-                    self.typed_context.c_decls_top.push(CDeclId(new_id));
-                }
-
-                ASTEntryTag::TagMacroFunctionDef if expected_ty & MACRO_DECL != 0 => {
-                    let name = from_value::<String>(node.extras[0].clone())
-                        .expect("Macros must have a name");
-
-                    let mac_object = CDeclKind::MacroFunction { name };
                     self.add_decl(new_id, located(node, mac_object));
                     self.processed_nodes.insert(new_id, MACRO_DECL);
 

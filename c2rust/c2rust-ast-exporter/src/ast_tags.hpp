@@ -89,6 +89,7 @@ enum ASTEntryTag {
 
     TagAtomicExpr,
     TagTypeTraitExpr,
+    TagGenericExpr,
 
     TagIntegerLiteral = 300,
     TagStringLiteral,
@@ -154,6 +155,7 @@ enum TypeTag {
     TagAtomicType,
 
     TagAutoType,
+    TagPredefinedSugarType,
 };
 
 enum StringTypeTag {

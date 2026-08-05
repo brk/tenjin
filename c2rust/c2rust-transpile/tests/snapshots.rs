@@ -4,6 +4,7 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
 
+use c2rust_ast_exporter::get_clang_major_version;
 use c2rust_rust_tools::rustc;
 use c2rust_rust_tools::sanitize_file_name;
 use c2rust_rust_tools::RustEdition;
@@ -135,6 +136,26 @@ fn transpile_snapshot(
     expect_compile_error: bool,
     imported_crates: &[&str],
 ) {
+    let c_file_name = c_path.file_name().unwrap().to_str().unwrap();
+    let c_file_name = sanitize_file_name(c_file_name);
+
+    // Some versions of clang can produce results different from their snapshots,
+    // those tests append the clang version to the snapshot of the failing test.
+    let clang_ver = match (get_clang_major_version().unwrap(), c_file_name.as_str()) {
+        // Tests that change @ clang-22
+        (22.., "varargs.c") => "clang22",
+        (22.., "wide_strings.c") => "clang22",
+        (22.., "auto_type.c") => "clang22",
+
+        // Tests that changed @ clang-17
+
+        // The minimum tested clang
+        (15.., _) => "clang15",
+
+        // Clang versions bellow 15 test against 15 and hope for the best
+        (0.., _) => "clang15",
+    };
+
     let cfg = config(edition, guidance_for_file(c_path));
     compile_and_transpile_file(c_path, cfg);
     let cwd = current_dir().unwrap();
@@ -146,9 +167,10 @@ fn transpile_snapshot(
     let rs_path = c_path.with_extension("rs");
     // We need to move the `.rs` file to a platform/edition-specific name
     // so that they don't overwrite each other.
-    let ext = [&[edition.as_str()][..], platform]
+    let ext = [&[edition.as_str()][..], platform, &[clang_ver][..]]
         .into_iter()
         .flatten()
+        .filter(|s| !s.is_empty())
         .join(".");
     let old_rs_path = rs_path;
     let rs_path = old_rs_path.with_extension(format!("{ext}.rs"));
@@ -160,8 +182,6 @@ fn transpile_snapshot(
     // Replace real paths with placeholders
     let rs = rs.replace(cwd.to_str().unwrap(), ".");
 
-    let c_file_name = c_path.file_name().unwrap().to_str().unwrap();
-    let c_file_name = sanitize_file_name(c_file_name);
     let snapshot_name = format!("transpile@{c_file_name}.{ext}");
 
     insta::assert_snapshot!(snapshot_name, &rs, &debug_expr);
@@ -382,6 +402,11 @@ fn test_factorial() {
 #[test]
 fn test_fn_attrs() {
     transpile("fn_attrs.c").run();
+}
+
+#[test]
+fn test_generics() {
+    transpile("generics.c").run();
 }
 
 #[test]
