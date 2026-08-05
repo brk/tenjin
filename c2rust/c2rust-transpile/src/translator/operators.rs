@@ -29,7 +29,7 @@ impl Translation<'_> {
                     .and_then_try(|_| self.convert_expr(ctx, rhs, Some(expr_type_id)))
             }
 
-            And | Or => {
+            op if op.is_logical() => {
                 let lhs = self.convert_condition(ctx, true, lhs)?;
                 let rhs = self.convert_condition(ctx, true, rhs)?;
                 Ok(lhs
@@ -47,9 +47,7 @@ impl Translation<'_> {
             }
 
             // No sequence-point cases
-            AssignAdd | AssignSubtract | AssignMultiply | AssignDivide | AssignModulus
-            | AssignBitXor | AssignShiftLeft | AssignShiftRight | AssignBitOr | AssignBitAnd
-            | Assign => self.convert_assignment_operator(
+            op if op.is_assignment() => self.convert_assignment_operator(
                 ctx,
                 op,
                 expr_type_id,
@@ -133,7 +131,7 @@ impl Translation<'_> {
                     // When we use methods on pointers (ie wrapping_offset_from or offset)
                     // we must ensure we have an explicit raw ptr for the self param, as
                     // self references do not decay
-                    if op == CBinOp::Subtract || op == CBinOp::Add {
+                    if op.is_pointer_arithmetic() {
                         let ty_kind = &self.ast_context.resolve_type(lhs_type_id.ctype).kind;
 
                         if let CTypeKind::Pointer(_) = ty_kind {
@@ -305,21 +303,13 @@ impl Translation<'_> {
             let neither_ptr =
                 !lhs_resolved_ty.kind.is_pointer() && !rhs_resolved_ty.kind.is_pointer();
 
-            use CBinOp::*;
-            match op.underlying_assignment() {
-                Some(Add) => neither_ptr,
-                Some(Subtract) => neither_ptr,
-                Some(Multiply) => true,
-                Some(Divide) => true,
-                Some(Modulus) => true,
-                Some(BitXor) => true,
-                Some(ShiftLeft) => false,
-                Some(ShiftRight) => false,
-                Some(BitOr) => true,
-                Some(BitAnd) => true,
-                None => true,
-                _ => unreachable!(),
-            }
+            op.underlying_assignment().map_or(true, |op| {
+                if op.is_pointer_arithmetic() {
+                    neither_ptr
+                } else {
+                    op.is_arithmetic() || op.is_bitwise()
+                }
+            })
         };
         if lhs_rhs_types_must_match {
             // For compound assignment, use the compute type; for regular assignment, use lhs type
@@ -409,14 +399,10 @@ impl Translation<'_> {
             _ => None,
         };
 
-        let is_unsigned_arith = match op {
-            CBinOp::AssignAdd
-            | CBinOp::AssignSubtract
-            | CBinOp::AssignMultiply
-            | CBinOp::AssignDivide
-            | CBinOp::AssignModulus => compute_resolved_ty.kind.is_unsigned_integral_type(),
-            _ => false,
-        };
+        let is_unsigned_arith = op
+            .underlying_assignment()
+            .map_or(false, |op| op.is_arithmetic())
+            && compute_resolved_ty.kind.is_unsigned_integral_type();
 
         let lhs_translation = if initial_lhs_type_id.ctype != expr_or_comp_type_id.ctype
             || ctx.is_used()
@@ -443,11 +429,11 @@ impl Translation<'_> {
             let assign_stmt = match op {
                 // Regular (possibly volatile) assignment
                 Assign if !is_volatile => WithStmts::new_val(mk().assign_expr(write, rhs)),
-                Assign => WithStmts::new_unsafe_val(self.volatile_write(
+                Assign => WithStmts::new_val(self.volatile_write(
                     write,
                     initial_lhs_type_id,
                     rhs,
-                )?),
+                )?).set_unsafe(),
 
                 // Anything volatile needs to be desugared into explicit reads and writes
                 op if is_volatile || is_unsigned_arith => {
@@ -498,9 +484,9 @@ impl Translation<'_> {
                     #[allow(clippy::let_and_return /* , reason = "block is large, so variable name helps" */)]
                     let write = if is_volatile {
                         val.and_then_try(|val| {
-                            TranslationResult::Ok(WithStmts::new_unsafe_val(
+                            TranslationResult::Ok(WithStmts::new_val(
                                 self.volatile_write(write, initial_lhs_type_id, val)?,
-                            ))
+                            ).set_unsafe())
                         })?
                     } else {
                         val.map(|val| mk().assign_expr(write, val))
@@ -575,7 +561,7 @@ impl Translation<'_> {
                 return self.convert_subtraction(ty, lhs_type, rhs_type, lhs, rhs, lhs_rhs_ids)
             }
 
-            CBinOp::Multiply | CBinOp::Divide | CBinOp::Modulus if is_unsigned_integral_type => {
+            op if op.is_arithmetic() && is_unsigned_integral_type => {
                 mk().method_call_expr(lhs, op.wrapping_method(), vec![rhs])
             }
 
@@ -621,18 +607,9 @@ impl Translation<'_> {
                 bool_to_int(expr)
             }
 
-            CBinOp::Multiply
-            | CBinOp::Divide
-            | CBinOp::Modulus
-            | CBinOp::BitAnd
-            | CBinOp::BitOr
-            | CBinOp::BitXor
-            | CBinOp::ShiftRight
-            | CBinOp::ShiftLeft => mk().binary_expr(BinOp::from(op), lhs, rhs),
+            op if op.is_arithmetic() || op.is_bitwise() || op.is_bitshift() => mk().binary_expr(BinOp::from(op), lhs, rhs),
 
-            CBinOp::Less | CBinOp::Greater | CBinOp::GreaterEqual | CBinOp::LessEqual => {
-                bool_to_int(mk().binary_expr(BinOp::from(op), lhs, rhs))
-            }
+            op if op.is_comparison() => bool_to_int(mk().binary_expr(BinOp::from(op), lhs, rhs)),
 
             op => unimplemented!("Translation of binary operator {:?}", op),
         }))
@@ -700,7 +677,7 @@ impl Translation<'_> {
                 offset = mk().binary_expr(BinOp::Div(Default::default()), offset, div);
             }
 
-            Ok(WithStmts::new_unsafe_val(mk().cast_expr(offset, ty)))
+            Ok(WithStmts::new_val(mk().cast_expr(offset, ty)).set_unsafe())
         } else if let &CTypeKind::Pointer(pointee) = lhs_type {
             Ok(self.convert_pointer_offset(c_lhs, lhs, rhs, pointee.ctype, true, false))
         } else if lhs_type.is_unsigned_integral_type() {
@@ -856,13 +833,12 @@ impl Translation<'_> {
                     mk().assign_expr(write, val)
                 };
 
-                let mut val = WithStmts::new(
+                let val = WithStmts::new(
                     vec![save_old_val, mk().expr_stmt(assign_stmt)],
                     mk().ident_expr(val_name),
-                );
-                if is_unsafe {
-                    val.set_unsafe();
-                }
+                )
+                .merge_unsafe(is_unsafe);
+
                 Ok(val)
             },
         )

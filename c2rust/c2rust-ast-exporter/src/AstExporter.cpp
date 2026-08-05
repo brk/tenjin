@@ -657,6 +657,7 @@ private:
         VisitQualType(t);
     }
 
+#if CLANG_VERSION_MAJOR < 22
     void VisitElaboratedType(const ElaboratedType *T) {
         auto t = T->desugar();
         auto qt = encodeQualType(t);
@@ -665,6 +666,7 @@ private:
 
         VisitQualType(t);
     }
+#endif
 
     void VisitDecayedType(const DecayedType *T) {
         auto t = T->desugar();
@@ -690,6 +692,16 @@ private:
 
         VisitQualType(t);
     }
+
+#if CLANG_VERSION_MAJOR >= 22
+    void VisitPredefinedSugarType(const clang::PredefinedSugarType *T) {
+        auto t = T->desugar();
+        auto k = T->getKind();
+        encodeType(T, TagPredefinedSugarType,
+                   [k](CborEncoder *local) { cbor_encode_uint(local, uint64_t(k)); });
+        VisitQualType(t);
+    }
+#endif
 };
 
 class TranslateASTVisitor final
@@ -1489,7 +1501,13 @@ class TranslateASTVisitor final
     }
 
     bool VisitGenericSelectionExpr(GenericSelectionExpr *E) {
-        printDiag(Context, DiagnosticsEngine::Warning, "Encountered unsupported generic selection expression", E);
+        if (E->isResultDependent()) {
+            printDiag(Context, DiagnosticsEngine::Warning, "Encountered unsupported generic selection expression", E);
+            return true;
+        }
+
+        std::vector<void *> childIds{E->getResultExpr()};
+        encode_entry(E, TagGenericExpr, childIds);
         return true;
     }
 
@@ -2277,8 +2295,6 @@ class TranslateASTVisitor final
         auto recordAlignment = 0;
         auto byteSize = 0;
 
-        auto t = D->getTypeForDecl();
-
         auto loc = D->getSourceRange();
         std::vector<void *> childIds;
         if (def) {
@@ -2357,8 +2373,6 @@ class TranslateASTVisitor final
         // Unlike struct or union, there are no forward-declared enums in ISO C.
         // They are used in actual code and accepted by compilers, so we cannot
         // exit early via code like `if (!D->isCompleteDefinition()) return true;`.
-
-        auto t = D->getTypeForDecl();
 
         std::vector<void *> childIds;
         for (auto x : D->enumerators()) {

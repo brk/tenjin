@@ -812,6 +812,21 @@ impl ConversionContext {
                     self.processed_nodes.insert(new_id, expected_ty);
                 }
 
+                TypeTag::TagPredefinedSugarType => {
+                    let kind = from_value(ty_node.extras[0].clone())
+                        .expect("Predefined sugar type kind not found");
+
+                    // See `clang::PredefinedSugarKind`.
+                    let predef_sugar_ty = match kind {
+                        0 => CTypeKind::Size,
+                        1 => CTypeKind::SSize,
+                        2 => CTypeKind::PtrDiff,
+                        _ => panic!("Predefined sugar type kind {kind} not known"),
+                    };
+                    self.add_type(new_id, not_located(predef_sugar_ty));
+                    self.processed_nodes.insert(new_id, expected_ty);
+                }
+
                 TypeTag::TagEnumType if expected_ty & OTHER_TYPE != 0 => {
                     let decl = from_value(ty_node.extras[0].clone()).expect("Enum decl not found");
                     let decl_new = CDeclId(self.visit_node_type(decl, ENUM_DECL));
@@ -1979,6 +1994,19 @@ impl ConversionContext {
                     };
 
                     self.expr_possibly_as_stmt(expected_ty, new_id, node, e)
+                }
+
+                ASTEntryTag::TagGenericExpr if expected_ty & (EXPR | STMT) != 0 => {
+                    let wrapped = node.children[0].expect("Expected generic expression");
+                    let ty_old = node.type_id.expect("Expected expression to have type");
+                    let ty = self.visit_qualified_type(ty_old);
+
+                    // Use the existing `Paren` kind instead of adding a new one
+                    // that would just be a no-op wrapper around the inner
+                    // expression
+                    let expr = CExprKind::Paren(ty, self.visit_expr(wrapped));
+
+                    self.expr_possibly_as_stmt(expected_ty, new_id, node, expr);
                 }
 
                 // Declarations
