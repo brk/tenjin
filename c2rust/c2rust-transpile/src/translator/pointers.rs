@@ -271,7 +271,7 @@ impl<'c> Translation<'c> {
         {
             return self
                 .convert_expr(ctx.used(), inner_exp, None)?
-                .result_map(|val: Box<Expr>| {
+                .try_map(|val: Box<Expr>| {
                     match dst_tykind {
                         // XREF:recognize_int_float_bitcast
                         CTypeKind::Float => Ok(mk().call_expr(

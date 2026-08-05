@@ -5129,7 +5129,7 @@ impl<'c> Translation<'c> {
                     is_variadic,
                     arg_guidances,
                 )?;
-                args.result_map(|args| {
+                args.try_map(|args| {
                     self.convert_call_with_args(ctx, call_expr_ty, override_ty, func, args, cargs)
                 })
             }
