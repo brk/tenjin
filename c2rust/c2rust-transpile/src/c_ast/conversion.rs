@@ -946,6 +946,16 @@ impl ConversionContext {
                     self.processed_nodes.insert(new_id, OTHER_TYPE);
                 }
 
+                TypeTag::TagAutoType if expected_ty & TYPE != 0 => {
+                    let auto_id =
+                        from_value(ty_node.extras[0].clone()).expect("Auto type child not found");
+                    let auto = self.visit_type(auto_id);
+
+                    let auto_ty = CTypeKind::Auto(auto);
+                    self.add_type(new_id, not_located(auto_ty));
+                    self.processed_nodes.insert(new_id, TYPE);
+                }
+
                 t => panic!("Type conversion not implemented for {t:?} expecting {expected_ty:?}"),
             }
         } else {
@@ -1636,6 +1646,23 @@ impl ConversionContext {
                     let operator = CExprKind::UnaryType(ty, kind, expr, arg_ty);
 
                     self.expr_possibly_as_stmt(expected_ty, new_id, node, operator);
+                }
+
+                ASTEntryTag::TagTypeTraitExpr if expected_ty & (EXPR | STMT) != 0 => {
+                    let ty = node.type_id.expect("Expected expression to have type");
+                    let ty = self.visit_qualified_type(ty);
+
+                    let kind_name =
+                        from_value::<String>(node.extras[0].clone()).expect("expected kind");
+                    if kind_name != "__builtin_types_compatible_p" {
+                        panic!("Unsupported type trait expression: {}", kind_name);
+                    }
+                    let value = from_value::<bool>(node.extras[1].clone()).expect("expected value");
+
+                    let literal =
+                        CExprKind::Literal(ty, CLiteral::Integer(u64::from(value), IntBase::Dec));
+
+                    self.expr_possibly_as_stmt(expected_ty, new_id, node, literal);
                 }
 
                 ASTEntryTag::TagCompoundLiteralExpr => {
