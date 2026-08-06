@@ -4338,7 +4338,11 @@ impl<'c> Translation<'c> {
     fn mk_size_of_ty_expr(&self, ty: Box<Type>) -> TranslationResult<WithStmts<Box<Expr>>> {
         match *ty {
             Type::Array(ta) if tenjin::is_known_size_1_type(&ta.elem) => {
-                return Ok(WithStmts::new_val(Box::new(ta.len)));
+                return Ok(WithStmts::new_val(cast_int(
+                    Box::new(ta.len),
+                    "usize",
+                    true,
+                )));
             }
             _ => {}
         }

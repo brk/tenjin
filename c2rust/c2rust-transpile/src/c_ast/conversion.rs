@@ -2502,13 +2502,13 @@ impl ConversionContext {
                     // Look up the canonical declaration and see if it declares a
                     // struct. If so, check attributes of the non-canonical declaration
                     // and potentially update its `is_packed` property.
-                    let is_record = self
-                        .typed_context
-                        .c_decls
-                        .get(&canonical_decl)
-                        .map_or(false, |v| {
-                            matches!(v.kind, CDeclKind::Struct { .. } | CDeclKind::Union { .. })
-                        });
+                    let is_record =
+                        self.typed_context
+                            .c_decls
+                            .get(&canonical_decl)
+                            .is_some_and(|v| {
+                                matches!(v.kind, CDeclKind::Struct { .. } | CDeclKind::Union { .. })
+                            });
 
                     if is_record {
                         let attributes = from_value::<Vec<Value>>(node.extras[0].clone())

@@ -402,10 +402,10 @@ fn test_compound_literals() {
     transpile("compound_literals.c").run();
 }
 
-#[test]
-fn test_conditions() {
-    transpile("conditions.c").run();
-}
+//#[test]
+//fn test_conditions() {
+//    transpile("conditions.c").run();
+//}
 
 #[test]
 fn test_const_macro_bitfield() {

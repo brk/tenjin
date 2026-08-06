@@ -20,7 +20,8 @@ pub unsafe extern "C" fn numbers_demo() -> ::core::ffi::c_int {
     let mut xs: [::core::ffi::c_int; 3] = [1, 2, 3];
     let mut total = sum_n(&xs, 3 as ::core::ffi::c_int);
     total += bump(
-        ((&raw mut xs as *mut ::core::ffi::c_int).offset(0) as *mut ::core::ffi::c_int)
+        (&raw mut xs as *mut ::core::ffi::c_int)
+            .offset(0)
             .as_mut()
             .unwrap(),
     );

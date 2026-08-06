@@ -102,9 +102,8 @@ pub unsafe extern "C" fn entry() {
     let mut char_lit_array_ptr: *mut [::core::ffi::c_char; 4] = b"abc\0" as *const [u8; 4]
         as *const [::core::ffi::c_char; 4]
         as *mut [::core::ffi::c_char; 4];
-    let mut past_end: *mut ::core::ffi::c_char = (&raw mut static_char_array
-        as *mut ::core::ffi::c_char)
-        .offset(9);
+    let mut past_end: *mut ::core::ffi::c_char =
+        (&raw mut static_char_array as *mut ::core::ffi::c_char).offset(9);
     past_end = static_char_ptr.offset(8 as isize);
 }
 #[unsafe(no_mangle)]
@@ -139,7 +138,7 @@ pub unsafe extern "C" fn variable_length() {
         *arr.as_mut_ptr().offset(i as isize) = i as ::core::ffi::c_int;
         i = i.wrapping_add(1);
     }
-    let vla_0 = 2 as ::core::ffi::c_int as usize;
+    let vla_0 = 2 as usize;
     let vla_1 = length as usize;
     let mut nested: Vec<::core::ffi::c_int> = ::std::vec::from_elem(0, vla_0 * vla_1);
     let mut nested_size: size_t = vla_0 * vla_1 * ::core::mem::size_of::<::core::ffi::c_int>();
@@ -147,21 +146,19 @@ pub unsafe extern "C" fn variable_length() {
     while i_0 < length {
         *nested
             .as_mut_ptr()
-            .offset(0 as ::core::ffi::c_int as isize * vla_1 as isize)
+            .offset(0 as isize * vla_1 as isize)
             .offset(i_0 as isize) = i_0 as ::core::ffi::c_int;
         *nested
             .as_mut_ptr()
-            .offset(1 as ::core::ffi::c_int as isize * vla_1 as isize)
+            .offset(1 as isize * vla_1 as isize)
             .offset(i_0 as isize) = i_0 as ::core::ffi::c_int;
         i_0 = i_0.wrapping_add(1);
     }
     let vla_2 = length as usize;
-    let mut first: *mut ::core::ffi::c_int = nested
-        .as_mut_ptr()
-        .offset(1 as ::core::ffi::c_int as isize * vla_1 as isize)
-        as *mut ::core::ffi::c_int;
+    let mut first: *mut ::core::ffi::c_int =
+        nested.as_mut_ptr().offset(1 as isize * vla_1 as isize) as *mut ::core::ffi::c_int;
     let vla_3 = length as usize;
     let mut second: *mut ::core::ffi::c_int =
-        first.offset(1 as ::core::ffi::c_int as isize * vla_2 as isize) as *mut ::core::ffi::c_int;
+        first.offset(1 as isize * vla_2 as isize) as *mut ::core::ffi::c_int;
     let mut diff: ptrdiff_t = second.offset_from(first) / vla_2 as isize;
 }
