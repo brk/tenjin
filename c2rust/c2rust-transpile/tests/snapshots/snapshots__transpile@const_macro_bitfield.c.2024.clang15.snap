@@ -12,6 +12,7 @@ expression: cat tests/snapshots/const_macro_bitfield.2024.clang15.rs
     unused_assignments,
     unused_mut
 )]
+use ::c2rust_bitfields::BitfieldStruct;
 #[derive(Copy, Clone, ::c2rust_bitfields::BitfieldStruct)]
 #[repr(C)]
 pub struct indexwriter {

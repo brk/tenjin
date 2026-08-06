@@ -4113,16 +4113,7 @@ impl<'c> Translation<'c> {
             None => self.implicit_default_expr_guided(guided_type, ctx, typ.ctype),
         };
 
-        let mutbl = match guided_mutbl {
-            Some(mutbl) => mutbl,
-            None => {
-                if typ.qualifiers.is_const {
-                    Mutability::Immutable
-                } else {
-                    Mutability::Mutable
-                }
-            }
-        };
+        let mutbl = guided_mutbl.unwrap_or_else(|| typ.mutability());
 
         if let Some(guided_type) = guided_type {
             // If we have a type override, we use it instead of the converted type
@@ -4147,7 +4138,6 @@ impl<'c> Translation<'c> {
             self.convert_type(typ.ctype)?
         };
 
-        let mutbl = typ.mutability();
         Ok(ConvertedVariable { ty, mutbl, init })
     }
 
@@ -5228,7 +5218,7 @@ impl<'c> Translation<'c> {
         expr: CExprId,
         kind: CastKind,
         opt_field_id: Option<CDeclId>,
-        guided_type: &Option<tenjin::GuidedType>,
+        ctx_guided_type: &Option<tenjin::GuidedType>,
         is_explicit: bool,
     ) -> TranslationResult<WithStmts<Box<Expr>>> {
         // A reference must be decayed if a bitcast is required. Const casts in
@@ -5269,12 +5259,12 @@ impl<'c> Translation<'c> {
 
             if let CExprKind::Literal(_, lit) = literal_expr_kind {
                 if self.literal_matches_ty(lit, target_ty, is_negated) {
-                    return self.convert_expr(ctx, expr, Some(target_ty));
+                    return self.convert_expr_guided(ctx, expr, Some(target_ty), ctx_guided_type);
                 }
             }
         }
 
-        let mut val = self.convert_expr(ctx, expr, None)?;
+        let mut val = self.convert_expr_guided(ctx, expr, None, ctx_guided_type)?;
 
         if is_explicit {
             let stmts = self.compute_variable_array_sizes(ctx, ty.ctype)?;
@@ -5318,7 +5308,7 @@ impl<'c> Translation<'c> {
             Some(expr),
             Some(kind),
             opt_field_id,
-            guided_type,
+            ctx_guided_type,
         )
     }
 
@@ -5330,7 +5320,16 @@ impl<'c> Translation<'c> {
         val: WithStmts<Box<Expr>>,
         guided_type: &Option<tenjin::GuidedType>,
     ) -> TranslationResult<WithStmts<Box<Expr>>> {
-        self.make_cast_full(ctx, source_type_id, target_type_id, val, None, None, None, guided_type)
+        self.make_cast_full(
+            ctx,
+            source_type_id,
+            target_type_id,
+            val,
+            None,
+            None,
+            None,
+            guided_type,
+        )
     }
 
     pub fn make_cast_full(

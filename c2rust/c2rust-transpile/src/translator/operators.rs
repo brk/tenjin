@@ -239,13 +239,7 @@ impl Translation<'_> {
                 )
             })?;
 
-            let val = self.make_cast(
-                ctx,
-                compute_res_type_id,
-                lhs_type_id,
-                val,
-                &None,
-            )?;
+            let val = self.make_cast(ctx, compute_res_type_id, lhs_type_id, val, &None)?;
 
             Ok(val.map(|val| mk().assign_expr(write.clone(), val)))
         }

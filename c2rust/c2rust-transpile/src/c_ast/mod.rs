@@ -1102,8 +1102,9 @@ impl TypedAstContext {
                 typ,
                 is_implicit,
                 ref target_dependent_macro,
-            } = decl.kind else {
-                continue
+            } = decl.kind
+            else {
+                continue;
             };
             let resolved_type_id = self.resolve_type_id(typ.ctype);
             let resolved_type_kind = &self[resolved_type_id].kind;
