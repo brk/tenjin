@@ -261,13 +261,8 @@ impl Translation<'_> {
             }))
         } else {
             Ok(val.and_then(|val| {
-                let mutbl = if qty.qualifiers.is_const {
-                    Mutability::Immutable
-                } else {
-                    Mutability::Mutable
-                };
                 let local = mk().local(
-                    mk().set_mutbl(mutbl).ident_pat(&fresh_name),
+                    mk().set_mutbl(qty.mutability()).ident_pat(&fresh_name),
                     Some(fresh_ty),
                     Some(val),
                 );
@@ -282,16 +277,21 @@ impl Translation<'_> {
     pub fn convert_init_list(
         &self,
         ctx: ExprContext,
-        ty: CQualTypeId,
+        expected_type_id: Option<CQualTypeId>,
+        result_type_id: CQualTypeId,
         ids: &[CExprId],
         opt_union_field_id: Option<CFieldId>,
     ) -> TranslationResult<WithStmts<Box<Expr>>> {
-        match self.ast_context.resolve_type(ty.ctype).kind {
-            CTypeKind::ConstantArray(ty, n) => {
+        let result_type_id = expected_type_id.unwrap_or(result_type_id);
+
+        match self.ast_context.resolve_type(result_type_id.ctype).kind {
+            CTypeKind::ConstantArray(element_type_id, n) => {
                 // Convert all of the provided initializer values
 
                 let to_array_element = |id: CExprId| -> TranslationResult<_> {
-                    self.convert_expr(ctx.used(), id, None)?.try_map(|x| {
+                    let val =
+                        self.convert_expr(ctx.used(), id, Some(CQualTypeId::new(element_type_id)))?;
+                    val.try_map(|x| {
                         // Array literals require all of their elements to be
                         // the correct type; they will not use implicit casts to
                         // change mut to const. This becomes a problem when an
@@ -326,7 +326,7 @@ impl Translation<'_> {
                 // * the element type of the array being `CTypeKind::Char` (w/o this, `array_of_arrays` is included)
                 // * the expr kind being a string literal (`CExprKind::Literal` of a `CLiteral::String`).
                 let is_string_literal = |id: CExprId| {
-                    let ty_kind = &self.ast_context.resolve_type(ty).kind;
+                    let ty_kind = &self.ast_context.resolve_type(element_type_id).kind;
                     let id = self.ast_context.unwrap_constant_expr(id);
                     let expr_kind = &self.ast_context.index_unwrap_parens(id).kind;
                     let is_char_array = matches!(*ty_kind, CTypeKind::Char);
@@ -348,7 +348,7 @@ impl Translation<'_> {
                         // This was likely a C array of the form `int x[16] = {}`.
                         // We'll emit that as [0; 16].
                         let len = mk().lit_expr(mk().int_unsuffixed_lit(n as u128));
-                        let zeroed = self.implicit_default_expr(ctx, ty)?;
+                        let zeroed = self.implicit_default_expr(ctx, element_type_id)?;
                         Ok(zeroed.map(|default_value| mk().repeat_expr(default_value, len)))
                     }
                     &[single] if is_string_literal(single) => {
@@ -357,7 +357,7 @@ impl Translation<'_> {
                         // * `ptr_extra_braces`
                         // * `array_of_ptrs`
                         // * `array_of_arrays`
-                        self.convert_expr(ctx.used(), single, None)
+                        self.convert_expr(ctx.used(), single, expected_type_id)
                     }
                     &[single] if is_zero_literal(single) && n > 1 => {
                         // This was likely a C array of the form `int x[16] = { 0 }`.
@@ -374,7 +374,7 @@ impl Translation<'_> {
                             .chain(
                                 // Pad out the array literal with default values to the desired size
                                 std::iter::repeat_n(
-                                    self.implicit_default_expr(ctx, ty),
+                                    self.implicit_default_expr(ctx, element_type_id),
                                     n - ids.len(),
                                 ),
                             )
@@ -386,17 +386,21 @@ impl Translation<'_> {
             CTypeKind::Struct(struct_id) => {
                 self.convert_struct_literal(ctx, struct_id, ids.as_ref())
             }
-            CTypeKind::Union(union_id) => {
-                self.convert_union_literal(ctx, union_id, ids.as_ref(), ty, opt_union_field_id)
-            }
+            CTypeKind::Union(union_id) => self.convert_union_literal(
+                ctx,
+                union_id,
+                ids.as_ref(),
+                result_type_id,
+                opt_union_field_id,
+            ),
             CTypeKind::Vector(CQualTypeId { ctype, .. }, len) => {
                 self.vector_list_initializer(ctx, ids, ctype, len)
             }
             ref kind if kind.is_scalar() => {
                 if let Some(&first) = ids.first() {
-                    self.convert_expr(ctx.used(), first, None)
+                    self.convert_expr(ctx.used(), first, expected_type_id)
                 } else {
-                    self.implicit_default_expr(ctx.used(), ty.ctype)
+                    self.implicit_default_expr(ctx.used(), result_type_id.ctype)
                 }
             }
             ref t => Err(format_err!("Init list not implemented for {:?}", t).into()),

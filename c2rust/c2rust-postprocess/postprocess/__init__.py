@@ -4,6 +4,7 @@ c2rust-postprocess: Transfer comments from C functions to Rust functions using L
 
 import argparse
 import logging
+import os
 from argparse import BooleanOptionalAction
 from collections.abc import Sequence
 from pathlib import Path
@@ -13,8 +14,10 @@ from google.genai import types
 from postprocess.cache import DirectoryCache, FrozenCache
 from postprocess.exclude_list import IdentifierExcludeList
 from postprocess.models import api_key_from_env, get_model_by_id
+from postprocess.models.gpt import GPTModel
 from postprocess.models.mock import MockGenerativeModel
 from postprocess.transforms import get_transform_by_id
+from postprocess.transforms.base import TransformError
 from postprocess.transforms.comments import (
     SYSTEM_INSTRUCTION,
     AbstractGenerativeModel,
@@ -96,6 +99,16 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
 
     parser.add_argument(
+        "--on-error",
+        type=str,
+        required=False,
+        default="keep-going",
+        choices=["abort", "keep-going", "warn"],
+        help="Handle per-function transform failures: abort at first failure,"
+        " keep going with exit 1, or warn and exit 0 (default: keep-going)",
+    )
+
+    parser.add_argument(
         "--transform",
         type=str,
         required=False,
@@ -114,6 +127,24 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 
 def get_model(model_id: str) -> AbstractGenerativeModel:
+    # CRISP_API_MODEL/_KEY/_BASE (see github.com/GaloisInc/Tractor-Crisp)
+    # override CLI model selection; CRISP endpoints are OpenAI-compatible.
+    if crisp_model_id := os.getenv("CRISP_API_MODEL"):
+        if not (crisp_api_key := os.getenv("CRISP_API_KEY")):
+            raise RuntimeError(
+                "`CRISP_API_MODEL` is set but `CRISP_API_KEY` is not; "
+                "set both or neither."
+            )
+        logging.info(
+            "CLI model selection overridden by `CRISP_API_MODEL` env var; "
+            f"using model {crisp_model_id}."
+        )
+        return GPTModel(
+            id=crisp_model_id,
+            api_key=crisp_api_key,
+            base_url=os.getenv("CRISP_API_BASE"),
+        )
+
     api_key = api_key_from_env(model_id)
     if api_key is None:
         logging.warning(
@@ -154,19 +185,39 @@ def main(argv: Sequence[str] | None = None):
             if transform_id.strip()
         )
         transforms = [
-            get_transform_by_id(transform_id, cache=cache, model=model)
+            get_transform_by_id(
+                transform_id,
+                cache=cache,
+                model=model,
+            )
             for transform_id in transform_ids
         ]
 
+        failures = 0
+        failure_log_level = (
+            logging.WARNING if args.on_error == "warn" else logging.ERROR
+        )
         for transform in transforms:
-            transform.apply_dir(
+            failures += transform.apply_dir(
                 root_rust_source_file=args.root_rust_source_file,
                 exclude_list=IdentifierExcludeList(src_path=args.exclude_file),
                 ident_filter=args.ident_filter,
                 update_rust=args.update_rust,
+                keep_going=args.on_error != "abort",
+                failure_log_level=failure_log_level,
             )
 
+        if failures:
+            logging.log(
+                failure_log_level, f"Failed to transform {failures} function(s)"
+            )
+            if args.on_error != "warn":
+                return 1
+
         return 0
+    except TransformError as error:
+        logging.exception(f"Aborting at first transform failure: {error}")
+        return 1
     except KeyboardInterrupt:
         logging.warning("Interrupted by user, terminating...")
         return 130  # 128 + SIGINT(2)
