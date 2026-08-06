@@ -14,12 +14,14 @@ from postprocess.cache import DirectoryCache, FrozenCache
 from postprocess.exclude_list import IdentifierExcludeList
 from postprocess.models import api_key_from_env, get_model_by_id
 from postprocess.models.mock import MockGenerativeModel
-from postprocess.transforms import (
+from postprocess.transforms import get_transform_by_id
+from postprocess.transforms.comments import (
     SYSTEM_INSTRUCTION,
     AbstractGenerativeModel,
-    CommentTransfer,
 )
 from postprocess.utils import existing_file
+
+DEFAULT_LLM_MODEL = "gemini-3.5-flash"
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -64,8 +66,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--llm-model",
         type=str,
         required=False,
-        default="gemini-3-flash-preview",
-        help="ID of the LLM model to use (default: gemini-3-flash-preview)",
+        default=DEFAULT_LLM_MODEL,
+        help=f"ID of the LLM model to use (default: {DEFAULT_LLM_MODEL})",
     )
 
     parser.add_argument(
@@ -93,7 +95,20 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Update the Rust in-place",
     )
 
-    # TODO: add option to select what transforms to apply
+    parser.add_argument(
+        "--transform",
+        type=str,
+        required=False,
+        action="append",
+        default=["comments"],
+        help=(
+            "Transform to apply; pass multiple times to apply multiple transforms "
+            "in sorted order (default: comments)"
+        ),
+    )
+
+    # TODO: add option to select model
+    # TODO: add option to configure cache
 
     return parser
 
@@ -131,14 +146,25 @@ def main(argv: Sequence[str] | None = None):
 
         model = get_model(args.llm_model)
 
-        # TODO: instantiate transform(s) based on command line args
-        xform = CommentTransfer(cache, model)
-        xform.transfer_comments_dir(
-            root_rust_source_file=args.root_rust_source_file,
-            exclude_list=IdentifierExcludeList(src_path=args.exclude_file),
-            ident_filter=args.ident_filter,
-            update_rust=args.update_rust,
+        # sort transform IDs to transforms always run in the same order to
+        # maximize cache hits even if the user passed them in a different order
+        transform_ids = sorted(
+            transform_id.strip()
+            for transform_id in set(args.transform)
+            if transform_id.strip()
         )
+        transforms = [
+            get_transform_by_id(transform_id, cache=cache, model=model)
+            for transform_id in transform_ids
+        ]
+
+        for transform in transforms:
+            transform.apply_dir(
+                root_rust_source_file=args.root_rust_source_file,
+                exclude_list=IdentifierExcludeList(src_path=args.exclude_file),
+                ident_filter=args.ident_filter,
+                update_rust=args.update_rust,
+            )
 
         return 0
     except KeyboardInterrupt:

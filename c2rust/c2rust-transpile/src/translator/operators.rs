@@ -19,8 +19,8 @@ impl Translation<'_> {
             ctx.ternary_needs_parens = true;
         }
 
-        let lhs_loc = &self.ast_context[lhs].loc;
-        let rhs_loc = &self.ast_context[rhs].loc;
+        let lhs_loc = &self.ast_context.index_unwrap_parens(lhs).loc;
+        let rhs_loc = &self.ast_context.index_unwrap_parens(rhs).loc;
         use CBinOp::*;
         match op {
             Comma => {
@@ -68,14 +68,14 @@ impl Translation<'_> {
 
                 let ty = self.convert_type(expr_type_id.ctype)?;
 
-                let lhs_kind = &self.ast_context.index(lhs).kind;
+                let lhs_kind = &self.ast_context.index_unwrap_parens(lhs).kind;
                 let mut lhs_type_id = lhs_kind.get_qual_type().ok_or_else(|| {
                     format_translation_err!(
                         self.ast_context.display_loc(lhs_loc),
                         "bad lhs type for assignment"
                     )
                 })?;
-                let rhs_kind = &self.ast_context.index(rhs).kind;
+                let rhs_kind = &self.ast_context.index_unwrap_parens(rhs).kind;
                 let mut rhs_type_id = rhs_kind.get_qual_type().ok_or_else(|| {
                     format_translation_err!(
                         self.ast_context.display_loc(rhs_loc),
@@ -282,13 +282,13 @@ impl Translation<'_> {
 
         let rhs_type_id = self
             .ast_context
-            .index(rhs)
+            .index_unwrap_parens(rhs)
             .kind
             .get_qual_type()
             .ok_or_else(|| format_err!("bad assignment rhs type"))?;
 
         let lhs_guidance = self.parsed_guidance.borrow_mut().query_expr_type(self, lhs);
-        let lhs_kind = &self.ast_context.index(lhs).kind;
+        let lhs_kind = &self.ast_context.index_unwrap_parens(lhs).kind;
         let lhs_type_id = lhs_kind
             .get_qual_type()
             .ok_or_else(|| format_err!("bad initial lhs type"))?;
@@ -360,7 +360,7 @@ impl Translation<'_> {
 
         let result_type_id = compute_res_type_id.unwrap_or(expr_type_id);
         let expr_or_comp_type_id = compute_lhs_type_id.unwrap_or(expr_type_id);
-        let initial_lhs = &self.ast_context.index(lhs_id).kind;
+        let initial_lhs = &self.ast_context.index_unwrap_parens(lhs_id).kind;
         let initial_lhs_type_id = initial_lhs
             .get_qual_type()
             .ok_or_else(|| format_err!("bad initial lhs type"))?;
@@ -704,7 +704,9 @@ impl Translation<'_> {
         op: CBinOp,
         arg: CExprId,
     ) -> TranslationResult<WithStmts<Box<Expr>>> {
-        let arg_type = self.ast_context[arg]
+        let arg_type = self
+            .ast_context
+            .index_unwrap_parens(arg)
             .kind
             .get_qual_type()
             .ok_or_else(|| format_err!("bad arg type"))?;
@@ -765,7 +767,7 @@ impl Translation<'_> {
             .expect("not an valid assignment operator");
         let ty = self
             .ast_context
-            .index(arg)
+            .index_unwrap_parens(arg)
             .kind
             .get_qual_type()
             .ok_or_else(|| format_err!("bad post inc type"))?;
@@ -923,7 +925,7 @@ impl Translation<'_> {
             .is_unsigned_integral_type();
 
         if let (&CExprKind::Literal(_, CLiteral::Integer(val, base)), false, false) = (
-            &self.ast_context[arg_id].kind,
+            &self.ast_context.index_unwrap_parens(arg_id).kind,
             is_unsigned_integral_type,
             self.expr_is_expanded_macro(ctx, arg_id, Some(expr_type_id)),
         ) {

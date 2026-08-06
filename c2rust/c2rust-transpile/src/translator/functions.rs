@@ -427,7 +427,8 @@ impl<'c> Translation<'c> {
         let fn_ty = self
             .ast_context
             .get_pointee_qual_type(
-                self.ast_context[func_id]
+                self.ast_context
+                    .index_unwrap_parens(func_id)
                     .kind
                     .get_type()
                     .ok_or_else(|| format_err!("Invalid callee expression {:?}", func_id))?,
@@ -446,12 +447,12 @@ impl<'c> Translation<'c> {
             None
         };
 
-        let func = match self.ast_context[func_id].kind {
+        let func = match self.ast_context.index_unwrap_parens(func_id).kind {
             // Direct function call
             CExprKind::ImplicitCast(_, fexp, CastKind::FunctionToPointerDecay, _, _)
             // Only a direct function call with pointer decay if the
             // callee is a declref
-            if matches!(self.ast_context[fexp].kind, CExprKind::DeclRef(..)) =>
+            if matches!(self.ast_context.index_unwrap_parens(fexp).kind, CExprKind::DeclRef(..)) =>
                 {
                     self.convert_expr(ctx.used(), fexp, None)?
                 }
@@ -584,8 +585,12 @@ impl<'c> Translation<'c> {
     ) -> TranslationResult<WithStmts<Box<Expr>>> {
         let mut val;
 
-        if (self.ast_context.index(expr_id).kind.get_qual_type())
-            .is_some_and(|qtype| self.ast_context.is_va_list(qtype.ctype))
+        if (self
+            .ast_context
+            .index_unwrap_parens(expr_id)
+            .kind
+            .get_qual_type())
+        .is_some_and(|qtype| self.ast_context.is_va_list(qtype.ctype))
         {
             // No `override_ty` to avoid unwanted casting.
             val = self.convert_expr(ctx, expr_id, None)?;

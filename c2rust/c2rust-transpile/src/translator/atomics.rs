@@ -98,14 +98,14 @@ impl Translation<'_> {
 
     fn convert_constant_bool(&self, expr: CExprId) -> Option<bool> {
         let val = self.ast_context.unwrap_cast_expr(expr);
-        match self.ast_context.index(val).kind {
+        match self.ast_context.index_unwrap_parens(val).kind {
             CExprKind::Literal(_, CLiteral::Integer(i, _)) => Some(i != 0),
             _ => None,
         }
     }
 
     fn convert_memordering(&self, expr: CExprId) -> Option<Ordering> {
-        let memorder = &self.ast_context[expr];
+        let memorder = &self.ast_context.index_unwrap_parens(expr);
         let i = match memorder.kind {
             CExprKind::Literal(_, CLiteral::Integer(i, _)) => Some(i),
             CExprKind::DeclRef(_, decl_id, LRValue::RValue) => {
@@ -295,8 +295,12 @@ impl Translation<'_> {
                         }
                         .ok_or_else(|| {
                             format_translation_err!(
-                                self.ast_context
-                                    .display_loc(&self.ast_context[order_fail_id.unwrap()].loc),
+                                self.ast_context.display_loc(
+                                    &self
+                                        .ast_context
+                                        .index_unwrap_parens(order_fail_id.unwrap())
+                                        .loc
+                                ),
                                 "Invalid failure memory ordering",
                             )
                         })?;
@@ -313,7 +317,7 @@ impl Translation<'_> {
                             self.atomic_intrinsic_cxchg_expr(weak, order, order_fail);
                         let call =
                             mk().call_expr(atomic_cxchg, vec![ptr, expected.clone(), desired]);
-                        let res_name = self.renamer.borrow_mut().fresh();
+                        let res_name = self.renamer.borrow_mut().pick_name("c2rust_result");
                         let res_let = mk().local_stmt(Box::new(mk().local(
                             mk().ident_pat(&res_name),
                             None,
@@ -337,7 +341,9 @@ impl Translation<'_> {
                     let order = static_order(order);
                     let val =
                         val1.expect("__atomic arithmetic operations must have a val argument");
-                    let val_type_id = self.ast_context[val1_id.unwrap()]
+                    let val_type_id = self
+                        .ast_context
+                        .index_unwrap_parens(val1_id.unwrap())
                         .kind
                         .get_qual_type()
                         .ok_or_else(|| format_err!("bad val1 type"))?;
@@ -398,14 +404,14 @@ impl Translation<'_> {
             // Since the value of `arg1` is used twice, we need to copy
             // it into a local temporary so we don't duplicate any side-effects
             // To preserve ordering of side-effects, we also do this for arg0
-            let arg0_name = self.renamer.borrow_mut().fresh();
+            let arg0_name = self.renamer.borrow_mut().pick_name("c2rust_lhs");
             let arg0_let = mk().local_stmt(Box::new(mk().local(
                 mk().ident_pat(&arg0_name),
                 None,
                 Some(dst),
             )));
 
-            let arg1_name = self.renamer.borrow_mut().fresh();
+            let arg1_name = self.renamer.borrow_mut().pick_name("c2rust_rhs");
             let arg1_let = mk().local_stmt(Box::new(mk().local(
                 mk().ident_pat(&arg1_name),
                 None,
