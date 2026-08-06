@@ -1197,9 +1197,7 @@ impl CfgBuilder {
     }
 
     fn for_init_declares_cleanup(translator: &Translation, init: Option<CStmtId>) -> bool {
-        init.map_or(false, |stmt_id| {
-            Self::stmt_declares_cleanup(translator, stmt_id)
-        })
+        init.is_some_and(|stmt_id| Self::stmt_declares_cleanup(translator, stmt_id))
     }
 
     fn last_per_stmt_mut(&mut self) -> &mut PerStmt {

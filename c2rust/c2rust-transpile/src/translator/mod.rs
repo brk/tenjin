@@ -3848,7 +3848,7 @@ impl<'c> Translation<'c> {
                             .expect("cleanup function not registered with renamer");
                         let cleanup_ident = mk().ident(&cleanup_name);
                         let var_ident = mk().ident(&rust_name);
-                        let guard_ident = mk().ident(&format!("_cleanup_{}", rust_name));
+                        let guard_ident = mk().ident(format!("_cleanup_{}", rust_name));
                         syn::parse_quote! {
                             let #guard_ident = CleanupGuard(
                                 &raw mut #var_ident as *mut _,
