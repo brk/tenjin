@@ -831,19 +831,7 @@ impl<'c> Translation<'c> {
             }))
         } else {
             // First convert the pointer to `usize`.
-            let method_name = match self.tcfg.edition {
-                RustEdition::Edition2021 => {
-                    // Rust 1.76: feature name changed to `exposed_provenance`
-                    // Rust 1.84: stabilized
-                    self.use_feature("strict_provenance");
-
-                    // Rust 1.79: method name changed to `expose_provenance`
-                    "expose_addr"
-                }
-                RustEdition::Edition2024 => "expose_provenance",
-            };
-
-            let val = val.map(|val| mk().method_call_expr(val, method_name, vec![]));
+            let val = val.map(|val| mk().method_call_expr(val, "expose_provenance", vec![]));
 
             // Then cast the `usize` to the target type.
             let target_ty_kind = &self.ast_context.resolve_type(target_cty).kind;
