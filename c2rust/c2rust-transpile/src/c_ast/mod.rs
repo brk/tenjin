@@ -360,7 +360,7 @@ impl TypedAstContext {
         use SomeId::*;
         match id {
             Stmt(id) => self.index(id).loc,
-            Expr(id) => self.index(id).loc,
+            Expr(id) => self.index_unwrap_parens(id).loc,
             Decl(id) => self.index(id).loc,
             Type(id) => self.index(id).loc,
         }
@@ -488,7 +488,7 @@ impl TypedAstContext {
 
     pub fn is_null_expr(&self, expr_id: CExprId) -> bool {
         use CExprKind::*;
-        match self[expr_id].kind {
+        match self.index_unwrap_parens(expr_id).kind {
             ExplicitCast(_, _, CastKind::NullToPointer, _, _)
             | ImplicitCast(_, _, CastKind::NullToPointer, _, _) => true,
 
@@ -674,17 +674,24 @@ impl TypedAstContext {
     }
 
     /// Returns the expression inside any number of nested parentheses.
-    pub fn resolve_parens(&self, mut expr_id: CExprId) -> CExprId {
-        while let CExprKind::Paren(_, subexpr) = self.index(expr_id).kind {
+    pub fn unwrap_parens(&self, mut expr_id: CExprId) -> CExprId {
+        while let CExprKind::Paren(_, subexpr) = self[expr_id].kind {
             expr_id = subexpr;
         }
 
         expr_id
     }
 
+    /// Same as the index operator, but unwraps `Paren` expressions.
+    pub fn index_unwrap_parens(&self, expr_id: CExprId) -> &CExpr {
+        &self[self.unwrap_parens(expr_id)]
+    }
+
     /// Returns the expression inside an `__extension__` operator.
     pub fn resolve_extension(&self, expr_id: CExprId) -> CExprId {
-        if let CExprKind::Unary(_, CUnOp::Extension, subexpr, _) = self.index(expr_id).kind {
+        if let CExprKind::Unary(_, CUnOp::Extension, subexpr, _) =
+            self.index_unwrap_parens(expr_id).kind
+        {
             subexpr
         } else {
             expr_id
@@ -693,9 +700,18 @@ impl TypedAstContext {
 
     /// Unwraps a predefined expression, if there is one.
     pub fn unwrap_predefined_ident(&self, mut expr_id: CExprId) -> CExprId {
-        expr_id = self.resolve_extension(self.resolve_parens(expr_id));
+        expr_id = self.resolve_extension(self.unwrap_parens(expr_id));
 
-        if let CExprKind::Predefined(_, subexpr) = self.index(expr_id).kind {
+        if let CExprKind::Predefined(_, subexpr) = self.index_unwrap_parens(expr_id).kind {
+            subexpr
+        } else {
+            expr_id
+        }
+    }
+
+    /// Unwraps a constant expression, if there is one.
+    pub fn unwrap_constant_expr(&self, expr_id: CExprId) -> CExprId {
+        if let CExprKind::ConstantExpr(_, subexpr, _) = self[expr_id].kind {
             subexpr
         } else {
             expr_id
@@ -706,7 +722,7 @@ impl TypedAstContext {
     pub fn unwrap_cast_expr(&self, mut expr_id: CExprId) -> CExprId {
         while let CExprKind::Paren(_, subexpr)
         | CExprKind::ImplicitCast(_, subexpr, _, _, _)
-        | CExprKind::ExplicitCast(_, subexpr, _, _, _) = self.index(expr_id).kind
+        | CExprKind::ExplicitCast(_, subexpr, _, _, _) = self[expr_id].kind
         {
             expr_id = subexpr;
         }
@@ -716,7 +732,9 @@ impl TypedAstContext {
 
     /// Unwraps the underlying expression beneath any implicit casts.
     pub fn unwrap_implicit_cast_expr(&self, mut expr_id: CExprId) -> CExprId {
-        while let CExprKind::ImplicitCast(_, subexpr, _, _, _) = self.index(expr_id).kind {
+        while let CExprKind::ImplicitCast(_, subexpr, _, _, _) =
+            self.index_unwrap_parens(expr_id).kind
+        {
             expr_id = subexpr;
         }
 
@@ -726,7 +744,7 @@ impl TypedAstContext {
     /// Resolve true expression type, iterating through any casts and variable
     /// references.
     pub fn resolve_expr_type_id(&self, expr_id: CExprId) -> Option<(CExprId, CTypeId)> {
-        let expr = &self.index(expr_id).kind;
+        let expr = &self[expr_id].kind;
         let mut ty = expr.get_type();
         use CExprKind::*;
         match expr {
@@ -805,9 +823,10 @@ impl TypedAstContext {
     /// Looks for ImplicitCast(FunctionToPointerDecay, DeclRef(function_decl))
     pub fn fn_declref_decl(&self, func_expr: CExprId) -> Option<&CDeclKind> {
         use CastKind::FunctionToPointerDecay;
-        if let CExprKind::ImplicitCast(_, fexp, FunctionToPointerDecay, _, _) = self[func_expr].kind
+        if let CExprKind::ImplicitCast(_, fexp, FunctionToPointerDecay, _, _) =
+            self.index_unwrap_parens(func_expr).kind
         {
-            if let CExprKind::DeclRef(_ty, decl_id, _rv) = &self[fexp].kind {
+            if let CExprKind::DeclRef(_ty, decl_id, _rv) = &self.index_unwrap_parens(fexp).kind {
                 let decl = &self.index(*decl_id).kind;
                 assert!(matches!(decl, CDeclKind::Function { .. }));
                 return Some(decl);
@@ -869,7 +888,7 @@ impl TypedAstContext {
     pub fn is_expr_pure(&self, expr: CExprId) -> bool {
         use CExprKind::*;
         let pure = |expr| self.is_expr_pure(expr);
-        match self.index(expr).kind {
+        match self[expr].kind {
             BadExpr |
             ShuffleVector(..) |
             ConvertVector(..) |
@@ -898,6 +917,7 @@ impl TypedAstContext {
             Member(_, e, _, _, _) |
             Paren(_, e) |
             CompoundLiteral(_, e) |
+            ImaginaryLiteral(_, e) |
             Unary(_, _, e, _) => pure(e),
 
             Binary(_, op, _, _, _, _) if op.underlying_assignment().is_some() => false,
@@ -913,12 +933,12 @@ impl TypedAstContext {
     /// Pessimistically try to check if an expression doesn't return.
     /// If it does, or we can't tell that it doesn't, return `false`.
     pub fn expr_diverges(&self, expr_id: CExprId) -> bool {
-        let func_id = match self.index(expr_id).kind {
+        let func_id = match self.index_unwrap_parens(expr_id).kind {
             CExprKind::Call(_, func_id, _) => func_id,
             _ => return false,
         };
 
-        let type_id = match self[func_id].kind.get_type() {
+        let type_id = match self.index_unwrap_parens(func_id).kind.get_type() {
             None => return false,
             Some(t) => t,
         };
@@ -982,6 +1002,7 @@ impl TypedAstContext {
             ImplicitValueInit(_) => true,
             Paren(_, expr) => is_const(expr),
             CompoundLiteral(_, expr) => is_const(expr),
+            ImaginaryLiteral(_, expr) => is_const(expr),
             Predefined(_, expr) => is_const(expr),
             Statements(_, stmt) => self.is_const_stmt(stmt),
             VAArg(_, expr) => is_const(expr),
@@ -1175,7 +1196,7 @@ impl TypedAstContext {
                     }
 
                     Expr(expr_id) => {
-                        let expr = self.index(expr_id);
+                        let expr = self.index_unwrap_parens(expr_id);
                         if let Some(macs) = self.macro_invocations.get(&expr_id) {
                             for mac_id in macs {
                                 if wanted.insert(*mac_id) {
@@ -1201,6 +1222,20 @@ impl TypedAstContext {
                             let parent_id = self.parents[&decl_id];
                             if wanted.insert(parent_id) {
                                 to_walk.push(parent_id);
+                            }
+                        }
+
+                        // `__attribute__((cleanup(func)))` references its cleanup
+                        // function through the attribute payload, not via a
+                        // DeclRef the traversal would otherwise see, so mark it
+                        // here.
+                        if let CDeclKind::Variable { ref attrs, .. } = self.c_decls[&decl_id].kind {
+                            for attr in attrs {
+                                if let Attribute::Cleanup(fn_id) = attr {
+                                    if wanted.insert(*fn_id) {
+                                        to_walk.push(*fn_id);
+                                    }
+                                }
                             }
                         }
                     }
@@ -1255,7 +1290,7 @@ impl TypedAstContext {
                     _ => return,
                 };
 
-                let new_ty = match self.ast_context.c_exprs[&e].kind {
+                let new_ty = match self.ast_context[e].kind {
                     CExprKind::Conditional(_ty, _cond, lhs, rhs) => {
                         let lhs_type_id =
                             self.ast_context.c_exprs[&lhs].kind.get_qual_type().unwrap();
@@ -1503,22 +1538,13 @@ impl Index<CTypeId> for TypedAstContext {
 
 impl Index<CExprId> for TypedAstContext {
     type Output = CExpr;
+
     fn index(&self, index: CExprId) -> &CExpr {
         static BADEXPR: CExpr = Located {
             loc: None,
             kind: CExprKind::BadExpr,
         };
-        match self.c_exprs.get(&index) {
-            None => &BADEXPR, // panic!("Could not find {:?} in TypedAstContext", index),
-            Some(e) => {
-                // Transparently index through Paren expressions
-                if let CExprKind::Paren(_, subexpr) = e.kind {
-                    self.index(subexpr)
-                } else {
-                    e
-                }
-            }
-        }
+        self.c_exprs.get(&index).unwrap_or(&BADEXPR)
     }
 }
 
@@ -1757,6 +1783,9 @@ pub enum CExprKind {
     /// Compound literal.
     CompoundLiteral(CQualTypeId, CExprId),
 
+    /// Imaginary literal.
+    ImaginaryLiteral(CQualTypeId, CExprId),
+
     /// Predefined expression.
     Predefined(CQualTypeId, CExprId),
 
@@ -1841,6 +1870,7 @@ impl CExprKind {
             | CExprKind::ImplicitValueInit(ty)
             | CExprKind::Paren(ty, _)
             | CExprKind::CompoundLiteral(ty, _)
+            | CExprKind::ImaginaryLiteral(ty, _)
             | CExprKind::Predefined(ty, _)
             | CExprKind::Statements(ty, _)
             | CExprKind::VAArg(ty, _)
@@ -2861,6 +2891,8 @@ pub enum Attribute {
     Alias(String),
     /// __attribute__((always_inline, __always_inline__))
     AlwaysInline,
+    /// __attribute__((cleanup(func), __cleanup__(func)))
+    Cleanup(CDeclId),
     /// __attribute__((cold, __cold__))
     Cold,
     /// Clang `__counted_by` / `__sized_by` (`_or_null`) bounds attribute on a

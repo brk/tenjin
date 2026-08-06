@@ -706,7 +706,7 @@ pub fn is_bitcast_to_int_or_float(
         argkind
     {
         if let CExprKind::Unary(inner_cqt, CUnOp::AddressOf, inner_exp, _lrval) =
-            t.ast_context[*exp].kind
+            t.ast_context.index_unwrap_parens(*exp).kind
         {
             // TENJIN-TODO(intsizes): be more robust about determining actual int sizes
             let outer_tykind = &t.ast_context.resolve_type(outer_cqt.ctype).kind;
@@ -897,7 +897,7 @@ pub fn builtin_decl_type(translation: &Translation, id: CDeclId) -> Option<Guide
 
 impl Translation<'_> {
     // fn strip_integral_cast(&self, expr: CExprId) -> CExprId {
-    //     let kind = &self.ast_context.index(expr).kind;
+    //     let kind = &self.ast_context.index_unwrap_parens(expr).kind;
     //     if let CExprKind::ImplicitCast(_, inner, CastKind::IntegralCast, _, _) = kind {
     //         *inner
     //     } else {
@@ -906,7 +906,7 @@ impl Translation<'_> {
     // }
 
     pub fn strip_implicit_array_to_pointer_cast(&self, expr: CExprId) -> CExprId {
-        let kind = &self.ast_context.index(expr).kind;
+        let kind = &self.ast_context.index_unwrap_parens(expr).kind;
         if let CExprKind::ImplicitCast(_, inner, CastKind::ArrayToPointerDecay, _, _) = kind {
             *inner
         } else {
@@ -915,7 +915,7 @@ impl Translation<'_> {
     }
 
     fn is_integral_lit(&self, expr: CExprId, val: u64) -> bool {
-        let kind = &self.ast_context.index(expr).kind;
+        let kind = &self.ast_context.index_unwrap_parens(expr).kind;
         if let CExprKind::Literal(_, clit) = kind {
             match clit {
                 CLiteral::Integer(value, _base) => *value == val,
@@ -928,7 +928,7 @@ impl Translation<'_> {
     }
 
     pub fn get_string_lit(&self, expr: CExprId) -> Option<&CLiteral> {
-        let kind = &self.ast_context.index(expr).kind;
+        let kind = &self.ast_context.index_unwrap_parens(expr).kind;
         if let CExprKind::Literal(_, clit) = kind {
             match clit {
                 CLiteral::String(_, _) => Some(clit),
@@ -950,7 +950,7 @@ impl Translation<'_> {
     fn c_expr_decl_id(&self, expr: CExprId) -> Option<CDeclId> {
         let kind = &self
             .ast_context
-            .index(self.c_strip_implicit_casts(expr))
+            .index_unwrap_parens(self.c_strip_implicit_casts(expr))
             .kind;
         if let CExprKind::DeclRef(_, decl_id, _) = kind {
             Some(*decl_id)
@@ -969,7 +969,7 @@ impl Translation<'_> {
 
         let get_sizeof =
             |t: &Translation<'_>, expr: CExprId| -> Option<(Option<CExprId>, CTypeId)> {
-                let kind = &t.ast_context.index(expr).kind;
+                let kind = &t.ast_context.index_unwrap_parens(expr).kind;
                 if let CExprKind::UnaryType(_cqt1, CUnTypeOp::SizeOf, mb_expr_id, cqt2) = kind {
                     Some((*mb_expr_id, cqt2.ctype))
                 } else {
@@ -978,7 +978,7 @@ impl Translation<'_> {
             };
 
         if let CExprKind::Binary(_cq, CBinOp::Multiply, lhs, rhs, _opt_cq_lhs, _opt_cq_rhs) =
-            self.ast_context.index(expr).kind
+            self.ast_context.index_unwrap_parens(expr).kind
         {
             if let Some((mb_expr_id, typ)) = get_sizeof(self, lhs) {
                 return SizeofArgSituation::ExprTimesSizeof(rhs, mb_expr_id, typ);
@@ -1117,9 +1117,12 @@ impl Translation<'_> {
                 )))
             }
             RecognizedCallForm::PrintfOut { fmt_string_idx } => {
-                let fmt_string_span = self
-                    .ast_context
-                    .display_loc(&self.ast_context[cargs[fmt_string_idx]].loc);
+                let fmt_string_span = self.ast_context.display_loc(
+                    &self
+                        .ast_context
+                        .index_unwrap_parens(cargs[fmt_string_idx])
+                        .loc,
+                );
                 Ok(mk().mac_expr(refactor_format::build_format_macro(
                     self,
                     "print",
@@ -1131,9 +1134,12 @@ impl Translation<'_> {
                 )))
             }
             RecognizedCallForm::PrintfErr { fmt_string_idx } => {
-                let fmt_string_span = self
-                    .ast_context
-                    .display_loc(&self.ast_context[cargs[fmt_string_idx]].loc);
+                let fmt_string_span = self.ast_context.display_loc(
+                    &self
+                        .ast_context
+                        .index_unwrap_parens(cargs[fmt_string_idx])
+                        .loc,
+                );
                 Ok(mk().mac_expr(refactor_format::build_format_macro(
                     self,
                     "eprint",
@@ -1149,9 +1155,12 @@ impl Translation<'_> {
                 opt_size,
                 dest,
             } => {
-                let fmt_string_span = self
-                    .ast_context
-                    .display_loc(&self.ast_context[cargs[fmt_string_idx]].loc);
+                let fmt_string_span = self.ast_context.display_loc(
+                    &self
+                        .ast_context
+                        .index_unwrap_parens(cargs[fmt_string_idx])
+                        .loc,
+                );
                 let formatted_string = mk().mac_expr(refactor_format::build_format_macro(
                     self,
                     "format",
@@ -1478,7 +1487,7 @@ impl Translation<'_> {
     fn recognize_assert_condition_message(&self, expr: CExprId) -> Option<(CExprId, Box<Expr>)> {
         let CExprKind::Binary(_, CBinOp::And, lhs, rhs, _, _) = self
             .ast_context
-            .index(self.c_strip_implicit_casts(expr))
+            .index_unwrap_parens(self.c_strip_implicit_casts(expr))
             .kind
         else {
             return None;
@@ -1599,7 +1608,7 @@ impl Translation<'_> {
                         None,
                         None,
                         self.ast_context
-                            .display_loc(&self.ast_context[cargs[0]].loc),
+                            .display_loc(&self.ast_context.index_unwrap_parens(cargs[0]).loc),
                     ));
                     return Ok(Some(WithStmts::new_val(print_call)));
                 }
@@ -1640,7 +1649,7 @@ impl Translation<'_> {
                 None,
                 None,
                 self.ast_context
-                    .display_loc(&self.ast_context[cargs[0]].loc),
+                    .display_loc(&self.ast_context.index_unwrap_parens(cargs[0]).loc),
             ));
             return Ok(Some(WithStmts::new_val(print_call)));
         }
@@ -1670,7 +1679,7 @@ impl Translation<'_> {
                 None,
                 None,
                 self.ast_context
-                    .display_loc(&self.ast_context[cargs[0]].loc),
+                    .display_loc(&self.ast_context.index_unwrap_parens(cargs[0]).loc),
             ));
             return Ok(Some(WithStmts::new_val(print_call)));
         }
@@ -2271,7 +2280,7 @@ impl Translation<'_> {
     ) -> bool {
         // For `memset(DST, 0, E * sizeof(T))` it's OK as long as sizeof(T) == sizeof(*DST), which we currently
         // approximate by requiring that the resolved types are identical.
-        if let Some(dst_type_id) = self.ast_context[*dst].kind.get_type() {
+        if let Some(dst_type_id) = self.ast_context.index_unwrap_parens(*dst).kind.get_type() {
             if sized_expr.is_none() && Some(*elt_type) == self.c_type_pointee(dst_type_id) {
                 // XREF:guided_vec_memset_zero_mulsizeof_ty
                 return true;
@@ -2281,7 +2290,7 @@ impl Translation<'_> {
             // For `memset(PTR, 0, E * sizeof(PTR))` we'd need to know the relationship between the target pointer size
             // and the size of the pointee type.
             if let Some(sized_expr) = sized_expr {
-                return match &self.ast_context[*sized_expr].kind {
+                return match &self.ast_context.index_unwrap_parens(*sized_expr).kind {
                     CExprKind::Unary(_, CUnOp::Deref, inner, _lrvalue) => {
                         // XREF:guided_vec_memset_zero_mulsizeof_deref
                         self.c_expr_decl_id(*inner) == self.c_expr_decl_id(*dst)
@@ -2315,10 +2324,20 @@ impl Translation<'_> {
             let src_expr_id = self.c_strip_implicit_casts(cargs[0]);
             let dst_expr_id = self.c_strip_implicit_casts(cargs[1]);
 
-            let Some(src_type_id) = self.ast_context[src_expr_id].kind.get_type() else {
+            let Some(src_type_id) = self
+                .ast_context
+                .index_unwrap_parens(src_expr_id)
+                .kind
+                .get_type()
+            else {
                 return Ok(None);
             };
-            let Some(dst_ptr_type_id) = self.ast_context[dst_expr_id].kind.get_type() else {
+            let Some(dst_ptr_type_id) = self
+                .ast_context
+                .index_unwrap_parens(dst_expr_id)
+                .kind
+                .get_type()
+            else {
                 return Ok(None);
             };
             let Some(dst_type_id) = self.c_type_pointee(dst_ptr_type_id) else {
@@ -2482,9 +2501,9 @@ impl Translation<'_> {
         &self,
         func_id: CExprId,
     ) -> Option<Vec<Option<tenjin::GuidedType>>> {
-        match self.ast_context[func_id].kind {
+        match self.ast_context.index_unwrap_parens(func_id).kind {
             CExprKind::ImplicitCast(_, fexp, CastKind::FunctionToPointerDecay, _, _) => {
-                match self.ast_context[fexp].kind {
+                match self.ast_context.index_unwrap_parens(fexp).kind {
                     CExprKind::DeclRef(_qtyid, fndeclid, _lrvalue) => {
                         match &self.ast_context[fndeclid].kind {
                             CDeclKind::Function { parameters, .. } => Some(
@@ -2510,7 +2529,11 @@ impl Translation<'_> {
     /// Attempt to compute the post-translation type of `expr`, taking into
     /// account guidance
     pub fn try_compute_guided_type(&self, expr: CExprId) -> Option<Type> {
-        match self.ast_context[self.c_strip_noop_casts(expr)].kind {
+        match self
+            .ast_context
+            .index_unwrap_parens(self.c_strip_noop_casts(expr))
+            .kind
+        {
             CExprKind::DeclRef(_, decl_id, _) => {
                 self.ast_context
                     .get_decl(&decl_id)

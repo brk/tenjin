@@ -238,7 +238,7 @@ impl Translation<'_> {
             return self.convert_expr(ctx, val, override_ty);
         }
 
-        let fresh_name = self.renamer.borrow_mut().fresh();
+        let fresh_name = self.renamer.borrow_mut().pick_name("c2rust_lvalue");
         let fresh_ty = self.convert_type(override_ty.unwrap_or(qty).ctype)?;
 
         // Translate the expression to be assigned to the fresh variable.
@@ -301,7 +301,7 @@ impl Translation<'_> {
                         // we manually insert the otherwise elided casts in this
                         // particular context.
                         if let CExprKind::ImplicitCast(ty, _, CastKind::ConstCast, _, _) =
-                            self.ast_context[id].kind
+                            self.ast_context.index_unwrap_parens(id).kind
                         {
                             let t = self.convert_type(ty.ctype)?;
                             Ok(mk().cast_expr(x, t))
@@ -327,7 +327,8 @@ impl Translation<'_> {
                 // * the expr kind being a string literal (`CExprKind::Literal` of a `CLiteral::String`).
                 let is_string_literal = |id: CExprId| {
                     let ty_kind = &self.ast_context.resolve_type(ty).kind;
-                    let expr_kind = &self.ast_context.index(id).kind;
+                    let id = self.ast_context.unwrap_constant_expr(id);
+                    let expr_kind = &self.ast_context.index_unwrap_parens(id).kind;
                     let is_char_array = matches!(*ty_kind, CTypeKind::Char);
                     let is_str_literal =
                         matches!(*expr_kind, CExprKind::Literal(_, CLiteral::String { .. }));
@@ -335,8 +336,9 @@ impl Translation<'_> {
                 };
 
                 let is_zero_literal = |id: CExprId| {
+                    let id = self.ast_context.unwrap_constant_expr(id);
                     matches!(
-                        self.ast_context.index(id).kind,
+                        self.ast_context.index_unwrap_parens(id).kind,
                         CExprKind::Literal(_, CLiteral::Integer(0, _base))
                     )
                 };

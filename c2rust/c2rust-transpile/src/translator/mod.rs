@@ -670,6 +670,7 @@ pub struct Translation<'c> {
     /// alongside its required imports. Each additional nested level of caching translation
     /// causes an additional set to be pushed onto the `deferred_imports` vector.
     deferred_imports: RefCell<Vec<IndexSet<Import>>>,
+    cleanup_guard_emitted: Cell<bool>,
 
     // Comment support
     pub comment_context: CommentContext,      // Incoming comments
@@ -2677,6 +2678,7 @@ impl<'c> Translation<'c> {
             potential_flexible_array_members: RefCell::new(IndexSet::new()),
             macro_expansions: RefCell::new(IndexMap::new()),
             deferred_imports: RefCell::new(Vec::new()),
+            cleanup_guard_emitted: Cell::new(false),
             comment_context,
             comment_store: RefCell::new(CommentStore::new()),
             spans: HashMap::new(),
@@ -2707,6 +2709,28 @@ impl<'c> Translation<'c> {
         let mut item_stores = self.items.borrow_mut();
         let item_store = item_stores.entry(Self::cur_file(self)).or_default();
         f(item_store)
+    }
+
+    /// Emit the runtime helper used to translate `__attribute__((cleanup(func)))`.
+    /// Idempotent: only the first call adds the struct + Drop impl to the main file.
+    pub fn use_cleanup_guard(&self) {
+        if self.cleanup_guard_emitted.replace(true) {
+            return;
+        }
+        let struct_item: Item = syn::parse_quote! {
+            struct CleanupGuard<T>(*mut T, unsafe extern "C" fn(*mut T));
+        };
+        let impl_item: Item = syn::parse_quote! {
+            impl<T> Drop for CleanupGuard<T> {
+                fn drop(&mut self) {
+                    unsafe { (self.1)(self.0) }
+                }
+            }
+        };
+        let mut items = self.items.borrow_mut();
+        let store = items.entry(self.main_file).or_default();
+        store.add_item(Box::new(struct_item));
+        store.add_item(Box::new(impl_item));
     }
 
     /// Called when translation makes use of a language feature that will require a feature-gate.
@@ -2831,7 +2855,7 @@ impl<'c> Translation<'c> {
             };
 
             use CExprKind::*;
-            match self.ast_context[expr_id].kind {
+            match self.ast_context.index_unwrap_parens(expr_id).kind {
                 // Technically we're being conservative here, but it's only the most
                 // contrived array indexing initializers that would be accepted
                 ArraySubscript(..) => return true,
@@ -2864,8 +2888,10 @@ impl<'c> Translation<'c> {
                     }
                 }
                 Unary(_, AddressOf, expr_id, _) => {
-                    if let Member(_, expr_id, _, _, _) = self.ast_context[expr_id].kind {
-                        if let DeclRef(..) = self.ast_context[expr_id].kind {
+                    if let Member(_, expr_id, _, _, _) =
+                        self.ast_context.index_unwrap_parens(expr_id).kind
+                    {
+                        if let DeclRef(..) = self.ast_context.index_unwrap_parens(expr_id).kind {
                             return true;
                         }
                     }
@@ -3558,7 +3584,9 @@ impl<'c> Translation<'c> {
         target: bool,
         cond_id: CExprId,
     ) -> TranslationResult<WithStmts<Box<Expr>>> {
-        let ty_id = self.ast_context[cond_id]
+        let ty_id = self
+            .ast_context
+            .index_unwrap_parens(cond_id)
             .kind
             .get_type()
             .ok_or_else(|| format_err!("bad condition type"))?;
@@ -3566,7 +3594,9 @@ impl<'c> Translation<'c> {
         let null_pointer_case =
             |ptr: CExprId, is_null: bool| -> TranslationResult<WithStmts<Box<Expr>>> {
                 let val = self.convert_expr(ctx.used().decay_ref(), ptr, None)?;
-                let ptr_type = self.ast_context[ptr]
+                let ptr_type = self
+                    .ast_context
+                    .index_unwrap_parens(ptr)
                     .kind
                     .get_type()
                     .ok_or_else(|| format_err!("bad pointer type for condition"))?;
@@ -3576,7 +3606,7 @@ impl<'c> Translation<'c> {
                 })
             };
 
-        match self.ast_context[cond_id].kind {
+        match self.ast_context.index_unwrap_parens(cond_id).kind {
             CExprKind::Binary(_, CBinOp::EqualEqual, null_expr, ptr, _, _)
                 if self.ast_context.is_null_expr(null_expr) =>
             {
@@ -3635,7 +3665,7 @@ impl<'c> Translation<'c> {
         let mut iter = DFExpr::new(&self.ast_context, expr_id.into());
         while let Some(x) = iter.next() {
             match x {
-                SomeId::Expr(e) => match self.ast_context[e].kind {
+                SomeId::Expr(e) => match self.ast_context.index_unwrap_parens(e).kind {
                     CExprKind::DeclRef(_, d, _) if d == decl_id => return true,
                     CExprKind::UnaryType(_, _, Some(_), _) => iter.prune(1),
                     _ => {}
@@ -3719,6 +3749,7 @@ impl<'c> Translation<'c> {
                 ref ident,
                 initializer,
                 typ,
+                ref attrs,
                 ..
             } => {
                 assert!(
@@ -3801,6 +3832,31 @@ impl<'c> Translation<'c> {
                 }
                 .expect("Expected decl initializer to not have any statements");
 
+                let cleanup_guard_stmt: Option<Stmt> = attrs
+                    .iter()
+                    .find_map(|a| match a {
+                        Attribute::Cleanup(fn_id) => Some(*fn_id),
+                        _ => None,
+                    })
+                    .map(|fn_id| {
+                        self.use_cleanup_guard();
+                        self.use_feature("raw_ref_op");
+                        let cleanup_name = self
+                            .renamer
+                            .borrow()
+                            .get(&fn_id)
+                            .expect("cleanup function not registered with renamer");
+                        let cleanup_ident = mk().ident(&cleanup_name);
+                        let var_ident = mk().ident(&rust_name);
+                        let guard_ident = mk().ident(format!("_cleanup_{}", rust_name));
+                        syn::parse_quote! {
+                            let #guard_ident = CleanupGuard(
+                                &raw mut #var_ident as *mut _,
+                                #cleanup_ident,
+                            );
+                        }
+                    });
+
                 let pat_mut = mk().mutbl().ident_pat(rust_name.clone());
                 let local_mut = mk().local(pat_mut, Some(ty.clone()), Some(zeroed));
                 if has_self_reference {
@@ -3813,6 +3869,11 @@ impl<'c> Translation<'c> {
                         vec![mk().local_stmt(Box::new(local_mut.clone()))];
                     decl_and_assign.append(&mut stmts);
                     decl_and_assign.push(mk().expr_stmt(assign));
+
+                    if let Some(stmt) = cleanup_guard_stmt {
+                        assign_stmts.push(stmt.clone());
+                        decl_and_assign.push(stmt);
+                    }
 
                     Ok(cfg::DeclStmtInfo::new(
                         vec![mk().local_stmt(Box::new(local_mut))],
@@ -3858,10 +3919,16 @@ impl<'c> Translation<'c> {
                     let mut decl_and_assign = stmts;
                     decl_and_assign.push(mk().local_stmt(Box::new(local)));
 
+                    if let Some(stmt) = cleanup_guard_stmt {
+                        assign_stmts.push(stmt.clone());
+                        decl_and_assign.push(stmt);
+                    }
+
                     log::trace!(
                         "TENJIN TRACE: returning local_stmt / DeclStmtInfo line {}",
                         line!(),
                     );
+
                     Ok(cfg::DeclStmtInfo::new(
                         vec![mk().local_stmt(Box::new(local_mut))],
                         assign_stmts,
@@ -3922,7 +3989,8 @@ impl<'c> Translation<'c> {
         ctypeid: CTypeId,
         initializer: Option<CExprId>,
     ) -> bool {
-        let initializer_kind = initializer.map(|expr_id| &self.ast_context[expr_id].kind);
+        let initializer_kind =
+            initializer.map(|expr_id| &self.ast_context.index_unwrap_parens(expr_id).kind);
 
         // If the RHS is a func call, we should be able to skip type annotation
         // because we get a type from the function return type
@@ -4765,7 +4833,7 @@ impl<'c> Translation<'c> {
                     _ => {}
                 }
 
-                let expr_kind = &self.ast_context[expr].kind;
+                let expr_kind = &self.ast_context.index_unwrap_parens(expr).kind;
                 let target_ty = override_ty.unwrap_or(ty);
 
                 // In general, if we are casting the result of an expression, then the inner
@@ -4778,7 +4846,7 @@ impl<'c> Translation<'c> {
                     let mut is_negated = false;
 
                     if let &CExprKind::Unary(_, CUnOp::Negate, subexpr_id, _) = literal_expr_kind {
-                        literal_expr_kind = &self.ast_context[subexpr_id].kind;
+                        literal_expr_kind = &self.ast_context.index_unwrap_parens(subexpr_id).kind;
                         is_negated = true;
                     }
 
@@ -4828,7 +4896,8 @@ impl<'c> Translation<'c> {
 
                     CQualTypeId::new(func_ptr_ty)
                 } else {
-                    self.ast_context[expr]
+                    self.ast_context
+                        .index_unwrap_parens(expr)
                         .kind
                         .get_qual_type()
                         .ok_or_else(|| format_err!("bad source type"))?
@@ -4960,6 +5029,10 @@ impl<'c> Translation<'c> {
             Paren(_, val) => self.convert_expr(ctx, val, override_ty),
 
             CompoundLiteral(qty, val) => self.convert_compound_literal(ctx, qty, val, override_ty),
+
+            ImaginaryLiteral(_qty, _subexpr) => {
+                Err(TranslationError::generic("imaginary literal not supported"))
+            }
 
             InitList(ty, ref ids, opt_union_field_id, _) => {
                 let arr = self.convert_init_list(ctx, ty, ids, opt_union_field_id);

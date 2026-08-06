@@ -1411,6 +1411,14 @@ class TranslateASTVisitor final
         // if (!E->isConstantInitializer(*Context, false))
         //     return true;
 
+        if (const InitListExpr* ILE = dyn_cast<InitListExpr>(E)) {
+            // Do not process macros for the syntactic form,
+            // so that they can be processed for the semantic form.
+            if (ILE->isSyntacticForm()) {
+                return true;
+            }
+        }
+
         auto &Mgr = Context->getSourceManager();
         auto Range = E->getSourceRange();
         LLVM_DEBUG(dbgs() << "Checking expr for macro expansion: ");
@@ -2226,7 +2234,7 @@ class TranslateASTVisitor final
 
         encode_entry(
             VD, TagVarDecl, loc, childIds, T,
-            [VD, is_defn, def, is_externally_visible](CborEncoder *array) {
+            [this, VD, is_defn, def, is_externally_visible](CborEncoder *array) {
                 auto name = VD->getNameAsString();
                 cbor_encode_string(array, name);
 
@@ -2247,11 +2255,9 @@ class TranslateASTVisitor final
                 cbor_encoder_create_array(array, &attr_info,
                                           CborIndefiniteLength);
 
-                bool has_attrs = def ? def->hasAttrs() : VD->hasAttrs();
+                bool has_attrs = def->hasAttrs();
 
                 if (has_attrs) {
-                    auto attrs = def ? def->getAttrs() : VD->getAttrs();
-
                     for (auto attr : def->attrs()) {
                         cbor_encode_text_stringz(&attr_info,
                                                  attr->getSpelling());
@@ -2262,6 +2268,15 @@ class TranslateASTVisitor final
                         } else if (auto *aa = dyn_cast<AliasAttr>(attr)) {
                             cbor_encode_text_stringz(
                                 &attr_info, aa->getAliasee().str().c_str());
+                        } else if (auto *ca = dyn_cast<CleanupAttr>(attr)) {
+                            cbor_encode_uint(
+                                &attr_info,
+                                uintptr_t(ca->getFunctionDecl()->getCanonicalDecl()));
+                        } else {
+                            printDiag(Context, DiagnosticsEngine::Warning,
+                                      std::string("ignoring unsupported variable attribute: ") +
+                                          attr->getSpelling(),
+                                      def);
                         }
                     }
                 }
@@ -2574,7 +2589,8 @@ class TranslateASTVisitor final
 #endif // CLANG_VERSION_MAJOR
 
     bool VisitImaginaryLiteral(ImaginaryLiteral *L) {
-        printDiag(Context, DiagnosticsEngine::Warning, "Encountered unsupported imaginary literal", L);
+        std::vector<void *> childIds{L->getSubExpr()};
+        encode_entry(L, TagImaginaryLiteral, childIds);
         return true;
     }
 

@@ -52,7 +52,7 @@ impl<'c> Translation<'c> {
         fexp: CExprId,
         args: &[CExprId],
     ) -> TranslationResult<WithStmts<Box<Expr>>> {
-        let expr = &self.ast_context[fexp];
+        let expr = &self.ast_context.index_unwrap_parens(fexp);
         let src_loc = &expr.loc;
         let decl_id = match expr.kind {
             CExprKind::DeclRef(_, decl_id, _) => decl_id,
@@ -591,7 +591,9 @@ impl<'c> Translation<'c> {
                 if let Some(atomic_op) = CAtomicBinOp::from_sync_builtin_fn(builtin_name) {
                     let arg0 = self.convert_expr(ctx.used(), args[0], None)?;
                     let arg1 = self.convert_expr(ctx.used(), args[1], None)?;
-                    let arg1_type_id = self.ast_context[args[1]]
+                    let arg1_type_id = self
+                        .ast_context
+                        .index_unwrap_parens(args[1])
                         .kind
                         .get_qual_type()
                         .ok_or_else(|| format_err!("bad arg1 type"))?;
@@ -612,7 +614,9 @@ impl<'c> Translation<'c> {
     }
 
     fn import_num_traits(&self, arg_id: CExprId) -> TranslationResult<()> {
-        let arg_type_id = self.ast_context[arg_id]
+        let arg_type_id = self
+            .ast_context
+            .index_unwrap_parens(arg_id)
             .kind
             .get_qual_type()
             .ok_or_else(|| format_err!("bad arg type"))?;
@@ -645,8 +649,8 @@ impl<'c> Translation<'c> {
                 .try_into()
                 .map_err(|_| "`convert_overflow_arith` must have exactly 3 arguments")?;
             let overflowing = mk().method_call_expr(a, method_name, vec![b]);
-            let sum_name = self.renamer.borrow_mut().fresh();
-            let over_name = self.renamer.borrow_mut().fresh();
+            let sum_name = self.renamer.borrow_mut().pick_name("c2rust_result");
+            let over_name = self.renamer.borrow_mut().pick_name("c2rust_overflowed");
             let overflow_let = mk().local_stmt(Box::new(mk().local(
                 mk().tuple_pat(vec![
                     mk().ident_pat(&sum_name),

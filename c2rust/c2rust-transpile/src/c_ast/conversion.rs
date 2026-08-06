@@ -165,54 +165,77 @@ fn parse_cast_kind(kind: &str) -> CastKind {
     }
 }
 
-fn parse_attributes(attributes: Vec<Value>) -> IndexSet<Attribute> {
-    let mut attrs = IndexSet::new();
-    let mut expect_section_value = false;
-    let mut expect_alias_value = false;
-    let mut expect_visibility_value = false;
+impl ConversionContext {
+    fn parse_attributes(&mut self, attributes: Vec<Value>) -> IndexSet<Attribute> {
+        let mut attrs = IndexSet::new();
+        let mut expect_section_value = false;
+        let mut expect_alias_value = false;
+        let mut expect_visibility_value = false;
+        let mut expect_cleanup_id = false;
 
-    for attr in attributes.into_iter() {
-        let attr_str = from_value::<String>(attr).expect("Decl attributes should be strings");
+        for attr in attributes.into_iter() {
+            if expect_cleanup_id {
+                expect_cleanup_id = false;
+                match from_value::<ClangId>(attr) {
+                    Ok(func_id) => {
+                        attrs.insert(Attribute::Cleanup(self.visit_decl(func_id)));
+                    }
+                    Err(_) => {
+                        diag!(
+                            Diagnostic::ClangAst,
+                            "cleanup attribute is missing its function decl id",
+                        );
+                        self.invalid_clang_ast = true;
+                    }
+                }
+                continue;
+            }
 
-        match attr_str.as_str() {
-            "alias" => expect_alias_value = true,
-            "always_inline" => {
-                attrs.insert(Attribute::AlwaysInline);
-            }
-            "cold" => {
-                attrs.insert(Attribute::Cold);
-            }
-            "gnu_inline" => {
-                attrs.insert(Attribute::GnuInline);
-            }
-            "noinline" => {
-                attrs.insert(Attribute::NoInline);
-            }
-            "used" => {
-                attrs.insert(Attribute::Used);
-            }
-            "visibility" => expect_visibility_value = true,
-            "section" => expect_section_value = true,
-            s if expect_section_value => {
-                attrs.insert(Attribute::Section(s.into()));
+            let attr_str = from_value::<String>(attr).expect("Decl attributes should be strings");
 
-                expect_section_value = false;
-            }
-            s if expect_alias_value => {
-                attrs.insert(Attribute::Alias(s.into()));
+            match attr_str.as_str() {
+                "alias" => expect_alias_value = true,
+                "always_inline" => {
+                    attrs.insert(Attribute::AlwaysInline);
+                }
+                "cleanup" => expect_cleanup_id = true,
+                "cold" => {
+                    attrs.insert(Attribute::Cold);
+                }
+                "gnu_inline" => {
+                    attrs.insert(Attribute::GnuInline);
+                }
+                "noinline" => {
+                    attrs.insert(Attribute::NoInline);
+                }
+                "used" => {
+                    attrs.insert(Attribute::Used);
+                }
+                "visibility" => expect_visibility_value = true,
+                "section" => expect_section_value = true,
+                s if expect_section_value => {
+                    attrs.insert(Attribute::Section(s.into()));
 
-                expect_alias_value = false;
-            }
-            s if expect_visibility_value => {
-                attrs.insert(Attribute::Visibility(s.into()));
+                    expect_section_value = false;
+                }
+                s if expect_alias_value => {
+                    attrs.insert(Attribute::Alias(s.into()));
 
-                expect_visibility_value = false;
+                    expect_alias_value = false;
+                }
+                s if expect_visibility_value => {
+                    attrs.insert(Attribute::Visibility(s.into()));
+
+                    expect_visibility_value = false;
+                }
+                s => {
+                    diag!(Diagnostic::ClangAst, "unrecognized attribute: {}", s);
+                }
             }
-            _ => {}
         }
-    }
 
-    attrs
+        attrs
+    }
 }
 
 /// This stores the information needed to convert an `AstContext` into a `TypedAstContext`.
@@ -1422,6 +1445,16 @@ impl ConversionContext {
                     self.expr_possibly_as_stmt(expected_ty, new_id, node, floating_literal);
                 }
 
+                ASTEntryTag::TagImaginaryLiteral if expected_ty & (EXPR | STMT) != 0 => {
+                    let wrapped = node.children[0].expect("Expected inner literal expression");
+                    let ty_old = node.type_id.expect("Expected expression to have type");
+                    let ty = self.visit_qualified_type(ty_old);
+
+                    let expr = CExprKind::ImaginaryLiteral(ty, self.visit_expr(wrapped));
+
+                    self.expr_possibly_as_stmt(expected_ty, new_id, node, expr);
+                }
+
                 ASTEntryTag::TagUnaryOperator if expected_ty & (EXPR | STMT) != 0 => {
                     let prefix =
                         from_value(node.extras[1].clone()).expect("Expected prefix information");
@@ -2077,7 +2110,7 @@ impl ConversionContext {
                         .expect("Expected to find inline visibliity");
                     let attributes = from_value::<Vec<Value>>(node.extras[7].clone())
                         .expect("Expected to find attributes");
-                    let attrs = parse_attributes(attributes);
+                    let attrs = self.parse_attributes(attributes);
 
                     // The always_inline attribute implies inline even if the
                     // inline keyword is not present.
@@ -2331,7 +2364,7 @@ impl ConversionContext {
                         .expect("Expected to find type on variable declaration");
                     let typ = self.visit_qualified_type(typ_id);
 
-                    let attrs = parse_attributes(attributes);
+                    let attrs = self.parse_attributes(attributes);
 
                     let variable_decl = CDeclKind::Variable {
                         has_static_duration,
