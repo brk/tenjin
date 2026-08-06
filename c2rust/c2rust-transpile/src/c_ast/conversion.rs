@@ -502,6 +502,28 @@ impl ConversionContext {
             self.visit_node(untyped_context, node_id, new_id, expected_ty)
         }
 
+        // Check what primitive kinds were emitted by the compiler.
+        let mut found_kinds: HashMap<_, _> = CTypeKind::PRIMITIVE_KINDS
+            .into_iter()
+            .map(|kind| (kind, false))
+            .collect();
+
+        for Located { kind, .. } in self.typed_context.c_types.values() {
+            if let Some(is_found) = found_kinds.get_mut(kind) {
+                *is_found = true;
+            }
+        }
+
+        // If any primitives are missing, add them ourselves.
+        for (kind, is_found) in found_kinds {
+            if !is_found {
+                let new_id = self.id_mapper.fresh_id();
+                self.add_type(new_id, not_located(kind));
+                self.processed_nodes
+                    .insert(new_id, self::node_types::OTHER_TYPE);
+            }
+        }
+
         // Function declarations' types look through typedefs, but we want to use the types with
         // typedefs intact in some cases during translation. To ensure that these types exist in the
         // `TypedAstContext`, iterate over all function decls, compute their adjusted type using
@@ -510,7 +532,7 @@ impl ConversionContext {
         for (_decl_id, located_kind) in self.typed_context.c_decls.iter() {
             if let kind @ CDeclKind::Function { .. } = &located_kind.kind {
                 let new_kind = self.typed_context.fn_decl_ty_with_declared_args(kind);
-                if self.typed_context.type_for_kind(&new_kind).is_none() {
+                if self.typed_context.try_type_for_kind(&new_kind).is_none() {
                     // Create and insert fn type
                     let new_id = CTypeId(self.id_mapper.fresh_id());
                     self.typed_context
@@ -2198,9 +2220,7 @@ impl ConversionContext {
                                 }
                             };
                             log::trace!("Selected kind {kind} for typedef {name}");
-                            Some(CQualTypeId::new(
-                                self.typed_context.type_for_kind(&kind).unwrap(),
-                            ))
+                            Some(CQualTypeId::new(self.typed_context.type_for_kind(&kind)))
                         })
                         .unwrap_or(typ);
 
@@ -2243,9 +2263,7 @@ impl ConversionContext {
                             }
                         };
                         log::trace!("Selected kind {kind} for typedef {name}");
-                        Some(CQualTypeId::new(
-                            self.typed_context.type_for_kind(&kind).unwrap(),
-                        ))
+                        Some(CQualTypeId::new(self.typed_context.type_for_kind(&kind)))
                     };
                     let file = self
                         .typed_context

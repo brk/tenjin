@@ -1,5 +1,6 @@
 use crate::c_ast::iterators::{immediate_children_all_types, NodeVisitor};
 use crate::iterators::{DFNodes, SomeId};
+use c2rust_ast_builder::properties::Mutability;
 use c2rust_ast_exporter::clang_ast::LRValue;
 use indexmap::{IndexMap, IndexSet};
 use itertools::Itertools;
@@ -165,6 +166,13 @@ impl<T> Located<T> {
     }
     pub fn end_loc(&self) -> Option<SrcLoc> {
         self.loc.map(|loc| loc.end())
+    }
+
+    pub fn with_kind<U>(&self, kind: U) -> Located<U> {
+        Located {
+            loc: self.loc,
+            kind,
+        }
     }
 }
 
@@ -771,10 +779,15 @@ impl TypedAstContext {
         ty.map(|ty| (expr_id, ty))
     }
 
-    pub fn type_for_kind(&self, kind: &CTypeKind) -> Option<CTypeId> {
+    pub fn try_type_for_kind(&self, kind: &CTypeKind) -> Option<CTypeId> {
         self.c_types
             .iter()
             .find_map(|(id, k)| if kind == &k.kind { Some(*id) } else { None })
+    }
+
+    pub fn type_for_kind(&self, kind: &CTypeKind) -> CTypeId {
+        self.try_type_for_kind(kind)
+            .expect("could not find type for CTypeKind::{kind:?}")
     }
 
     pub fn resolve_type_id(&self, typ: CTypeId) -> CTypeId {
@@ -875,9 +888,7 @@ impl TypedAstContext {
     pub fn fn_declref_ty_with_declared_args(&self, func_expr: CExprId) -> Option<CQualTypeId> {
         if let Some(func_decl @ CDeclKind::Function { .. }) = self.fn_declref_decl(func_expr) {
             let kind_with_declared_args = self.fn_decl_ty_with_declared_args(func_decl);
-            let specific_typ = self
-                .type_for_kind(&kind_with_declared_args)
-                .unwrap_or_else(|| panic!("no type for kind {kind_with_declared_args:?}"));
+            let specific_typ = self.type_for_kind(&kind_with_declared_args);
             return Some(CQualTypeId::new(specific_typ));
         }
         None
@@ -1076,49 +1087,82 @@ impl TypedAstContext {
         }
     }
 
-    /// Identifies typedefs that name unnamed types.
-    /// Later, the two declarations can be collapsed into a single name and declaration,
-    /// eliminating the typedef altogether.
-    pub fn set_prenamed_decls(&mut self) {
+    /// Eliminates typedefs in various ways. Currently does the following:
+    /// - Typedefs that resolve to one of `PULLBACK_KINDS` will point directly to the target type,
+    ///   without intermediate (compiler-internal) typedefs if there are any.
+    /// - Typedefs that point to structs, unions or enums that have no name, or the same name as
+    ///   the typedef, are stored in `prenamed_decls` so they can be skipped later.
+    pub fn bypass_typedefs(&mut self) {
+        let mut replacements: HashMap<CDeclId, CDecl> = HashMap::new();
         let mut prenamed_decls: IndexMap<CDeclId, CDeclId> = IndexMap::new();
 
         for (&decl_id, decl) in self.iter_decls() {
-            if let CDeclKind::Typedef { ref name, typ, .. } = decl.kind {
-                if let Some(subdecl_id) = self.resolve_type(typ.ctype).kind.as_underlying_decl() {
-                    use CDeclKind::*;
-                    let is_unnamed = match self[subdecl_id].kind {
-                        Struct { name: None, .. }
-                        | Union { name: None, .. }
-                        | Enum { name: None, .. } => true,
+            let CDeclKind::Typedef {
+                ref name,
+                typ,
+                is_implicit,
+                ref target_dependent_macro,
+            } = decl.kind else {
+                continue
+            };
+            let resolved_type_id = self.resolve_type_id(typ.ctype);
+            let resolved_type_kind = &self[resolved_type_id].kind;
 
-                        // Detect case where typedef and struct share the same name.
-                        // In this case the purpose of the typedef was simply to eliminate
-                        // the need for the 'struct' tag when referring to the type name.
-                        Struct {
-                            name: Some(ref target_name),
-                            ..
-                        }
-                        | Union {
-                            name: Some(ref target_name),
-                            ..
-                        }
-                        | Enum {
-                            name: Some(ref target_name),
-                            ..
-                        } => name == target_name,
+            if CTypeKind::PULLBACK_KINDS.contains(resolved_type_kind)
+                && name == resolved_type_kind.as_str()
+            {
+                // If the typedef resolves to a portable type, and its name matches the
+                // expected name, then replace its definition to directly target the type,
+                // bypassing any intermediate typedefs.
+                let kind = CDeclKind::Typedef {
+                    name: name.clone(),
+                    typ: typ.with_ctype(resolved_type_id),
+                    is_implicit,
+                    target_dependent_macro: target_dependent_macro.clone(),
+                };
+                replacements.insert(decl_id, decl.with_kind(kind));
+            } else if let Some(subdecl_id) = resolved_type_kind.as_underlying_decl() {
+                use CDeclKind::*;
 
-                        _ => false,
-                    };
+                // Identifies typedefs that name unnamed types.
+                // Later, the two declarations can be collapsed into a single name and declaration,
+                // eliminating the typedef altogether.
+                let is_unnamed = match self[subdecl_id].kind {
+                    Struct { name: None, .. }
+                    | Union { name: None, .. }
+                    | Enum { name: None, .. } => true,
 
-                    if is_unnamed
-                        && !prenamed_decls
-                            .values()
-                            .any(|decl_id| *decl_id == subdecl_id)
-                    {
-                        prenamed_decls.insert(decl_id, subdecl_id);
+                    // Detect case where typedef and struct share the same name.
+                    // In this case the purpose of the typedef was simply to eliminate
+                    // the need for the 'struct' tag when referring to the type name.
+                    Struct {
+                        name: Some(ref target_name),
+                        ..
                     }
+                    | Union {
+                        name: Some(ref target_name),
+                        ..
+                    }
+                    | Enum {
+                        name: Some(ref target_name),
+                        ..
+                    } => name == target_name,
+
+                    _ => false,
+                };
+
+                if is_unnamed
+                    && !prenamed_decls
+                        .values()
+                        .any(|decl_id| *decl_id == subdecl_id)
+                {
+                    prenamed_decls.insert(decl_id, subdecl_id);
                 }
             }
+        }
+
+        for (decl_id, decl) in replacements {
+            self.c_decls[&decl_id] = decl;
         }
 
         self.prenamed_decls = prenamed_decls;
@@ -1344,10 +1388,7 @@ impl TypedAstContext {
                             CUnTypeOp::AlignOf => CTypeKind::Size,
                             CUnTypeOp::PreferredAlignOf => CTypeKind::Size,
                         };
-                        let ty = self
-                            .ast_context
-                            .type_for_kind(&kind)
-                            .expect("CTypeKind::Size should be size_t");
+                        let ty = self.ast_context.type_for_kind(&kind);
                         Some(CQualTypeId::new(ty))
                     }
                     _ => return,
@@ -2063,7 +2104,7 @@ impl CUnOp {
             }
             Not => {
                 return ast_context
-                    .type_for_kind(&CTypeKind::Int)
+                    .try_type_for_kind(&CTypeKind::Int)
                     .map(CQualTypeId::new)
             }
             Real | Imag => {
@@ -2445,7 +2486,7 @@ pub struct AsmOperand {
 }
 
 /// Type qualifiers (6.7.3)
-#[derive(Debug, Copy, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, Default, PartialEq, Eq, Hash)]
 pub struct Qualifiers {
     /// The `const` qualifier, which marks lvalues as non-assignable.
     ///
@@ -2478,10 +2519,17 @@ impl Qualifiers {
             is_volatile: self.is_volatile || other.is_volatile,
         }
     }
+
+    pub fn mutability(self) -> Mutability {
+        match self.is_const {
+            true => Mutability::Immutable,
+            false => Mutability::Mutable,
+        }
+    }
 }
 
 /// Qualified type
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub struct CQualTypeId {
     pub qualifiers: Qualifiers,
     pub ctype: CTypeId,
@@ -2494,6 +2542,14 @@ impl CQualTypeId {
             ctype,
         }
     }
+
+    pub fn with_ctype(self, ctype: CTypeId) -> Self {
+        Self { ctype, ..self }
+    }
+
+    pub fn mutability(self) -> Mutability {
+        self.qualifiers.mutability()
+    }
 }
 
 // TODO: these may be interesting, but I'm not sure if they fit here:
@@ -2504,7 +2560,7 @@ impl CQualTypeId {
 /// Represents a type in C (6.2.5 Types)
 ///
 /// Reflects the types in <http://clang.llvm.org/doxygen/classclang_1_1Type.html>
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum CTypeKind {
     Void,
 
@@ -2628,6 +2684,17 @@ pub enum CTypeKind {
 }
 
 impl CTypeKind {
+    /// Kinds for C primitive types. These are emitted by the compiler, but possibly only if
+    /// they are actually used in the code.
+    pub const PRIMITIVE_KINDS: [CTypeKind; 16] = {
+        use CTypeKind::*;
+        [
+            Void, Bool, Char, SChar, Short, Int, Long, LongLong, UChar, UShort, UInt, ULong,
+            ULongLong, Float, Double, LongDouble,
+        ]
+    };
+
+    /// Kinds for Rust types that are pulled back into C, for more fine-grained translation.
     pub const PULLBACK_KINDS: [CTypeKind; 16] = {
         use CTypeKind::*;
         [
