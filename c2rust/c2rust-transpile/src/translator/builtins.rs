@@ -4,11 +4,12 @@
 use super::*;
 
 use crate::format_translation_err;
-use crate::translator::atomics::CAtomicBinOp;
+use crate::translator::atomics::{order_ty_name, CAtomicBinOp};
 use crate::translator::simd::simd_fn_from_builtin_fn;
 use c2rust_rust_tools::RustEdition::Edition2024;
 use log::warn;
 use std::sync::atomic::Ordering::Acquire;
+use std::sync::atomic::Ordering::Relaxed;
 use std::sync::atomic::Ordering::Release;
 use std::sync::atomic::Ordering::SeqCst;
 
@@ -526,6 +527,43 @@ impl<'c> Translation<'c> {
                 )
             }
 
+            // `__atomic_thread_fence` is a full fence (`atomic_fence`);
+            // `__atomic_signal_fence` only fences the compiler
+            // (`compiler_fence`). The order picks the intrinsic at
+            // compile time, so we only support a constant one. A relaxed fence
+            // is a no-op (and Rust has no relaxed fence intrinsic), so we drop it.
+            "__atomic_thread_fence" | "__atomic_signal_fence" => {
+                let order = self.convert_memordering(args[0]).ok_or_else(|| {
+                    format_translation_err!(
+                        self.ast_context.display_loc(src_loc),
+                        "non-constant memory order argument to {} is not supported",
+                        builtin_name
+                    )
+                })?;
+                let call_expr = if order == Relaxed {
+                    mk().tuple_expr(vec![])
+                } else if builtin_name == "__atomic_thread_fence" {
+                    mk().call_expr(self.atomic_intrinsic_expr("fence", &[order]), vec![])
+                } else {
+                    let ordering = mk().abs_path_expr(vec![
+                        "core",
+                        "sync",
+                        "atomic",
+                        "Ordering",
+                        order_ty_name(order),
+                    ]);
+                    mk().call_expr(
+                        mk().abs_path_expr(vec!["core", "sync", "atomic", "compiler_fence"]),
+                        vec![ordering],
+                    )
+                };
+                self.convert_side_effects_expr(
+                    ctx,
+                    WithStmts::new_val(call_expr),
+                    "Builtin is not supposed to be used",
+                )
+            }
+
             "__sync_lock_test_and_set_1"
             | "__sync_lock_test_and_set_2"
             | "__sync_lock_test_and_set_4"
@@ -643,32 +681,102 @@ impl<'c> Translation<'c> {
         method_name: &str,
         args: &[CExprId],
     ) -> TranslationResult<WithStmts<Box<Expr>>> {
+        let &[a_arg, b_arg, out_arg] = args else {
+            return Err(TranslationError::generic(
+                "`convert_overflow_arith` must have exactly 3 arguments",
+            ));
+        };
+
+        let arg_type = |arg: CExprId| {
+            self.ast_context
+                .index_unwrap_parens(arg)
+                .kind
+                .get_type()
+                .ok_or_else(|| TranslationError::generic("overflow builtin argument has no type"))
+        };
+        let result_ty_id = self
+            .ast_context
+            .get_pointee_qual_type(arg_type(out_arg)?)
+            .ok_or_else(|| TranslationError::generic("overflow builtin output is not a pointer"))?
+            .ctype;
+        let type_kind = |ty| &self.ast_context.resolve_type(ty).kind;
+        let a_kind = type_kind(arg_type(a_arg)?);
+        let b_kind = type_kind(arg_type(b_arg)?);
+        let result_kind = type_kind(result_ty_id);
+
+        // The `s`/`u`-prefixed builtins use one common type; the type-generic
+        // ones accept operand and result types that all differ. With a common
+        // type, Rust's native `overflowing_*` matches the builtin exactly.
+        // Otherwise, overflow is defined against the infinite-precision result,
+        // so compute in `i128` and check that narrowing to the result type
+        // preserves the value.
+        let same_types = a_kind == b_kind && b_kind == result_kind;
+        let is_128_bit = |kind: &CTypeKind| matches!(kind, CTypeKind::Int128 | CTypeKind::UInt128);
+        if !same_types && [a_kind, b_kind, result_kind].into_iter().any(is_128_bit) {
+            // The `i128` computation below cannot represent all values of
+            // `unsigned __int128` operands or results. Reject rather than
+            // translate wrongly: https://github.com/immunant/c2rust/issues/1878
+            return Err(TranslationError::generic(
+                "mixed-type overflow builtins involving 128-bit integers are not supported",
+            ));
+        }
+        let result_ty = if same_types {
+            None
+        } else {
+            Some(self.convert_type(result_ty_id)?)
+        };
+
         let args = self.convert_exprs(ctx.used(), args, None)?;
         args.and_then_try(|args| {
-            let [a, b, c]: [_; 3] = args
-                .try_into()
-                .map_err(|_| "`convert_overflow_arith` must have exactly 3 arguments")?;
+            let [a, b, out]: [_; 3] = args.try_into().map_err(|_| "expected 3 arguments")?;
+            let (a, b) = if same_types {
+                (a, b)
+            } else {
+                (cast_int(a, "i128", true), cast_int(b, "i128", true))
+            };
             let overflowing = mk().method_call_expr(a, method_name, vec![b]);
-            let sum_name = self.renamer.borrow_mut().pick_name("c2rust_result");
+            let result_name = self.renamer.borrow_mut().pick_name("c2rust_result");
             let over_name = self.renamer.borrow_mut().pick_name("c2rust_overflowed");
-            let overflow_let = mk().local_stmt(Box::new(mk().local(
+            let mut stmts = vec![mk().local_stmt(Box::new(mk().local(
                 mk().tuple_pat(vec![
-                    mk().ident_pat(&sum_name),
-                    mk().ident_pat(over_name.clone()),
+                    mk().ident_pat(&result_name),
+                    mk().ident_pat(&over_name),
                 ]),
                 None,
                 Some(overflowing),
+            )))];
+            let mut overflowed = mk().ident_expr(&over_name);
+            let mut out_name = result_name.clone();
+
+            if let Some(result_ty) = result_ty {
+                // `c2rust_result as result_ty` truncates silently. Casting back
+                // up and comparing against `c2rust_result` detects when that
+                // truncation lost information -- overflow distinct from
+                // `overflowing`'s own flag, which only fires when even `i128`
+                // cannot hold the result.
+                let narrow_name = self.renamer.borrow_mut().pick_name("c2rust_result_narrow");
+                stmts.push(mk().local_stmt(Box::new(mk().local(
+                    mk().ident_pat(&narrow_name),
+                    None,
+                    Some(mk().cast_expr(mk().ident_expr(&result_name), result_ty)),
+                ))));
+                let roundtrip =
+                    mk().cast_expr(mk().ident_expr(&narrow_name), mk().path_ty(vec!["i128"]));
+                let truncated = mk().binary_expr(
+                    BinOp::Ne(Default::default()),
+                    roundtrip,
+                    mk().ident_expr(&result_name),
+                );
+                overflowed = mk().binary_expr(BinOp::Or(Default::default()), overflowed, truncated);
+                out_name = narrow_name;
+            }
+
+            stmts.push(mk().expr_stmt(mk().assign_expr(
+                mk().unary_expr(UnOp::Deref(Default::default()), out),
+                mk().ident_expr(&out_name),
             )));
 
-            let out_assign = mk().assign_expr(
-                mk().unary_expr(UnOp::Deref(Default::default()), c),
-                mk().ident_expr(&sum_name),
-            );
-
-            Ok(WithStmts::new(
-                vec![overflow_let, mk().expr_stmt(out_assign)],
-                mk().ident_expr(over_name),
-            ))
+            Ok(WithStmts::new(stmts, overflowed))
         })
     }
 

@@ -85,9 +85,25 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--cache-scope",
         type=str,
         required=False,
-        default="repo",  # TODO: change default to user
-        choices=["repo", "user", "system"],
-        help="Scope for cache location (default: repo)",
+        default="user",
+        choices=["user", "system"],
+        help="Scope for cache location (default: user)",
+    )
+
+    parser.add_argument(
+        "--cache-dir",
+        type=Path,
+        required=False,
+        help="Cache directory; overrides --cache-scope",
+    )
+
+    parser.add_argument(
+        "--prune-cache-days",
+        type=int,
+        required=False,
+        default=90,
+        help="Remove cache entries unused for this many days "
+        "(0 disables pruning; default: 90)",
     )
 
     parser.add_argument(
@@ -171,7 +187,12 @@ def main(argv: Sequence[str] | None = None):
 
         logging.basicConfig(level=logging.getLevelName(args.log_level.upper()))
 
-        cache = getattr(DirectoryCache, args.cache_scope)()
+        if args.cache_dir is not None:
+            cache = DirectoryCache(args.cache_dir)
+        else:
+            cache = getattr(DirectoryCache, args.cache_scope)()
+        if args.update_cache and args.prune_cache_days > 0:
+            cache.prune(args.prune_cache_days)
         if not args.update_cache:
             cache = FrozenCache(cache)
 

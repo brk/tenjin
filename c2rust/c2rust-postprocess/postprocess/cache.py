@@ -1,5 +1,7 @@
 import json
 import logging
+import shutil
+import time
 from abc import ABC, abstractmethod
 from hashlib import sha256
 from pathlib import Path
@@ -60,18 +62,6 @@ class AbstractCache(ABC):
             model: Optional model identifier.
             identifier: Optional identifier for the cache entry.
             transform: Optional transform type for the cache entry.
-        """
-        pass
-
-    @abstractmethod
-    def clear(self) -> None:
-        """Clear the entire cache."""
-        pass
-
-    def flush(self) -> None:  # noqa: B027
-        """
-        Optional: Persist cache to disk.
-        Not abstract because not all implementations need it.
         """
         pass
 
@@ -138,15 +128,6 @@ class DirectoryCache(AbstractCache):
         path = Path(user_cache_dir(appname="c2rust-postprocess"))
         return cls(path=path)
 
-    @classmethod
-    def repo(cls) -> Self:
-        """
-        Use a cache that is checked into the git repo.
-        This is intended to be used by CI.
-        """
-        path = Path(__file__).parent / "../tests/llm-cache"
-        return cls(path=path)
-
     def get_message_digest(self, messages: list[dict[str, Any]]) -> str:
         messages_str = json.dumps(messages, sort_keys=True)
         return sha256(messages_str.encode()).hexdigest()
@@ -186,6 +167,8 @@ class DirectoryCache(AbstractCache):
             logging.debug(f"Cache miss: {cache_file}:\n{toml}")
             return None
         logging.debug(f"Cache hit: {cache_file}:\n{toml}")
+        # Mark the entry as recently used for `prune`.
+        cache_file.touch()
         data = tomli.loads(toml)
 
         return data["response"]
@@ -218,8 +201,18 @@ class DirectoryCache(AbstractCache):
         response_path.write_text(response)
         logging.debug(f"Cache updated: {cache_dir}:\n{toml}")
 
-    def clear(self) -> None:
-        self._path.unlink(missing_ok=True)
+    def prune(self, max_age_days: int) -> None:
+        """
+        Remove entries that have not been looked up or updated in
+        `max_age_days`. Recency is tracked via `metadata.toml`'s mtime,
+        which (unlike atime) survives tar-based cache round-trips such
+        as `actions/cache`.
+        """
+        cutoff = time.time() - max_age_days * 24 * 60 * 60
+        for metadata_path in self._path.glob("*/*/*/metadata.toml"):
+            if metadata_path.stat().st_mtime < cutoff:
+                logging.debug(f"Pruning stale cache entry: {metadata_path.parent}")
+                shutil.rmtree(metadata_path.parent)
 
 
 class FrozenCache(AbstractCache):
@@ -259,7 +252,4 @@ class FrozenCache(AbstractCache):
         messages: list[dict[str, Any]],
         response: str,
     ) -> None:
-        pass
-
-    def clear(self) -> None:
         pass

@@ -134,6 +134,7 @@ fn transpile_snapshot(
     c_path: &Path,
     edition: RustEdition,
     expect_compile_error: bool,
+    expect_translation_error: bool,
     imported_crates: &[&str],
 ) {
     let c_file_name = c_path.file_name().unwrap().to_str().unwrap();
@@ -156,7 +157,10 @@ fn transpile_snapshot(
         (0.., _) => "clang15",
     };
 
-    let cfg = config(edition, guidance_for_file(c_path));
+    let mut cfg = config(edition, guidance_for_file(c_path));
+    if expect_translation_error {
+        cfg.fail_on_error = false;
+    }
     compile_and_transpile_file(c_path, cfg);
     let cwd = current_dir().unwrap();
     // The crate name can't have `.`s in it, so use the file stem.
@@ -201,6 +205,7 @@ struct TranspileTest<'a> {
     os_specific: bool,
     expect_compile_error_edition_2021: bool,
     expect_compile_error_edition_2024: bool,
+    expect_translation_error: bool,
     imported_crates: Vec<&'a str>,
 }
 
@@ -211,6 +216,7 @@ fn transpile(c_file_name: &str) -> TranspileTest {
         os_specific: false,
         expect_compile_error_edition_2021: false,
         expect_compile_error_edition_2024: false,
+        expect_translation_error: false,
         imported_crates: Default::default(),
     }
 }
@@ -256,6 +262,15 @@ impl<'a> TranspileTest<'a> {
             .expect_compile_error_edition_2024(expect_error)
     }
 
+    /// Expect some decls to fail translation. Failed decls are omitted from
+    /// the output instead of aborting, so the snapshot pins what is rejected.
+    pub fn expect_translation_error(self, expect_translation_error: bool) -> Self {
+        Self {
+            expect_translation_error,
+            ..self
+        }
+    }
+
     pub fn expect_unresolved_import(mut self, imported_crate: &'a str) -> Self {
         self.imported_crates.push(imported_crate);
         self
@@ -268,6 +283,7 @@ impl<'a> TranspileTest<'a> {
             os_specific,
             expect_compile_error_edition_2021,
             expect_compile_error_edition_2024,
+            expect_translation_error,
             imported_crates,
         } = self;
 
@@ -319,6 +335,7 @@ impl<'a> TranspileTest<'a> {
             &c_path,
             Edition2021,
             expect_compile_error_edition_2021,
+            expect_translation_error,
             &imported_crates,
         );
         transpile_snapshot(
@@ -326,6 +343,7 @@ impl<'a> TranspileTest<'a> {
             &c_path,
             Edition2024,
             expect_compile_error_edition_2024,
+            expect_translation_error,
             &imported_crates,
         );
     }
@@ -385,6 +403,11 @@ fn test_compound_literals() {
 }
 
 #[test]
+fn test_conditions() {
+    transpile("conditions.c").run();
+}
+
+#[test]
 fn test_const_macro_bitfield() {
     transpile("const_macro_bitfield.c")
         .expect_compile_error(true)
@@ -404,6 +427,11 @@ fn test_exprs() {
 #[test]
 fn test_factorial() {
     transpile("factorial.c").run();
+}
+
+#[test]
+fn test_fences() {
+    transpile("fences.c").run();
 }
 
 #[test]
@@ -460,6 +488,13 @@ fn test_main_fn() {
 #[test]
 fn test_out_of_range_lit() {
     transpile("out_of_range_lit.c").run();
+}
+
+#[test]
+fn test_overflow_128() {
+    transpile("overflow_128.c")
+        .expect_translation_error(true)
+        .run();
 }
 
 #[test]

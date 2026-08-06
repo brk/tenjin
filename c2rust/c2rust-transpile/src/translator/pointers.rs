@@ -463,13 +463,25 @@ impl<'c> Translation<'c> {
                         false,
                         deref,
                     );
-                    // if the context wants a different type, add a cast
-                    if let Some(expected_ty) = override_ty {
-                        if lrvalue.is_rvalue() && expected_ty != pointee_type_id {
-                            let ty = self.convert_type(expected_ty.ctype)?;
-                            val = val.map(|val| mk().cast_expr(val, ty));
-                        }
+
+                    if lrvalue.is_rvalue() {
+                        let source_type_id = if deref {
+                            pointee_type_id
+                        } else {
+                            let pointer_type_id = self
+                                .ast_context
+                                .type_for_kind(&CTypeKind::Pointer(pointee_type_id));
+                            CQualTypeId::new(pointer_type_id)
+                        };
+                        val = self.make_cast(
+                            ctx,
+                            source_type_id,
+                            override_ty.unwrap_or(source_type_id),
+                            val,
+                            &None,
+                        )?;
                     }
+
                     Ok(val)
                 })
             }
@@ -521,6 +533,26 @@ impl<'c> Translation<'c> {
         }
 
         WithStmts::new_val(res).set_unsafe()
+    }
+
+    /// Creates a pointer difference expression. Returns an expression of type `isize`.
+    pub(crate) fn make_pointer_difference(
+        &self,
+        lhs_rs: Box<Expr>,
+        rhs_rs: Box<Expr>,
+        pointee_type_id: CTypeId,
+    ) -> WithStmts<Box<Expr>> {
+        let mut expr_rs = mk().method_call_expr(lhs_rs, "offset_from", vec![rhs_rs]);
+
+        // If the pointee is a variable array type, the actual pointee type used by `offset_from`
+        // will be its element type rather than the whole array. So we need to divide by the
+        // variable holding the length of the array.
+        if let Some(sz) = self.compute_size_of_expr(pointee_type_id) {
+            let div_rs = cast_int(sz, "isize", false);
+            expr_rs = mk().binary_expr(BinOp::Div(Default::default()), expr_rs, div_rs);
+        }
+
+        WithStmts::new_val(expr_rs).set_unsafe()
     }
 
     /// Construct an expression for a NULL at any type, including forward declarations,

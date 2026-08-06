@@ -1088,23 +1088,20 @@ impl Translation<'_> {
         func: Box<Expr>,
         args: Vec<Box<Expr>>,
         cargs: &[CExprId],
-    ) -> TranslationResult<Box<Expr>> {
+    ) -> TranslationResult<WithStmts<Box<Expr>>> {
         let mk_call_with = |func: Box<Expr>, args: Vec<Box<Expr>>| {
-            let mut call_expr = mk().call_expr(func, args);
-
-            if let Some(expected_ty) = override_ty {
-                if call_expr_ty != expected_ty {
-                    let ret_ty = self.convert_type(expected_ty.ctype)?;
-                    call_expr = mk().cast_expr(call_expr, ret_ty);
-                }
-            }
-
-            let res: TranslationResult<_> = Ok(call_expr);
-            res
+            let call_expr = mk().call_expr(func, args);
+            self.make_cast(
+                ctx,
+                call_expr_ty,
+                override_ty.unwrap_or(call_expr_ty),
+                WithStmts::new_val(call_expr),
+                &None,
+            )
         };
         match self.call_form_cases(&func, &args, cargs, ctx) {
-            RecognizedCallForm::Puts => {
-                Ok(mk().mac_expr(refactor_format::build_format_macro_from(
+            RecognizedCallForm::Puts => Ok(WithStmts::new_val(mk().mac_expr(
+                refactor_format::build_format_macro_from(
                     self,
                     "%s\n".into(),
                     "println",
@@ -1114,8 +1111,8 @@ impl Translation<'_> {
                     None,
                     None,
                     None,
-                )))
-            }
+                ),
+            ))),
             RecognizedCallForm::PrintfOut { fmt_string_idx } => {
                 let fmt_string_span = self.ast_context.display_loc(
                     &self
@@ -1123,14 +1120,16 @@ impl Translation<'_> {
                         .index_unwrap_parens(cargs[fmt_string_idx])
                         .loc,
                 );
-                Ok(mk().mac_expr(refactor_format::build_format_macro(
-                    self,
-                    "print",
-                    "println",
-                    &args[fmt_string_idx..],
-                    &cargs[fmt_string_idx..],
-                    None,
-                    fmt_string_span,
+                Ok(WithStmts::new_val(mk().mac_expr(
+                    refactor_format::build_format_macro(
+                        self,
+                        "print",
+                        "println",
+                        &args[fmt_string_idx..],
+                        &cargs[fmt_string_idx..],
+                        None,
+                        fmt_string_span,
+                    ),
                 )))
             }
             RecognizedCallForm::PrintfErr { fmt_string_idx } => {
@@ -1140,14 +1139,16 @@ impl Translation<'_> {
                         .index_unwrap_parens(cargs[fmt_string_idx])
                         .loc,
                 );
-                Ok(mk().mac_expr(refactor_format::build_format_macro(
-                    self,
-                    "eprint",
-                    "eprintln",
-                    &args[fmt_string_idx..],
-                    &cargs[fmt_string_idx..],
-                    None,
-                    fmt_string_span,
+                Ok(WithStmts::new_val(mk().mac_expr(
+                    refactor_format::build_format_macro(
+                        self,
+                        "eprint",
+                        "eprintln",
+                        &args[fmt_string_idx..],
+                        &cargs[fmt_string_idx..],
+                        None,
+                        fmt_string_span,
+                    ),
                 )))
             }
             RecognizedCallForm::PrintfS {
@@ -1189,10 +1190,10 @@ impl Translation<'_> {
                 );
             });
 
-                Ok(mk().call_expr(
+                Ok(WithStmts::new_val(mk().call_expr(
                     mk().path_expr(vec!["xj_sprintf_Vec_u8"]),
                     vec![mk().mutbl().borrow_expr(dest), size_expr, formatted_string],
-                ))
+                )))
             }
             RecognizedCallForm::RetargetedCallee(func) => mk_call_with(func, args),
             RecognizedCallForm::OtherCall => mk_call_with(func, args),

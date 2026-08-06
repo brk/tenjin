@@ -66,8 +66,6 @@ impl Translation<'_> {
                     ctx = ctx.decay_ref();
                 }
 
-                let ty = self.convert_type(expr_type_id.ctype)?;
-
                 let lhs_kind = &self.ast_context.index_unwrap_parens(lhs).kind;
                 let mut lhs_type_id = lhs_kind.get_qual_type().ok_or_else(|| {
                     format_translation_err!(
@@ -178,9 +176,8 @@ impl Translation<'_> {
                         let lhs_rhs_ids = Some((lhs, rhs));
                         self.convert_binary_operator(
                             ctx,
+                            expr_type_id,
                             op,
-                            ty,
-                            expr_type_id.ctype,
                             lhs_type_id,
                             rhs_type_id,
                             lhs_val,
@@ -217,20 +214,18 @@ impl Translation<'_> {
             )))
         } else {
             let lhs = self.make_cast(
-                ctx,
+                ctx.used(),
                 initial_lhs_type_id,
                 compute_lhs_type_id,
                 WithStmts::new_val(read.clone()),
                 &None,
             )?;
 
-            let ty = self.convert_type(compute_res_type_id.ctype)?;
             let val = lhs.and_then_try(|lhs| {
                 self.convert_binary_operator(
                     ctx,
+                    compute_res_type_id,
                     bin_op,
-                    ty,
-                    compute_res_type_id.ctype,
                     compute_lhs_type_id,
                     rhs_type_id,
                     lhs,
@@ -239,7 +234,7 @@ impl Translation<'_> {
                 )
             })?;
 
-            let val = self.make_cast(ctx, compute_res_type_id, lhs_type_id, val, &None)?;
+            let val = self.make_cast(ctx.used(), compute_res_type_id, lhs_type_id, val, &None)?;
 
             Ok(val.map(|val| mk().assign_expr(write.clone(), val)))
         }
@@ -433,20 +428,18 @@ impl Translation<'_> {
                         .expect("Cannot convert non-assignment operator");
 
                     let lhs = self.make_cast(
-                        ctx,
+                        ctx.used(),
                         initial_lhs_type_id,
                         expr_or_comp_type_id,
                         WithStmts::new_val(read.clone()),
                                 &None,
                     )?;
 
-                    let ty = self.convert_type(result_type_id.ctype)?;
                     let val = lhs.and_then_try(|lhs|
                         self.convert_binary_operator(
-                                    ctx,
+                            ctx,
+                            result_type_id,
                             op,
-                            ty,
-                            result_type_id.ctype,
                             expr_or_comp_type_id,
                             rhs_type_id,
                             lhs,
@@ -456,7 +449,7 @@ impl Translation<'_> {
                     )?;
 
                     let val = self.make_cast(
-                        ctx,
+                        ctx.used(),
                         result_type_id,
                         expr_type_id,
                         val,
@@ -522,9 +515,8 @@ impl Translation<'_> {
     fn convert_binary_operator(
         &self,
         ctx: ExprContext,
+        expr_type_id: CQualTypeId,
         op: CBinOp,
-        ty: Box<Type>,
-        ctype: CTypeId,
         lhs_type: CQualTypeId,
         rhs_type: CQualTypeId,
         lhs: Box<Expr>,
@@ -533,14 +525,22 @@ impl Translation<'_> {
     ) -> TranslationResult<WithStmts<Box<Expr>>> {
         let is_unsigned_integral_type = self
             .ast_context
-            .resolve_type(ctype)
+            .resolve_type(expr_type_id.ctype)
             .kind
             .is_unsigned_integral_type();
 
         Ok(WithStmts::new_val(match op {
             CBinOp::Add => return self.convert_addition(lhs_type, rhs_type, lhs, rhs, lhs_rhs_ids),
             CBinOp::Subtract => {
-                return self.convert_subtraction(ty, lhs_type, rhs_type, lhs, rhs, lhs_rhs_ids)
+                return self.convert_subtraction(
+                    ctx,
+                    expr_type_id,
+                    lhs_type,
+                    rhs_type,
+                    lhs,
+                    rhs,
+                    lhs_rhs_ids,
+                )
             }
 
             op if op.is_arithmetic() && is_unsigned_integral_type => {
@@ -637,7 +637,8 @@ impl Translation<'_> {
 
     fn convert_subtraction(
         &self,
-        ty: Box<Type>,
+        ctx: ExprContext,
+        expr_type_id: CQualTypeId,
         lhs_type_id: CQualTypeId,
         rhs_type_id: CQualTypeId,
         lhs: Box<Expr>,
@@ -654,14 +655,15 @@ impl Translation<'_> {
         let rhs_type = &self.ast_context.resolve_type(rhs_type_id.ctype).kind;
 
         if let &CTypeKind::Pointer(pointee) = rhs_type {
-            let mut offset = mk().method_call_expr(lhs, "offset_from", vec![rhs]);
-
-            if let Some(sz) = self.compute_size_of_expr(pointee.ctype) {
-                let div = cast_int(sz, "isize", false);
-                offset = mk().binary_expr(BinOp::Div(Default::default()), offset, div);
-            }
-
-            Ok(WithStmts::new_val(mk().cast_expr(offset, ty)).set_unsafe())
+            let val = self.make_pointer_difference(lhs, rhs, pointee.ctype);
+            let source_type_id = self.ast_context.type_for_kind(&CTypeKind::PtrDiff);
+            self.make_cast(
+                ctx,
+                CQualTypeId::new(source_type_id),
+                expr_type_id,
+                val,
+                &None,
+            )
         } else if let &CTypeKind::Pointer(pointee) = lhs_type {
             Ok(self.convert_pointer_offset(c_lhs, lhs, rhs, pointee.ctype, true, false))
         } else if lhs_type.is_unsigned_integral_type() {
@@ -716,7 +718,7 @@ impl Translation<'_> {
             };
 
         self.convert_assignment_operator_with_rhs(
-            ctx.used(),
+            ctx,
             op,
             ty,
             arg,
@@ -856,7 +858,7 @@ impl Translation<'_> {
                 .map(|a| mk().unary_expr(UnOp::Not(Default::default()), a))),
 
             CUnOp::Not => {
-                let val = self.convert_condition(ctx, false, arg)?;
+                let val = self.convert_condition(ctx.used(), false, arg)?;
                 Ok(val.map(|x| mk().cast_expr(x, mk().abs_path_ty(vec!["core", "ffi", "c_int"]))))
             }
             CUnOp::Extension => {
