@@ -103,7 +103,7 @@ pub unsafe extern "C" fn entry() {
         as *const [::core::ffi::c_char; 4]
         as *mut [::core::ffi::c_char; 4];
     let mut past_end: *mut ::core::ffi::c_char =
-        (&raw mut static_char_array as *mut ::core::ffi::c_char).offset(9);
+        (&raw mut static_char_array as *mut ::core::ffi::c_char).offset(9usize as isize);
     past_end = static_char_ptr.offset(8 as isize);
 }
 #[no_mangle]

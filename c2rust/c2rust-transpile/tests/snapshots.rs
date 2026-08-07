@@ -93,7 +93,7 @@ fn guidance_for_file(c_path: &Path) -> serde_json::Value {
     } else if c_path.ends_with("tenjin_slices.c") {
         serde_json::json!({
             "vars_of_type" : {
-                "&[u8]" : "inc:x"
+                "&[u8]" : ["inc:x", "get:x"]
             }
         })
     } else {
@@ -656,7 +656,7 @@ fn test_wide_strings() {
 #[test]
 fn test_zero_init_typedef_reorg_imports() {
     let c_path = Path::new("tests/snapshots/zero_init_typedef_reorg.c");
-    let mut cfg = config(Edition2021);
+    let mut cfg = config(Edition2021, Default::default());
     cfg.reorganize_definitions = true;
     cfg.disable_refactoring = true;
     compile_and_transpile_file(c_path, cfg);
@@ -677,7 +677,7 @@ fn test_ssize_t_from_stdio() {
     // one included wins); otherwise translation units within one crate
     // disagree about what `ssize_t` is.
     let c_path = Path::new("tests/snapshots/ssize_t_stdio.c");
-    compile_and_transpile_file(c_path, config(Edition2021));
+    compile_and_transpile_file(c_path, config(Edition2021, Default::default()));
 
     let rs_path = c_path.with_extension("rs");
     let rs = fs::read_to_string(&rs_path).unwrap();

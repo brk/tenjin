@@ -47,6 +47,7 @@ fn config(output_dir: PathBuf) -> TranspilerConfig {
         disable_refactoring: false,
         preserve_unused_functions: false,
         log_level: log::LevelFilter::Warn,
+        guidance_json: Default::default(),
         edition: RustEdition::Edition2021,
         deny_unsafe_op_in_unsafe_fn: false,
         postprocess: false,
@@ -94,6 +95,10 @@ fn sibling_file_and_directory_modules_do_not_collide() {
     assert!(
         lib_rs.contains("pub mod sha1;"),
         "generated lib.rs should include the nested hash/sha1.rs module:\n{lib_rs}"
+    );
+    println!(
+        "{}",
+        fs::read_to_string(output_dir.join("c2rust-bin-main.rs")).unwrap()
     );
 
     let status = Command::new("cargo")

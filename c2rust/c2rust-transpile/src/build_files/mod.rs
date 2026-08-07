@@ -344,7 +344,8 @@ fn emit_thin_binaries(
         let main_path = crate_path.iter().join("::");
         let output = format!(
             r"
-fn main() {{
+use std::process::ExitCode;
+fn main() -> ExitCode {{
     ::{main_path}::{name}::main()
 }}
 "

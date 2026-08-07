@@ -438,20 +438,35 @@ impl<'c> Translation<'c> {
                 }
             };
 
-            // LHS must be ref decayed for the offset method call's self param
-            let pointer_rs = self.convert_expr(ctx.used().decay_ref(), pointer_id, None)?;
-            let target_type_id = self.ast_context.type_for_kind(&CTypeKind::SSize);
-            let offset_rs = self.convert_expr_with_cast(
-                ctx.used(),
-                CQualTypeId::new(target_type_id),
-                offset_id,
-                &None,
-            )?;
+            // If the pointer is guided to a slice, convert it without decaying
+            // to a raw pointer so `convert_pointer_offset` can index the slice
+            // directly. Otherwise it must be ref-decayed for `.offset()`.
+            let can_subscript = self.can_subscript(pointer_id);
+            let pointer_ctx = if can_subscript {
+                ctx.used()
+            } else {
+                ctx.used().decay_ref()
+            };
+            let pointer_rs = self.convert_expr(pointer_ctx, pointer_id, None)?;
+            let offset_rs = if can_subscript {
+                // Slice indexing will cast directly to usize below; avoid an
+                // unnecessary intermediate pointer-offset cast to isize.
+                self.convert_expr(ctx.used(), offset_id, None)?
+            } else {
+                let target_type_id = self.ast_context.type_for_kind(&CTypeKind::SSize);
+                self.convert_expr_with_cast(
+                    ctx.used(),
+                    CQualTypeId::new(target_type_id),
+                    offset_id,
+                    &None,
+                )?
+            };
 
             let mut val = pointer_rs
                 .zip(offset_rs)
                 .and_then(|(pointer_rs, offset_rs)| {
-                    self.make_pointer_offset(
+                    self.convert_pointer_offset(
+                        Some(pointer_id),
                         pointer_rs,
                         offset_rs,
                         pointee_type_id.ctype,
