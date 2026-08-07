@@ -16,6 +16,7 @@ use itertools::Itertools;
 use log::{error, trace, warn};
 use proc_macro2::{Punct, Spacing::*, Span, TokenStream, TokenTree};
 use quote::TokenStreamExt;
+use serde_derive::Serialize;
 use serde_json::Map;
 use syn::spanned::Spanned as _;
 use syn::{
@@ -942,20 +943,23 @@ pub fn emit_c_decl_map(
     t: &Translation,
     converted_decls: &HashMap<CDeclId, ConvertedDecl>,
     decl_source_ranges: IndexMap<CDeclId, CDeclSrcRange>,
+    preprocessed_definitions: &IndexMap<CDeclId, String>,
 ) -> DeclMap {
     let mut path_to_c_source_range: IndexMap<&Ident, _> = Default::default();
     for (decl, source_range) in decl_source_ranges {
         match converted_decls.get(&decl) {
             Some(ConvertedDecl::ForeignItem(item)) => {
-                path_to_c_source_range
-                    .insert(foreign_item_ident_vis(item).unwrap().0, source_range);
+                let ident = foreign_item_ident_vis(item).unwrap().0;
+                path_to_c_source_range.insert(ident, (decl, source_range));
             }
             Some(ConvertedDecl::Item(item)) => {
-                path_to_c_source_range.insert(item_ident(item).unwrap(), source_range);
+                let ident = item_ident(item).unwrap();
+                path_to_c_source_range.insert(ident, (decl, source_range));
             }
             Some(ConvertedDecl::Items(items)) => {
                 for item in items {
-                    path_to_c_source_range.insert(item_ident(item).unwrap(), source_range);
+                    let ident = item_ident(item).unwrap();
+                    path_to_c_source_range.insert(ident, (decl, source_range));
                 }
             }
             Some(ConvertedDecl::NoItem) => {}
@@ -974,7 +978,8 @@ pub fn emit_c_decl_map(
     let byte_offset_of = |loc| src_loc_to_byte_offset(&line_end_offsets, loc);
 
     // Slice into the source file, fixing up the ends to account for Clang AST quirks.
-    let slice_decl_with_fixups = |begin: SrcLoc, mid: SrcLoc, end: SrcLoc| -> &[u8] {
+    // Also returns the line within the slice where the decl itself (`mid`) begins.
+    let slice_decl_with_fixups = |begin: SrcLoc, mid: SrcLoc, end: SrcLoc| -> (&[u8], usize) {
         assert!(begin.line <= mid.line, "{} <= {}", begin.line, mid.line);
         assert!(mid.line <= end.line, "{} <= {}", mid.line, end.line);
 
@@ -1037,23 +1042,34 @@ pub fn emit_c_decl_map(
             end_offset += 1;
         }
 
-        &file_content[begin_offset..end_offset]
+        // Line within the emitted text where the decl itself begins; earlier
+        // lines hold preceding comments and other front matter.
+        let decl_line = file_content[begin_offset..mid_offset.max(begin_offset)]
+            .iter()
+            .filter(|&&c| c == b'\n')
+            .count();
+
+        (&file_content[begin_offset..end_offset], decl_line)
     };
 
-    let item_path_to_c_source: IndexMap<_, _> = path_to_c_source_range
+    let definitions = path_to_c_source_range
         .into_iter()
-        .map(|(ident, range)| {
+        .map(|(ident, (decl_id, range))| {
             let path = ident.to_string();
-            let c_src = std::str::from_utf8(slice_decl_with_fixups(
-                range.earliest_begin,
-                range.strict_begin,
-                range.end,
-            ))
-            .unwrap();
-            (path, c_src.to_owned())
+            let (c_src, decl_line) =
+                slice_decl_with_fixups(range.earliest_begin, range.strict_begin, range.end);
+            let c_src = std::str::from_utf8(c_src).unwrap();
+            (
+                path,
+                CDeclMapDefinition {
+                    definition: c_src.to_owned(),
+                    decl_line,
+                    preprocessed_definition: preprocessed_definitions.get(&decl_id).cloned(),
+                },
+            )
         })
         .collect();
-    item_path_to_c_source
+    DeclMap { definitions }
 }
 
 pub fn translate_failure(tcfg: &TranspilerConfig, msg: &str) {
@@ -1064,12 +1080,160 @@ pub fn translate_failure(tcfg: &TranspilerConfig, msg: &str) {
     }
 }
 
-type DeclMap = IndexMap<String, String>;
+/// Extract per-function preprocessed text from preprocessor output with line
+/// markers (`clang -E -fdirectives-only -C` equivalent), as produced by the
+/// AST exporter. Line markers map output lines back to source lines, which
+/// are then matched against the source ranges of top-level function
+/// definitions. Returns a map from C function decl id to preprocessed text.
+pub fn collect_preprocessed_definitions(
+    ast_context: &TypedAstContext,
+    main_file: &Path,
+    preprocessed: &str,
+) -> IndexMap<CDeclId, String> {
+    let main_file_canonical = main_file
+        .canonicalize()
+        .unwrap_or_else(|_| main_file.to_owned());
+
+    if let Ok(file_content) = std::fs::read(main_file) {
+        if file_content
+            .split(|byte| *byte == b'\n')
+            .any(|line| preprocessor_directive(line) == Some(b"line"))
+        {
+            warn!(
+                "skipping preprocessed text for `{}`: #line directives are not supported",
+                main_file.display()
+            );
+            return IndexMap::new();
+        }
+    }
+
+    // Markers spell the file the way the compile command did, which may be
+    // relative to a compilation directory we don't know. The output reliably
+    // begins with a marker for the main file, so learn its spelling there.
+    let main_file_spelling = preprocessed.lines().next().and_then(parse_line_marker);
+
+    // Associate each non-marker output line with its original source line,
+    // keeping only lines that come from the main file.
+    let mut main_file_lines: Vec<(u64, &str)> = Vec::new();
+    let mut is_main_file_cache: HashMap<&str, bool> = HashMap::new();
+    let mut in_main_file = false;
+    let mut current_line: u64 = 0;
+    let mut prev_main_file_line: Option<u64> = None;
+    for line in preprocessed.lines() {
+        if let Some((line_no, file)) = parse_line_marker(line) {
+            in_main_file = *is_main_file_cache.entry(file).or_insert_with(|| {
+                Some(file) == main_file_spelling.map(|(_, file)| file)
+                    || Path::new(file)
+                        .canonicalize()
+                        .map(|path| path == main_file_canonical)
+                        .unwrap_or(false)
+            });
+            current_line = line_no;
+        } else {
+            if in_main_file {
+                if matches!(prev_main_file_line, Some(prev) if current_line <= prev) {
+                    warn!(
+                        "skipping preprocessed text for `{}`: non-monotonic preprocessor line markers",
+                        main_file.display()
+                    );
+                    return IndexMap::new();
+                }
+                main_file_lines.push((current_line, line));
+                prev_main_file_line = Some(current_line);
+            }
+            current_line += 1;
+        }
+    }
+
+    let decl_spans = ast_context.top_decl_locs();
+
+    decl_spans
+        .iter()
+        .filter_map(|(&decl_id, range)| {
+            let decl = ast_context.get_decl(&decl_id)?;
+            let CDeclKind::Function {
+                name,
+                body: Some(_),
+                ..
+            } = &decl.kind
+            else {
+                return None;
+            };
+
+            // `earliest_begin` includes the gap holding leading comments, but
+            // points into the line on which the previous decl ended; skip
+            // that partial line unless this decl also starts on it.
+            let mut begin_line = range.earliest_begin.line;
+            if range.earliest_begin.column > 1 && range.strict_begin.line > begin_line {
+                begin_line += 1;
+            }
+            let end_line = range.end.line;
+
+            // Extraction is line-granular, so a function whose first or last
+            // line also holds another top-level decl would pull in that
+            // neighbor's text and comments. Skip it and let the raw definition
+            // stand in. Decls nested on interior lines (e.g. a `#define` in the
+            // body) are fine, since preprocessing still cleans the rest.
+            let shares_line = decl_spans.iter().any(|(&other_id, other)| {
+                let covers = |line| other.strict_begin.line <= line && line <= other.end.line;
+                other_id != decl_id && (covers(begin_line) || covers(end_line))
+            });
+            if shares_line {
+                warn!("skipping preprocessed text for `{name}`: shares a source line with another definition");
+                return None;
+            }
+
+            let definition = main_file_lines
+                .iter()
+                .filter(|(line_no, _)| (begin_line..=end_line).contains(line_no))
+                .map(|(_, text)| *text)
+                .join("\n");
+            let definition = definition.trim_matches('\n');
+            if definition.trim().is_empty() {
+                return None;
+            }
+            Some((decl_id, definition.to_owned()))
+        })
+        .collect()
+}
+
+/// Parse a GNU-style line marker (`# <line> "<file>" [flags...]`) emitted by
+/// the preprocessor. The returned line number and file apply to the next
+/// output line. Other `#` lines (e.g. `#define` passed through in
+/// directives-only mode) are not markers and yield `None`.
+fn parse_line_marker(line: &str) -> Option<(u64, &str)> {
+    let rest = line.strip_prefix('#')?;
+    let rest = rest.trim_start_matches([' ', '\t']);
+    let digits_len = rest.bytes().take_while(|b| b.is_ascii_digit()).count();
+    let line_no: u64 = rest.get(..digits_len)?.parse().ok()?;
+    let rest = rest[digits_len..].trim_start_matches([' ', '\t']);
+    let path = rest.strip_prefix('"')?;
+    // GNU markers escape `"`, `\`, and newlines in the filename, which we don't
+    // undo. `find` (first quote) is right for the usual unescaped path; an
+    // escaped quote would truncate here and fail the `canonicalize` comparison,
+    // falling back to the raw definition.
+    let path = &path[..path.find('"')?];
+    Some((line_no, path))
+}
+
+#[derive(Serialize)]
+pub struct DeclMap {
+    definitions: IndexMap<String, CDeclMapDefinition>,
+}
+
+#[derive(Serialize)]
+struct CDeclMapDefinition {
+    definition: String,
+    /// 0-based line within `definition` where the decl itself begins.
+    decl_line: usize,
+    preprocessed_definition: Option<String>,
+}
 
 pub fn translate(
     ast_context: TypedAstContext,
     tcfg: &TranspilerConfig,
     main_file: &Path,
+    preprocessed_definitions: &IndexMap<CDeclId, String>,
     parent_fn_map: HashMap<CDeclId, CDeclId>,
     parent_expr_map: HashMap<CExprId, CExprId>,
 ) -> (String, Option<DeclMap>, PragmaVec, CrateSet) {
@@ -1301,8 +1465,8 @@ pub fn translate(
             .collect::<HashMap<_, _>>();
 
         // Generate a map from Rust items to the source code of their C declarations.
-        let decl_map =
-            decl_source_ranges.map(|ranges| emit_c_decl_map(&t, &converted_decls, ranges));
+        let decl_map = decl_source_ranges
+            .map(|ranges| emit_c_decl_map(&t, &converted_decls, ranges, preprocessed_definitions));
 
         t.ast_context.sort_top_decls_for_emitting();
 
@@ -4990,7 +5154,7 @@ impl<'c> Translation<'c> {
                 .map_err(|e| e.add_loc(self.ast_context.display_loc(src_loc))),
 
             ArraySubscript(_, lhs, rhs, lrvalue) => self
-                .convert_array_subscript(ctx, lhs, rhs, lrvalue, override_ty, true)
+                .convert_array_subscript(ctx, override_ty, lhs, rhs, lrvalue, true)
                 .map_err(|e| e.add_loc(self.ast_context.display_loc(src_loc))),
 
             Call(call_expr_ty, func_id, ref args) => {
@@ -5121,6 +5285,40 @@ impl<'c> Translation<'c> {
                 })
             }
         }
+    }
+
+    /// Converts `expr_id` as if it were wrapped in an `ImplicitCast` expression.
+    pub(crate) fn convert_expr_with_cast(
+        &self,
+        ctx: ExprContext,
+        target_type_id: CQualTypeId,
+        expr_id: CExprId,
+        ctx_guided_type: &Option<tenjin::GuidedType>,
+    ) -> TranslationResult<WithStmts<Box<Expr>>> {
+        let source_type_id = self.ast_context[expr_id].kind.get_qual_type().unwrap();
+
+        let source_type_kind = &self.ast_context.resolve_type(source_type_id.ctype).kind;
+        let target_type_kind = &self.ast_context.resolve_type(target_type_id.ctype).kind;
+
+        let kind = CastKind::from_types(source_type_kind, target_type_kind).unwrap_or_else(|| {
+            warn!(
+                "Unknown CastKind for {source_type_kind:?} to {target_type_kind:?} cast. \
+                Defaulting to BitCast",
+            );
+
+            CastKind::BitCast
+        });
+
+        self.convert_cast(
+            ctx,
+            None,
+            target_type_id,
+            expr_id,
+            kind,
+            None,
+            ctx_guided_type,
+            false,
+        )
     }
 
     pub fn convert_constant(&self, constant: ConstIntExpr) -> TranslationResult<Box<Expr>> {
@@ -5701,8 +5899,6 @@ impl<'c> Translation<'c> {
         decl_id: CDeclId,
         type_id: CTypeId,
     ) -> TranslationResult<WithStmts<Box<Expr>>> {
-        self.import_type(type_id);
-
         let name = self.type_converter.borrow().resolve_decl_name(decl_id);
         let name = name.as_deref().unwrap_or("???");
 
@@ -5717,6 +5913,7 @@ impl<'c> Translation<'c> {
         let func_name = func_name.as_deref().unwrap_or("<none>");
         log::debug!("deferring imports to save them for {name} in {func_name}");
         self.defer_imports();
+        self.import_type(type_id);
 
         let name_decl_id = match self.ast_context.resolve_type_no_typedef(type_id).kind {
             CTypeKind::Typedef(decl_id) => decl_id,

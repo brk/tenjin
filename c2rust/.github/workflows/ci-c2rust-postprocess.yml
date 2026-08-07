@@ -58,6 +58,7 @@ jobs:
         run: |
           sudo apt-get -qq update
           sudo apt-get -qq install    \
+              bear                    \
               build-essential         \
               libbrotli-dev           \
               libbz2-dev              \
@@ -115,15 +116,12 @@ jobs:
           # The value is expanded unquoted by postprocess.gen.sh, so no shell
           # quoting: args must not contain whitespace.
           C2RUST_POSTPROCESS_EXTRA_ARGS: >-
-            --ident-filter ^(json_object_set_userdata|json_object_to_file)$
             --cache-dir ${{ runner.temp }}/llm-cache
         run: |
           export PATH=$PWD/target/release:$PWD/c2rust-postprocess:$HOME/.local/bin:$PATH
           echo "PATH=$PATH"
           export C2RUST_DIR=$PWD
-          # Needs to be run from `tests/integration/` (or further inside)
-          # to correctly load the `pyproject.toml`.
-          (cd tests/integration && ./test.py json-c)
+          ./tests/integration/test.py json-c
 
       # Stale entries are pruned by postprocess itself (--prune-cache-days).
       - name: Save postprocess cache

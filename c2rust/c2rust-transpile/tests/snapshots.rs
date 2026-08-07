@@ -420,6 +420,11 @@ fn test_empty_init() {
 }
 
 #[test]
+fn test_enums() {
+    transpile("enums.c").run();
+}
+
+#[test]
 fn test_exprs() {
     transpile("exprs.c").run();
 }
@@ -648,6 +653,40 @@ fn test_wide_strings() {
         .run();
 }
 
+#[test]
+fn test_zero_init_typedef_reorg_imports() {
+    let c_path = Path::new("tests/snapshots/zero_init_typedef_reorg.c");
+    let mut cfg = config(Edition2021);
+    cfg.reorganize_definitions = true;
+    cfg.disable_refactoring = true;
+    compile_and_transpile_file(c_path, cfg);
+
+    let rs_path = c_path.with_extension("rs");
+    rustc(&rs_path)
+        .edition(Edition2021)
+        .crate_name("zero_init_typedef_reorg")
+        .run();
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn test_ssize_t_from_stdio() {
+    // `ssize_t` must translate to `isize` no matter which system header
+    // declared it in a given translation unit (glibc declares it in
+    // sys/types.h, stdio.h, unistd.h, and others, each guarded so the first
+    // one included wins); otherwise translation units within one crate
+    // disagree about what `ssize_t` is.
+    let c_path = Path::new("tests/snapshots/ssize_t_stdio.c");
+    compile_and_transpile_file(c_path, config(Edition2021));
+
+    let rs_path = c_path.with_extension("rs");
+    let rs = fs::read_to_string(&rs_path).unwrap();
+    assert!(
+        rs.contains("pub type ssize_t = isize;"),
+        "expected `ssize_t` to translate to `isize`, got:\n{rs}"
+    );
+}
+
 // arch-os-specific
 
 #[test]
@@ -667,6 +706,18 @@ fn transpile_with_c_decl_map_snapshot(c_path: &Path) {
     let json: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(&c_decls_path).unwrap()).unwrap();
     insta::assert_json_snapshot!(snapshot_name, json, &debug_expr);
+}
+
+#[test]
+fn test_c_decls_directives() {
+    let c_path = Path::new("tests/c_decls_snapshots/directives.c");
+    transpile_with_c_decl_map_snapshot(c_path);
+}
+
+#[test]
+fn test_c_decls_line_directives() {
+    let c_path = Path::new("tests/c_decls_snapshots/line_directives.c");
+    transpile_with_c_decl_map_snapshot(c_path);
 }
 
 #[test]

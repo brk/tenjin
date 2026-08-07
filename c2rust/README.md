@@ -15,25 +15,37 @@
 ## Intro
 
 C2Rust helps you migrate C99-compliant code to Rust.
-The translator (or transpiler), [`c2rust transpile`](./c2rust-transpile/),
+The transpiler, [`c2rust transpile`](./c2rust-transpile/),
 produces unsafe Rust code that closely mirrors the input C code.
-The primary goal of the translator is to preserve functionality;
+The primary goal of the transpiler is to preserve functionality;
 test suites should continue to pass after translation.
 
-Generating safe and idiomatic Rust code from C ultimately requires manual effort.
-We are currently working on analysis to automate some of the effort
-required to lift unsafe Rust into safe Rust types.
-However, we are building a [refactoring tool](c2rust-refactor) that reduces the tedium of doing so.
-This work is still in the early stages; please get in touch if you're interested!
+The output of `c2rust transpile` is unsafe and unidiomatic; it is merely the first step in a longer migration process.
+Generating safe and idiomatic Rust code from C ultimately requires additional work.
+This work can be done by a human, a large language model, a deterministic tool, or some combination thereof.
+
+```mermaid
+flowchart LR
+    A[C sources] --> B
+    subgraph "C2Rust toolchain"
+        B["`c2rust transpile`"] --> C["`c2rust refactor`"]
+        C --> D["`c2rust postprocess`"]
+    end
+    D --> E[Human and/or agentic workflow]
+    E --> F[Safe, idiomatic Rust]
+
+    click B "https://github.com/immunant/c2rust/tree/master/c2rust-transpile" "c2rust transpile"
+    click C "https://github.com/immunant/c2rust/tree/master/c2rust-refactor" "c2rust refactor"
+    click D "https://github.com/immunant/c2rust/tree/master/c2rust-postprocess" "c2rust postprocess"
+```
+
+For instance, we provide a deterministic [refactoring tool](c2rust-refactor) to automate cleanup across the files produced by `c2rust transpile`.
+We also provide an LLM-powered [postprocessing tool](c2rust-postprocess) for additional types of cleanup that are hard to do deterministically.
+Even though the postprocessor validates the output of LLMs, it can introduce errors; we recommend using it in combination with a robust test suite.
 
 You can also [cross-check](cross-checks) the translated code against the original ([tutorial](docs/cross-check-tutorial.md)).
 
-Here's the big picture:
-
-![C2Rust overview](docs/c2rust-overview.png "C2Rust overview")
-
-To learn more, check out our [RustConf'18](https://www.youtube.com/watch?v=WEsR0Vv7jhg) talk on YouTube
-and try the C2Rust translator online using the [Compiler Explorer](https://godbolt.org/z/GdEzYWGq4).
+You can try `c2rust transpile` directly in the [Compiler Explorer](https://godbolt.org/z/GdEzYWGq4).
 This uses the current `master` branch, updated every night.
 
 <!-- ANCHOR_END: intro -->
@@ -51,7 +63,7 @@ so refer to the in-tree [./manual/](./manual/) for more up-to-date instructions.
 
 ### Prerequisites
 
-C2Rust requires LLVM 7 or later with its corresponding clang compiler and libraries.
+C2Rust requires LLVM 15 or later with its corresponding clang compiler and libraries.
 Python (through `uv`), CMake 3.5 or later and openssl (1.0) are also required.
 These prerequisites may be installed with the following commands, depending on your platform:
 
@@ -63,7 +75,7 @@ uv venv
 uv pip install -r scripts/requirements.txt
 ```
 
-- **Ubuntu 18.04, Debian 10, and later:**
+- **Ubuntu 22.04, Debian 12, and later:**
 
     ```sh
     apt install build-essential llvm clang libclang-dev cmake libssl-dev pkg-config git
@@ -105,7 +117,7 @@ You can also set the LLVM version explicitly if you have multiple installed,
 like this, for example:
 
 ```sh
-LLVM_CONFIG_PATH=llvm-config-14 cargo install --locked c2rust
+LLVM_CONFIG_PATH=llvm-config-15 cargo install --locked c2rust
 ```
 
 If you're using LLVM from Homebrew (either on Apple Silicon, Intel Macs, or Linuxbrew),
@@ -384,6 +396,7 @@ This is a list of all significant uses of `c2rust transpile` that we know of:
 | [`tsuki`](https://github.com/ultimaweapon/tsuki) | [`lua`](https://www.lua.org/source/5.4/) | @ultimaweapon | fully safe | Lua interpreter |
 | [`spiro.rlib`](https://github.com/MFEK/spiro.rlib) | [`spiro`](https://github.com/raphlinus/spiro) | @ctrlcctrlv | fully safe | spline interpolation |
 | [`sapp-kms`](https://crates.io/crates/sapp-kms) | [`sokol`](https://github.com/floooh/sokol) | @not-fl3 | cleaned up, still unsafe | application rendering library |
+| `lhdcv5` | *(unknown)* | *(unknown)* | fully safe | Bluetooth audio codec |
 
 If any other project successfully uses `c2rust`, feel free to add your ported project here.
 
