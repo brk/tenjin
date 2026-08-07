@@ -18,22 +18,6 @@ fn is_lvalue(e: &Expr) -> bool {
     )
 }
 
-/// Check if something is a side-effect free Rust lvalue.
-fn is_simple_lvalue(e: &Expr) -> bool {
-    use Expr::*;
-    match *unparen(e) {
-        Path(..) => true,
-        Unary(ExprUnary {
-            op: syn::UnOp::Deref(_),
-            ref expr,
-            ..
-        })
-        | Field(ExprField { base: ref expr, .. })
-        | Index(ExprIndex { ref expr, .. }) => is_simple_lvalue(expr),
-        _ => false,
-    }
-}
-
 pub struct NamedReference<R> {
     pub lvalue: Box<Expr>,
     pub rvalue: R,
@@ -106,6 +90,8 @@ impl Translation<'_> {
             .kind
             .get_qual_type()
             .ok_or_else(|| format_err!("bad reference type"))?;
+
+        let is_pure = self.ast_context.is_expr_pure(reference);
         let read = |write| self.read(reference_ty, write);
         // Pass in the expression's guided type here as the context - we really just want
         // an expression corresponding to whatever the guided type is
@@ -117,26 +103,26 @@ impl Translation<'_> {
         let reference =
             self.convert_expr_guided(ctx.used(), reference, Some(reference_ty), &ctx_guided_type)?;
         reference.and_then_try(|reference| {
-            if !uses_read && is_lvalue(&reference) {
+            if is_lvalue(&reference) && (is_pure || !uses_read) {
+                let rvalue = uses_read.then(|| read(reference.clone())).transpose()?;
+
                 Ok(WithStmts::new_val(NamedReference {
                     lvalue: reference,
-                    rvalue: None,
-                }))
-            } else if is_simple_lvalue(&reference) {
-                Ok(WithStmts::new_val(NamedReference {
-                    lvalue: reference.clone(),
-                    rvalue: Some(read(reference)?),
+                    rvalue,
                 }))
             } else {
                 // This is the case where we explicitly need to factor out possible side-effects.
 
-                let ptr_name = self.renamer.borrow_mut().fresh();
+                let ptr_name = self.renamer.borrow_mut().pick_name("c2rust_lvalue_ptr");
 
-                // let ref mut p = lhs;
+                // let p = &raw mut lhs;
+                // Use a raw pointer here so that it doesn't create borrow conflicts and
+                // doesn't invalidate other pointers.
+                self.use_feature("raw_ref_op");
                 let compute_ref = mk().local_stmt(Box::new(mk().local(
-                    mk().mutbl().ident_ref_pat(&ptr_name),
+                    mk().ident_pat(&ptr_name),
                     None,
-                    Some(reference),
+                    Some(mk().mutbl().raw_borrow_expr(reference)),
                 )));
 
                 let write =

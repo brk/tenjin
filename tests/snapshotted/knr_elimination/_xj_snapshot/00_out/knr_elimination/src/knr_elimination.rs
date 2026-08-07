@@ -11,7 +11,7 @@ use ::std::process::ExitCode;
 #[allow(unused_imports)]
 use ::knr_elimination;
 extern "C" {
-    fn printf(__format: *const ::core::ffi::c_char, ...) -> ::core::ffi::c_int;
+    fn printf(_: *const ::core::ffi::c_char, ...) -> ::core::ffi::c_int;
 }
 #[no_mangle]
 pub unsafe extern "C" fn scale(

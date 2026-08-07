@@ -170,7 +170,7 @@ impl Translation<'_> {
                 mk().ident_ty("u8"),
                 mk().lit_expr(bytes_padded.len() as u128),
             );
-            let mut val = transmute_expr(
+            let val = transmute_expr(
                 array_ty,
                 self.convert_type(ty.ctype)?,
                 mk().unary_expr(UnOp::Deref(Default::default()), mk().lit_expr(bytes_padded)),
@@ -181,11 +181,16 @@ impl Translation<'_> {
             // it will be const-promoted to 'static.
             if ctx.needs_address {
                 self.use_feature("inline_const");
-                let stmts = vec![mk().expr_stmt(val)];
-                val = mk().const_block_expr(mk().const_block(stmts));
+                // An inline `const` block is its own safety context and does not inherit
+                // the surrounding `unsafe`, so the transmute needs an explicit `unsafe`
+                // block inside the const block rather than relying on `set_unsafe`.
+                let unsafe_transmute = mk().unsafe_block_expr(vec![mk().expr_stmt(val)]);
+                let stmts = vec![mk().expr_stmt(unsafe_transmute)];
+                let val = mk().const_block_expr(mk().const_block(stmts));
+                Ok(WithStmts::new_val(val))
+            } else {
+                Ok(WithStmts::new_val(val).set_unsafe())
             }
-
-            Ok(WithStmts::new_val(val).set_unsafe())
         }
     }
 

@@ -1,4 +1,4 @@
-#include <stdio.h>
+int printf(const char*, ...);
 
 /* (C) An unprototyped declaration, filled in from the definition below. */
 extern int scale();

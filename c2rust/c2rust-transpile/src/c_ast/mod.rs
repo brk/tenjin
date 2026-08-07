@@ -1362,19 +1362,28 @@ impl TypedAstContext {
                         let lhs_resolved_ty = self.ast_context.resolve_type(lhs_type_id.ctype);
                         let rhs_resolved_ty = self.ast_context.resolve_type(rhs_type_id.ctype);
 
-                        let neither_ptr = !lhs_resolved_ty.kind.is_pointer()
-                            && !rhs_resolved_ty.kind.is_pointer();
+                        if op == CBinOp::Subtract
+                            && lhs_resolved_ty.kind.is_pointer()
+                            && rhs_resolved_ty.kind.is_pointer()
+                        {
+                            // Pointer difference operator should return `ptrdiff_t`.
+                            let new_type_id = self.ast_context.type_for_kind(&CTypeKind::PtrDiff);
+                            Some(CQualTypeId::new(new_type_id))
+                        } else {
+                            let neither_ptr = !lhs_resolved_ty.kind.is_pointer()
+                                && !rhs_resolved_ty.kind.is_pointer();
 
-                        if op.all_types_same() && neither_ptr {
-                            if CTypeKind::PULLBACK_KINDS.contains(&lhs_resolved_ty.kind) {
+                            if op.all_types_same() && neither_ptr {
+                                if CTypeKind::PULLBACK_KINDS.contains(&lhs_resolved_ty.kind) {
+                                    Some(lhs_type_id)
+                                } else {
+                                    Some(rhs_type_id)
+                                }
+                            } else if op.is_bitshift() {
                                 Some(lhs_type_id)
                             } else {
-                                Some(rhs_type_id)
+                                return;
                             }
-                        } else if op.is_bitshift() {
-                            Some(lhs_type_id)
-                        } else {
-                            return;
                         }
                     }
                     CExprKind::Unary(_ty, op, e, _idk) => op.expected_result_type(
@@ -2473,7 +2482,7 @@ pub enum CStmtKind {
     // statement in case of __attribute__((__fallthrough__)) at the end of a
     // case statement
     Attributed {
-        attributes: Vec<Attribute>,
+        attributes: IndexSet<Attribute>,
         substatement: CStmtId,
     },
 
@@ -2974,6 +2983,7 @@ pub enum Attribute {
     NoReturn,
     NotNull,
     Nullable,
+    Packed,
     /// __attribute__((section("foo"), __section__("foo")))
     Section(String),
     /// __attribute__((used, __used__))
