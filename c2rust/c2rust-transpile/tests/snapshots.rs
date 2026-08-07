@@ -503,6 +503,11 @@ fn test_overflow_128() {
 }
 
 #[test]
+fn test_pointer_casts() {
+    transpile("pointer_casts.c").run();
+}
+
+#[test]
 fn test_predefined() {
     transpile("predefined.c").run();
 }

@@ -799,22 +799,9 @@ impl<'c> Translation<'c> {
                 .expect("target type must be a pointer");
             let mutability = pointee_type_id.mutability();
 
-            let fn_name = match self.tcfg.edition {
-                RustEdition::Edition2021 => {
-                    // Rust 1.76: feature name changed to `exposed_provenance[_mut]`
-                    // Rust 1.84: stabilized
-                    self.use_feature("strict_provenance");
-
-                    // Rust 1.79: method name changed to `with_exposed_provenance[_mut]`
-                    match mutability {
-                        Mutability::Immutable => "from_exposed_addr",
-                        Mutability::Mutable => "from_exposed_addr_mut",
-                    }
-                }
-                RustEdition::Edition2024 => match mutability {
-                    Mutability::Immutable => "with_exposed_provenance",
-                    Mutability::Mutable => "with_exposed_provenance_mut",
-                },
+            let fn_name = match mutability {
+                Mutability::Immutable => "with_exposed_provenance",
+                Mutability::Mutable => "with_exposed_provenance_mut",
             };
             let pointee_type_rs = self.convert_pointee_type(pointee_type_id.ctype)?;
             let type_args = mk().angle_bracketed_args(vec![pointee_type_rs]);
