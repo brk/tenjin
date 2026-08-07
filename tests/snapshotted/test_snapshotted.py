@@ -43,14 +43,23 @@ def contents_of_non_ignored_files(dir: Path) -> dict[Path, str]:
     return result
 
 
+def copy_snapshot_tree(src: Path, dst: Path):
+    shutil.copytree(
+        src=src,
+        dst=dst,
+        dirs_exist_ok=True,
+        ignore=shutil.ignore_patterns("Cargo.lock"),
+    )
+
+
 def diff_results_with_snapshot(root: Path, src_dir: Path, results_dir: Path):
     snapshot_dir = src_dir / "_xj_snapshot"
     if not snapshot_dir.exists():
         snapshot_dir.mkdir()
 
     before = contents_of_non_ignored_files(snapshot_dir / "final")
-    shutil.copytree(dst=snapshot_dir / "00_out", src=results_dir / "00_out", dirs_exist_ok=True)
-    shutil.copytree(dst=snapshot_dir / "final", src=results_dir / "final", dirs_exist_ok=True)
+    copy_snapshot_tree(src=results_dir / "00_out", dst=snapshot_dir / "00_out")
+    copy_snapshot_tree(src=results_dir / "final", dst=snapshot_dir / "final")
     after = contents_of_non_ignored_files(snapshot_dir / "final")
 
     added = [p for p in after if p not in before]
@@ -75,6 +84,21 @@ def diff_results_with_snapshot(root: Path, src_dir: Path, results_dir: Path):
         assert False, (
             f"saw unexpected change in snapshot of {src_dir.relative_to(root)}: {added=}, {removed=}, {changed=}"
         )
+
+
+def test_copy_snapshot_tree_ignores_cargo_lock(tmp_path: Path):
+    src = tmp_path / "src"
+    dst = tmp_path / "dst"
+    (src / "nested").mkdir(parents=True)
+    (dst / "nested").mkdir(parents=True)
+    (src / "nested" / "Cargo.lock").write_text("new lock", encoding="utf-8")
+    (dst / "nested" / "Cargo.lock").write_text("old lock", encoding="utf-8")
+    (src / "nested" / "lib.rs").write_text("new source", encoding="utf-8")
+
+    copy_snapshot_tree(src, dst)
+
+    assert (dst / "nested" / "Cargo.lock").read_text(encoding="utf-8") == "old lock"
+    assert (dst / "nested" / "lib.rs").read_text(encoding="utf-8") == "new source"
 
 
 def assert_translation_success(cp_ce: CompletedProcess, resultsdir: Path):
