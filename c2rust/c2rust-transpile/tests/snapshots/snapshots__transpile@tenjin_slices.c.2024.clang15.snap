@@ -16,3 +16,7 @@ expression: cat tests/snapshots/tenjin_slices.2024.clang15.rs
 pub unsafe extern "C" fn inc(mut x: &[u8]) {
     x = &x[1..];
 }
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn get(mut x: &[u8], mut i: ::core::ffi::c_int) -> ::core::ffi::c_uchar {
+    return x[i as usize];
+}

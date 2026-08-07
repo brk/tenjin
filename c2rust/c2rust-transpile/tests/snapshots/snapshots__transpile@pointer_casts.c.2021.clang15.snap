@@ -1,0 +1,28 @@
+---
+source: c2rust-transpile/tests/snapshots.rs
+expression: cat tests/snapshots/pointer_casts.2021.clang15.rs
+---
+#![allow(
+    clippy::missing_safety_doc,
+    dead_code,
+    non_camel_case_types,
+    non_snake_case,
+    non_upper_case_globals,
+    unused_assignments,
+    unused_mut
+)]
+pub type uintptr_t = usize;
+#[no_mangle]
+pub unsafe extern "C" fn integer_to_mut_pointer(mut address: uintptr_t) -> *mut ::core::ffi::c_int {
+    return ::core::ptr::with_exposed_provenance_mut::<::core::ffi::c_int>(address as usize);
+}
+#[no_mangle]
+pub unsafe extern "C" fn integer_to_const_pointer(
+    mut address: uintptr_t,
+) -> *const ::core::ffi::c_int {
+    return ::core::ptr::with_exposed_provenance::<::core::ffi::c_int>(address as usize);
+}
+#[no_mangle]
+pub unsafe extern "C" fn pointer_to_integer(mut pointer: *const ::core::ffi::c_int) -> uintptr_t {
+    return pointer.expose_provenance() as uintptr_t;
+}

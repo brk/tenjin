@@ -2,6 +2,7 @@ import json
 import logging
 import subprocess
 from collections.abc import Generator, Iterable
+from dataclasses import dataclass
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 from typing import Any
@@ -205,10 +206,87 @@ def get_rust_comments(code: str) -> list[str]:
     return get_comments_text(walk(tree.root_node))
 
 
+def _plain_comment_prefix(comment: str) -> str | None:
+    """
+    The plain-comment marker that replaces a doc-comment marker,
+    or None if `comment` is not a doc comment.
+    """
+    # Per rustc: ////... and /***...*/ and the empty /**/ are plain comments.
+    if comment.startswith("//!"):
+        return "//"
+    if comment.startswith("///") and not comment.startswith("////"):
+        return "//"
+    if comment.startswith("/*!"):
+        return "/*"
+    if (
+        comment.startswith("/**")
+        and not comment.startswith("/***")
+        and comment != "/**/"
+    ):
+        return "/*"
+    return None
+
+
+def demote_misplaced_doc_comments(code: str) -> str:
+    """
+    Rewrite doc comments as plain comments wherever rustc would reject or
+    ignore them in a function definition fragment. A /// before an expression
+    statement desugars to an attribute on the expression, which is a hard
+    error on stable (E0658, stmt_expr_attributes); elsewhere in a body it is
+    an unused_doc_comments warning. Inner doc comments (//!) are demoted
+    everywhere since the fragment is merged into the middle of a file.
+    """
+    parser = Parser(RUST_LANGUAGE)
+    code_bytes = code.encode()
+    tree = parser.parse(code_bytes)
+
+    replacements = []
+
+    def walk(node: Node) -> None:
+        if node.type in {"line_comment", "block_comment"}:
+            text = code_bytes[node.start_byte : node.end_byte].decode()
+            prefix = _plain_comment_prefix(text)
+            inner_doc = text.startswith(("//!", "/*!"))
+            misplaced = node.parent is None or node.parent.type != "source_file"
+            if prefix is not None and (inner_doc or misplaced):
+                # all doc-comment markers are 3 bytes
+                replacements.append((node.start_byte, node.end_byte, prefix + text[3:]))
+        for child in node.children:
+            walk(child)
+
+    walk(tree.root_node)
+
+    if not replacements:
+        return code
+
+    out = []
+    pos = 0
+    for start, end, new_text in replacements:
+        out.append(code_bytes[pos:start].decode())
+        out.append(new_text)
+        pos = end
+    out.append(code_bytes[pos:].decode())
+    return "".join(out)
+
+
+def rust_parse_has_errors(code: str) -> bool:
+    """True if tree-sitter finds syntax errors in the given Rust code."""
+    parser = Parser(RUST_LANGUAGE)
+    return parser.parse(code.encode()).root_node.has_error
+
+
+def is_comment_token(tok_type: Any) -> bool:
+    """True for real comments; excludes directives and include paths."""
+    return tok_type in Comment and tok_type not in {
+        Comment.Preproc,
+        Comment.PreprocFile,
+    }
+
+
 def get_comments(code: str, lexer: RegexLexer) -> list[str]:
     comments = []
     for tok_type, tok_value in lex(code, lexer):
-        if tok_type in Comment and tok_type != Comment.Preproc:
+        if is_comment_token(tok_type):
             # Keep exactly what appears, including delimiters (//, /* */)
             comments.append(tok_value)
     return comments
@@ -233,12 +311,36 @@ def get_rust_definitions(root_rust_source_file: Path) -> dict[str, str]:
     return json.loads(result.stdout)
 
 
-def get_c_definitions(root_rust_source_file: Path) -> dict[str, str]:
+@dataclass(frozen=True)
+class CDefinition:
+    definition: str
+    preprocessed_definition: str | None
+    # 0-based line within `definition` where the decl itself begins; earlier
+    # lines hold preceding comments and other front matter.
+    decl_line: int | None = None
+
+    @property
+    def effective(self) -> str:
+        """Preprocessed text when available, original otherwise."""
+        if self.preprocessed_definition is not None:
+            return self.preprocessed_definition
+        return self.definition
+
+
+def get_c_definitions(root_rust_source_file: Path) -> dict[str, CDefinition]:
     c_defs_json = root_rust_source_file.with_suffix(".c_decls.json")
 
     logging.debug(f"Loading C definitions from {c_defs_json}")
     try:
-        return json.loads(c_defs_json.read_text())
+        c_decls = json.loads(c_defs_json.read_text())
+        return {
+            identifier: CDefinition(
+                definition=decl["definition"],
+                preprocessed_definition=decl.get("preprocessed_definition"),
+                decl_line=decl.get("decl_line"),
+            )
+            for identifier, decl in c_decls["definitions"].items()
+        }
     except OSError as e:
         e.add_note(f"C definitions JSON file not found: {c_defs_json}")
         raise e

@@ -1,6 +1,16 @@
-#!/usr/bin/env -S uv run
+#!/usr/bin/env -S uv run --script
+
+# /// script
+# requires-python = ">=3.12"
+# dependencies = [
+#     "distro>=1.9.0",
+#     "jinja2>=3.1.6",
+#     "pyyaml>=6.0.3",
+# ]
+# ///
 
 import argparse
+import os
 
 import tests
 import tests.requirements as requirements
@@ -39,6 +49,16 @@ def get_args():
     )
     parser.add_argument(
         "--ignore-requirements", action="store_true", help="Ignore test requirements"
+    )
+    parser.add_argument(
+        "--refactor-jobs",
+        dest="refactor_jobs",
+        action="store",
+        type=int,
+        default=os.cpu_count(),
+        help="Maximum number of concurrent refactor stages; each holds"
+        " compiler state for a whole crate, so lower this on"
+        " memory-constrained hosts (default: CPU count)",
     )
     parser.add_argument(
         "projects",

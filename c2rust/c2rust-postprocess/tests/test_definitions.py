@@ -6,9 +6,11 @@ from conftest import EXAMPLES_ROOT
 
 from postprocess import main
 from postprocess.definitions import (
+    demote_misplaced_doc_comments,
     get_c_sourcefile,
     get_function_span_pairs,
     get_rust_function_spans,
+    rust_parse_has_errors,
 )
 from postprocess.utils import read_chunk
 
@@ -35,24 +37,24 @@ def test_get_rust_function_spans(transpile_qsort, pytestconfig):
     expected_fn_spans = [
         {
             "name": "swap",
-            "start_line": 10,
-            "end_line": 14,
-            "start_byte": 154,
-            "end_byte": 316,
+            "start_line": 11,
+            "end_line": 15,
+            "start_byte": 186,
+            "end_byte": 348,
         },
         {
             "name": "partition",
-            "start_line": 16,
-            "end_line": 39,
-            "start_byte": 330,
-            "end_byte": 1193,
+            "start_line": 17,
+            "end_line": 37,
+            "start_byte": 362,
+            "end_byte": 1070,
         },
         {
             "name": "quickSort",
-            "start_line": 41,
-            "end_line": 51,
-            "start_byte": 1207,
-            "end_byte": 1566,
+            "start_line": 39,
+            "end_line": 49,
+            "start_byte": 1084,
+            "end_byte": 1443,
         },
     ]
 
@@ -82,6 +84,50 @@ def test_c_function_splitting(generate_compile_commands_for_qsort, transpile_qso
         print(f"Rust function {rust_fn['name']} definition:\n{rust_def}\n")
 
     # assert False
+
+
+def test_demote_misplaced_doc_comments():
+    code = """\
+#[no_mangle]
+/// doc on fn stays
+pub unsafe extern "C" fn f() -> i32 {
+    /// doc before let
+    let mut x = 0;
+    /// doc before expr stmt
+    x = 1;
+    /** block doc */
+    x = 2;
+    //// four slashes is a plain comment
+    // plain comment
+    return x;
+}
+"""
+    expected = """\
+#[no_mangle]
+/// doc on fn stays
+pub unsafe extern "C" fn f() -> i32 {
+    // doc before let
+    let mut x = 0;
+    // doc before expr stmt
+    x = 1;
+    /* block doc */
+    x = 2;
+    //// four slashes is a plain comment
+    // plain comment
+    return x;
+}
+"""
+    assert demote_misplaced_doc_comments(code) == expected
+
+
+def test_demote_misplaced_doc_comments_inner_doc():
+    code = "//! inner doc\nfn f() {}\n"
+    assert demote_misplaced_doc_comments(code) == "// inner doc\nfn f() {}\n"
+
+
+def test_rust_parse_has_errors():
+    assert not rust_parse_has_errors("fn f() -> i32 { 1 }\n")
+    assert rust_parse_has_errors("fn f( -> i32 { 1 }\n")
 
 
 def test_comment_insertion_qsort():
