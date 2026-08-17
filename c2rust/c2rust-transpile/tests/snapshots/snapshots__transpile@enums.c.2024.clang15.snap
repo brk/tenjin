@@ -27,6 +27,19 @@ pub const Bar2: Bar = Bar(2);
 pub const Bar1: Bar = Bar(1);
 pub const Bar0: Bar = Bar(0);
 pub const BarN1: Bar = Bar(-1);
+pub type Callback = Option<unsafe extern "C" fn() -> ::core::ffi::c_int>;
+#[unsafe(no_mangle)]
+pub static mut callbacks: [Callback; 1] = [None; 1];
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn call_callback(mut index: Foo) -> ::core::ffi::c_int {
+    return ::core::mem::transmute::<_, fn() -> ::core::ffi::c_int>(
+        Some(
+            (*(&raw mut callbacks as *mut Callback).offset(index.0 as isize))
+                .expect("non-null function pointer"),
+        )
+        .expect("non-null function pointer"),
+    )();
+}
 pub const FOO1_MACRO: ::core::ffi::c_uint = 1 as ::core::ffi::c_uint;
 pub const BAR1_MACRO: ::core::ffi::c_int = 1;
 #[unsafe(no_mangle)]
