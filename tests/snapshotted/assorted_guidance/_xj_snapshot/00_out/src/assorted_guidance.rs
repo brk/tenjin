@@ -186,7 +186,7 @@ pub unsafe fn guided_1d_slice(
     mut x: &[::core::ffi::c_int],
     mut index: ::core::ffi::c_int,
 ) -> ::core::ffi::c_int {
-    let mut x2: &[::core::ffi::c_int] = &x.as_ptr()[3 as usize..];
+    let mut x2: &[::core::ffi::c_int] = &x[3 as usize..];
     return x[index as usize];
 }
 #[no_mangle]

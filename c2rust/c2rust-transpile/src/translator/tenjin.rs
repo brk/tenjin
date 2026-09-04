@@ -70,6 +70,10 @@ impl GuidedType {
     pub fn is_slice_or_array_ref(&self) -> bool {
         self.is_slice_ref() || self.is_array_ref()
     }
+
+    pub fn is_slice_or_array(&self) -> bool {
+        matches!(self.parsed, Type::Slice(..) | Type::Array(_))
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -2847,6 +2851,43 @@ impl Translation<'_> {
             }
         }
         false
+    }
+
+    /// Assuming we have (e1 `op` e2) whose result type
+    /// has the guided type G, try to deduce the guided type
+    /// context for e1 and e2
+    ///
+    /// Ex. if we have
+    ///   let x = p + i
+    /// where
+    ///   x has guided type &[u8]
+    ///   p has a pointer type
+    ///   i has an integral type
+    /// then
+    ///   the guided type for p should also be &[u8]
+    ///   we have no guidance for i
+    ///
+    /// `lhs_type` (resp `rhs_type`) is the type of the lhs (rhs) operand
+    /// returns the (lhs, rhs) guidance for the lhs and rhs expressions
+    pub fn context_guidance_of_binary_op(
+        &self,
+        op: CBinOp,
+        lhs_type: &CTypeKind,
+        rhs_type: &CTypeKind,
+        ctx_guided_type: &Option<GuidedType>,
+    ) -> (Option<GuidedType>, Option<GuidedType>) {
+        let Some(t) = ctx_guided_type else {
+            return (None, None);
+        };
+
+        if t.is_slice_or_array_ref() && op.is_pointer_arithmetic() {
+            return (
+                lhs_type.is_pointer().then(|| t.clone()),
+                rhs_type.is_pointer().then(|| t.clone()),
+            );
+        }
+
+        (None, None)
     }
 
     pub fn try_guided_type_repair(&self, e: Box<Expr>, g: &Option<GuidedType>) -> Box<Expr> {

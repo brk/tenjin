@@ -4925,7 +4925,14 @@ impl<'c> Translation<'c> {
             ),
 
             Unary(result_type_id, op, arg, _lrvalue) => {
-                let val = self.convert_unary_operator(ctx, override_ty, result_type_id, op, arg)?;
+                let val = self.convert_unary_operator(
+                    ctx,
+                    override_ty,
+                    result_type_id,
+                    op,
+                    arg,
+                    ctx_guided_type,
+                )?;
 
                 // if the context wants a different type, add a cast
                 if let Some(expected_ty) = override_ty {
@@ -5031,11 +5038,12 @@ impl<'c> Translation<'c> {
                     rhs,
                     opt_lhs_type_id,
                     opt_res_type_id,
+                    ctx_guided_type,
                 )
                 .map_err(|e| e.add_loc(self.ast_context.display_loc(src_loc))),
 
             ArraySubscript(_, lhs, rhs, lrvalue) => self
-                .convert_array_subscript(ctx, override_ty, lhs, rhs, lrvalue, true)
+                .convert_array_subscript(ctx, override_ty, lhs, rhs, lrvalue, true, ctx_guided_type)
                 .map_err(|e| e.add_loc(self.ast_context.display_loc(src_loc))),
 
             Call(call_expr_ty, func_id, ref args) => {
@@ -5391,7 +5399,7 @@ impl<'c> Translation<'c> {
                 result_type_id,
                 expected_type_id.unwrap_or(result_type_id),
                 val,
-                &None,
+                ctx_guided_type,
             )?;
         }
 
