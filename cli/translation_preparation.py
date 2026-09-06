@@ -12,7 +12,7 @@ from collections import defaultdict
 import dataclasses
 from enum import Enum
 
-from clang.cindex import Cursor, CursorKind  # type: ignore
+from clang.cindex import Cursor, CursorKind, TranslationUnitLoadError  # type: ignore
 from cmake_file_api import CMakeProject
 import click
 
@@ -750,6 +750,29 @@ class PrepPassResultStore:
     )
 
 
+# Matches `weak` spelled as its own token, which covers `__attribute__((weak))`,
+# the reserved `__weak__` spelling, and any project macro wrapping either.
+_WEAK_TOKEN_RE = re.compile(rb"\b(weak|__weak__)\b")
+
+
+def codebase_may_use_weak_attribute(codebase: Path) -> bool:
+    """Cheap textual gate for `prep_demote_overridden_weak_fns`.
+
+    Parsing every translation unit of every target is expensive, and the GNU
+    `weak` attribute is rare, so we first check whether any C source or header
+    in the codebase so much as mentions it (directly or via a macro of its own).
+    """
+    for path in codebase.rglob("*"):
+        if path.suffix.lower() not in (".c", ".h", ".inc"):
+            continue
+        try:
+            if _WEAK_TOKEN_RE.search(path.read_bytes()):
+                return True
+        except OSError:
+            continue
+    return False
+
+
 def run_preparation_passes(
     translation_flags: TranslationFlags,
     guidance: dict,
@@ -980,6 +1003,101 @@ def run_preparation_passes(
         store.build_info.compdb_for_all_targets_within(current_codebase).to_json_file(
             current_codebase / "compile_commands.json"
         )
+
+    def prep_demote_overridden_weak_fns(
+        prev: Path, current_codebase: Path, store: PrepPassResultStore
+    ):
+        """Demote `__attribute__((weak))` function definitions that are overridden.
+
+        A weak definition is discarded by the linker whenever a strong definition
+        of the same name appears elsewhere in the same target. c2rust translates
+        each translation unit independently, so both definitions become
+        `#[no_mangle]` functions in one crate and rustc rejects the result with
+        "symbol `f` is already defined".
+
+        For each target we find the weak definitions that lose out to another
+        definition and replace their bodies with `;`, leaving a declaration
+        behind. Calls to them then go through an `extern "C"` declaration in the
+        generated Rust, which is how c2rust already handles every other
+        cross-translation-unit call, and the linker resolves them to the winning
+        definition exactly as it does in C.
+        """
+        if not codebase_may_use_weak_attribute(current_codebase):
+            return
+
+        current_codebase_dir = current_codebase.as_posix()
+        index = c_refact.create_xj_clang_index()
+        # Keyed by file path, then by body start offset, mapping to body end offset.
+        demotions: dict[str, dict[int, int]] = defaultdict(dict)
+
+        for target in store.build_info.get_all_targets():
+            compdb = store.build_info.compdb_for_target_within(target.key, current_codebase)
+            try:
+                tus = c_refact.parse_project(index, compdb)
+            except (ValueError, AssertionError, TranslationUnitLoadError) as e:
+                # This pass only removes code the linker would have discarded
+                # anyway, so a codebase we cannot parse is better left alone
+                # than failed outright.
+                print(
+                    "TENJIN: WARNING: Skipping weak-definition demotion for target"
+                    f" {target.key}: {e}"
+                )
+                continue
+
+            # A definition sitting in a header is seen once per including
+            # translation unit, so identify definitions by their source range.
+            defns: dict[tuple[str, int], c_refact.WeakCapableFnDefn] = {}
+            for tu in tus.values():
+                for defn in c_refact.collect_extern_fn_definitions(tu):
+                    if not defn.file_path.startswith(current_codebase_dir):
+                        continue
+                    defns[defn.file_path, defn.body_start_byte_offset] = defn
+
+            defns_by_name: dict[str, list[c_refact.WeakCapableFnDefn]] = defaultdict(list)
+            for defn in defns.values():
+                defns_by_name[defn.name].append(defn)
+
+            # When only weak definitions exist, the linker keeps whichever it
+            # sees first, so we order candidates the way the target links them.
+            # Definitions coming from headers are not translation units and sort
+            # last, by path, which at least keeps our choice deterministic.
+            link_order = {
+                cmd.absolute_file_path.as_posix(): i
+                for i, cmd in enumerate(compdb.commands)
+                if not cmd.is_fake_link_thingy
+            }
+
+            def sort_key(defn: c_refact.WeakCapableFnDefn) -> tuple[int, str, int]:
+                return (
+                    link_order.get(defn.file_path, len(link_order)),
+                    defn.file_path,
+                    defn.body_start_byte_offset,
+                )
+
+            for name, group in defns_by_name.items():
+                weak = sorted((d for d in group if d.is_weak), key=sort_key)
+                if not weak or len(group) < 2:
+                    continue
+                if len(weak) == len(group):
+                    # Nothing strong to override them; the linker keeps one weak
+                    # definition arbitrarily, so we keep the first deterministically.
+                    losers = weak[1:]
+                else:
+                    losers = weak
+                for defn in losers:
+                    click.echo(
+                        f"Demoting overridden weak definition of {click.style(name, fg='yellow')}"
+                        f" in {defn.file_path} (target {target.key})"
+                    )
+                    demotions[defn.file_path][defn.body_start_byte_offset] = (
+                        defn.body_end_byte_offset
+                    )
+
+        for file_path, bodies in demotions.items():
+            contents = Path(file_path).read_bytes()
+            for body_start, body_end in sorted(bodies.items(), reverse=True):
+                contents = contents[:body_start] + b";" + contents[body_end:]
+            Path(file_path).write_bytes(contents)
 
     def prep_localize_mutable_globals(
         prev: Path, current_codebase: Path, store: PrepPassResultStore
@@ -2235,6 +2353,7 @@ def run_preparation_passes(
         ("intercept_build", prep_01_intercept_build),
         ("build_coverage", prep_02_build_coverage),
         ("uniquify_built", prep_uniquify_built_files),
+        ("demote_overridden_weak_fns", prep_demote_overridden_weak_fns),
         ("hoist_embedded_tag_definitions", prep_hoist_embedded_tag_definitions),
         ("split_joined_decls", prep_split_joined_decls),
         ("analyze_errno", prep_analyze_errno),
