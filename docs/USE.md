@@ -488,6 +488,10 @@ limitations to its support:
 - Tenjin doesn't yet handle codebases which build multiple distinct
   libraries with the same initial stem (e.g. `libfoo.so.1.2.3` and also `libfoo.so.1.7.9`, which share the initial stem `libfoo`) at the same time.
 
+- Tenjin likewise does not yet handle codebases which build multiple object files
+  with the same (base)name in different directories. A simple workaround is to rename
+  one of the files and update the codebase's build system to match.
+
 - Removing `static` from top-level variables in `main()` may improve translation. This is safe to do if the variables are initialized and are not accessed from signal handlers, `setjmp`/`longjmp`, `setvbuf`, `atexit`/`at_quick_exit`, or other threads.
 
 # Error Cases
@@ -498,6 +502,9 @@ limitations to its support:
 * If you see `AssertionError: Failed to intercept commands from build` it probably
   means that a Make-style build system didn't run any build steps because the
   artifacts it was supposed to build were already up to date.
+
+* If you see `No source files found in compilation database` it might be due to
+  the build defaulting to GCC instead of Clang.
 
 * If you see `failed to load manifest for dependency 'ld_linux_x86_64_2'` the issue is probably that the
 project's build system is using `gcc` as the linker
