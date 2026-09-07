@@ -265,6 +265,43 @@ impl ExternCrate {
     }
 }
 
+/// The third-party crates named by the `use_crates` key of the guidance JSON.
+pub fn guidance_use_crates(guidance_json: &serde_json::Value) -> HashSet<String> {
+    let mut using_crates = HashSet::new();
+    if let Some(crates) = guidance_json.get("use_crates").and_then(|v| v.as_array()) {
+        for krate in crates {
+            if let Some(krate_str) = krate.as_str() {
+                using_crates.insert(krate_str.to_string());
+            }
+        }
+    }
+    using_crates
+}
+
+/// The native library (as it would appear after `-l`) that the given
+/// replacement crate makes redundant, so that naming the crate in `use_crates`
+/// guidance also drops the library from the generated `build.rs`.
+///
+/// A crate belongs here only when Tenjin retargets *every* entry point of the C
+/// library it replaces. `libz-rs-sys` does not qualify: it only covers part of
+/// zlib's API (`gzbuffer`, `inflateValidate`, `adler32_z`, ... are not
+/// retargeted), so a translation using it may still need to link `-lz`.
+fn superseded_native_lib(krate: &str) -> Option<&'static str> {
+    match krate {
+        "libbz2-rs-sys" => Some("bz2"),
+        _ => None,
+    }
+}
+
+/// The native libraries made redundant by the replacement crates named in the
+/// guidance's `use_crates`, and hence left out of the generated `build.rs`.
+pub(crate) fn superseded_native_libs(guidance_json: &serde_json::Value) -> HashSet<&'static str> {
+    guidance_use_crates(guidance_json)
+        .iter()
+        .filter_map(|krate| superseded_native_lib(krate))
+        .collect()
+}
+
 fn char_to_ident(c: char) -> char {
     if c.is_alphanumeric() {
         c

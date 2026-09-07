@@ -72,9 +72,10 @@ the `bytemuck` crate.
 specify third-party crates that should be used in the translation.
 Currently restricted to a hard-coded list: `libz-rs-sys` (calls to
 zlib are retargeted to the pure-Rust `libz_rs_sys`) and
-`libbz2-rs-sys` (likewise for libbz2). Note that Tenjin still emits
-the original `-lz`/`-lbz2` link directive in the generated `build.rs`,
-so it can be dropped by hand once every call has been retargeted.
+`libbz2-rs-sys` (likewise for libbz2). Because every libbz2 entry
+point is retargeted, `libbz2-rs-sys` also drops `-lbz2` from the
+generated `build.rs`; `libz-rs-sys` covers only part of zlib's API,
+so `-lz` is still emitted.
 * `ffi` - a dict whose keys are function names. Each entry is a dict from
 argument names (or the special `$return` string, which denotes the return value)
 to an ffi conversion specifier. When any argument or the return value of a

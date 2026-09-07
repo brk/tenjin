@@ -383,8 +383,17 @@ fn emit_build_rs(
     build_dir: &Path,
     link_cmd: &LinkCmd,
 ) -> Option<PathBuf> {
+    // Libraries whose every entry point has been retargeted to a pure-Rust
+    // replacement crate no longer need to be linked in.
+    let superseded = crate::superseded_native_libs(&tcfg.guidance_json);
+    let libraries = link_cmd
+        .libs
+        .iter()
+        .filter(|lib| !superseded.contains(lib.as_str()))
+        .collect::<Vec<_>>();
+
     let json = json!({
-        "libraries": link_cmd.libs,
+        "libraries": libraries,
     });
     let output = reg.render("build.rs", &json).unwrap();
     let output_path = build_dir.join("build.rs");
