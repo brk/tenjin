@@ -457,7 +457,22 @@ a particular codebase.
   --check` after refolding to verify the refold map against the preprocessed
   source.
 
+# Handling of Undefined Behavior
 
+Tenjin's goal is to produce safe Rust from arbitrary C code.
+Currently we prioritize behavioral preservation over static type safety,
+and thus may produce unsafe Rust for some constructs.
+Our generated unsafe Rust will rarely eliminate undefined behaviors in the corresponding C code.
+
+Tenjin does not yet give precise guarantees about how its generated safe Rust handles C code with undefined behavior.
+
+Examples:
+- Out of bounds accesses (spatial memory safety violations) would become panics in Rust's built-in bounds checking.
+- Unaligned pointers should be detected in debug builds.
+- Some UB caused by type mismatches in C code may surface as type errors in generated Rust code.
+- Signed integer overflow will either be refined to twos-complement behavior, or panic in debug builds.
+
+Note that, in general, undefined behavior in C code may result in code which successfully runs on a particular platform being translated to Rust code which panics.
 
 # Edge Cases
 
