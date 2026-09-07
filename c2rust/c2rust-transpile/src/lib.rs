@@ -191,6 +191,7 @@ pub enum ExternCrate {
     Hexfloat2,
     XjCtime,
     LibzRsSys,
+    Libbz2RsSys,
     Bytemuck,
     GPoint,
 }
@@ -256,6 +257,7 @@ impl ExternCrate {
             Hexfloat2 => ExternCrateDetails::external("xj_hexfloat", "0.1.1", false),
             XjCtime => ExternCrateDetails::external("xj_ctime", "0.1.1", false),
             LibzRsSys => ExternCrateDetails::external("libz-rs-sys", "0.5.1", false),
+            Libbz2RsSys => ExternCrateDetails::external("libbz2-rs-sys", "0.2.5", false),
             Bytemuck => ExternCrateDetails::external("bytemuck", "1.23.2", false)
                 .with_features(vec!["derive", "extern_crate_alloc"]),
             GPoint => ExternCrateDetails::external("gpoint", "0.3.0", false),

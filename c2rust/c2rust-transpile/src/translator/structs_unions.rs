@@ -737,10 +737,13 @@ impl<'a> Translation<'a> {
             }
         }
 
+        let name_path =
+            crate::translator::tenjin::guide_type_name_path(&self.parsed_guidance.borrow(), &name);
+
         Ok(fields
             .into_iter()
             .collect::<WithStmts<Vec<syn::FieldValue>>>()
-            .map(|fields| mk().struct_expr(name.as_str(), fields)))
+            .map(|fields| mk().struct_expr(name_path, fields)))
     }
 
     /// This method handles conversion of assignment operators on bitfields.
