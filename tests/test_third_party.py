@@ -1091,6 +1091,40 @@ def test_blackle_megalania(tenjin_fixtures: TenjinFixtures):
     annotate_pytest_request_with_translation_notes(tenjin_fixtures)
 
 
+@pytest.mark.slow  # expected runtime: 310 seconds
+def test_lsof_exe(tenjin_fixtures: TenjinFixtures):
+    tmp_codebase, tmp_resultsdir = tenjin_fixtures.tmp_codebase, tenjin_fixtures.tmp_resultsdir
+    codebase = cached_git_clone_at_commit(
+        "https://github.com/tenjin-corpus/lsof.git",
+        "08d39b04809669c7b07b052fe6f1df972ca82723",
+    )
+    translation_preparation.copy_codebase(codebase, tmp_codebase)
+
+    translation.do_translate(
+        translation_types.TranslationFlags.simple(
+            root=tenjin_fixtures.root,
+            codebase=tmp_codebase,
+            resultsdir=tmp_resultsdir,
+            prebuildcmd="autoreconf -vif && ./configure CC=cc",
+            buildcmd="make -j4",
+        ),
+        guidance_path_or_literal="{}",
+    )
+    run_cargo_on_final(tmp_resultsdir / "final", ["build"])
+
+    lists_output: subprocess.CompletedProcess = hermetic.run(
+        ["target/debug/main", "-v"],
+        capture_output=True,
+        cwd=tmp_resultsdir / "final",
+    )
+
+    assert lists_output.stderr.startswith(
+        b"""main version information:
+    revision: 4.99.7
+"""
+    )
+
+
 @pytest.mark.slow  # expected runtime: 25 seconds
 def test_piotrl__c_markdown_exe(tenjin_fixtures: TenjinFixtures):
     tmp_codebase, tmp_resultsdir = tenjin_fixtures.tmp_codebase, tenjin_fixtures.tmp_resultsdir

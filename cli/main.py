@@ -85,6 +85,7 @@ def cli():
 @click.option("--codebase", help="Path to the codebase to translate.")
 @click.option(
     "--resultsdir",
+    required=True,
     help="Output directory for translation results (intermediates + final).",
 )
 @click.option(

@@ -578,6 +578,75 @@ class TissueCallSiteInfo:
     col: int
 
 
+@dataclass(frozen=True)
+class WeakCapableFnDefn:
+    """An external-linkage function definition, and whether it is `weak`."""
+
+    name: tenj_types.CIdentifier
+    file_path: tenj_types.FilePathStr
+    is_weak: bool
+    # Byte range of the function body, i.e. the outermost `{...}` compound
+    # statement. Replacing it with `;` demotes the definition to a declaration.
+    body_start_byte_offset: int
+    body_end_byte_offset: int
+
+
+# Spellings of the GNU `weak` attribute, as reported by libclang. The attribute
+# is unexposed, so we recognize it by the single token making up its extent.
+_WEAK_ATTR_TOKENS = frozenset(["weak", "__weak__"])
+
+
+def _cursor_is_weak(cursor: Cursor) -> bool:
+    if not cursor.has_attrs():
+        return False
+    for child in cursor.get_children():
+        if not child.kind.is_attribute():
+            continue
+        tokens = [t.spelling for t in child.get_tokens()]
+        if len(tokens) == 1 and tokens[0] in _WEAK_ATTR_TOKENS:
+            return True
+    return False
+
+
+def collect_extern_fn_definitions(
+    translation_unit: TranslationUnit,
+) -> list[WeakCapableFnDefn]:
+    """Collect the external-linkage function definitions of a translation unit.
+
+    Static (internal-linkage) functions are excluded because they never produce
+    a symbol that can collide with a definition from another translation unit.
+    """
+    defns: list[WeakCapableFnDefn] = []
+    for cursor in translation_unit.cursor.get_children():  # type: ignore[attr-defined]
+        if cursor.kind != CursorKind.FUNCTION_DECL:
+            continue
+        if not cursor.is_definition():
+            continue
+        if cursor.storage_class == StorageClass.STATIC:
+            continue
+        if cursor.linkage != LinkageKind.EXTERNAL:
+            continue
+        body = next(
+            (c for c in cursor.get_children() if c.kind == CursorKind.COMPOUND_STMT),
+            None,
+        )
+        if body is None:
+            continue
+        file = body.extent.start.file
+        if file is None:
+            continue
+        defns.append(
+            WeakCapableFnDefn(
+                name=cursor.spelling,
+                file_path=file.name,
+                is_weak=_cursor_is_weak(cursor),
+                body_start_byte_offset=body.extent.start.offset,
+                body_end_byte_offset=body.extent.end.offset,
+            )
+        )
+    return defns
+
+
 def compute_globals_and_statics_for_project(
     compdb: compilation_database.CompileCommands,
     elide_functions: bool = False,
