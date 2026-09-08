@@ -485,16 +485,7 @@ impl ParsedGuidance {
         //dbg!(&declspecs_of_type);
         //dbg!(&mut_of_decl);
 
-        let mut using_crates = HashSet::new();
-        if let Some(crates) = raw.get("use_crates") {
-            if let Some(crates) = crates.as_array() {
-                for krate in crates {
-                    if let Some(krate_str) = krate.as_str() {
-                        using_crates.insert(krate_str.to_string());
-                    }
-                }
-            }
-        }
+        let using_crates = crate::guidance_use_crates(&raw);
 
         let mut pod_types = HashSet::new();
         if let Some(crates) = raw.get("pod_types") {
