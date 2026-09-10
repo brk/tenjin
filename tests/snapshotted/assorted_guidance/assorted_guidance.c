@@ -1,8 +1,8 @@
 // To avoid cross-platform output differences from `printf` argument names,
 // we'll just declare printf and other libc functions ourselves.
 int printf(const char *fmt, ...);
-int snprintf(char* buf, unsigned long, const char *fmt, ...);
-int sprintf(char* buf, const char *fmt, ...);
+int snprintf(char *buf, unsigned long, const char *fmt, ...);
+int sprintf(char *buf, const char *fmt, ...);
 typedef unsigned long size_t;
 size_t strlen(const char *s);
 void *memset(void *s, int c, long n);
@@ -74,7 +74,7 @@ void guided_str_init_empty_lit()
 
 void guided_array_vec()
 {
-    unsigned char ovu8[4] = { 1, 2, 3, 4 };
+    unsigned char ovu8[4] = {1, 2, 3, 4};
     // XREF:guided_array_decay
     print_owned_vec_u8(ovu8);
 }
@@ -82,14 +82,13 @@ void guided_array_vec()
 void guided_immutable_u8_array_slice_decay_to_ptr()
 {
     const unsigned char rsu8[] = "";
-    strlen((const char*)rsu8);
+    strlen((const char *)rsu8);
 }
-
 
 void guided_immutable_u8_pointer()
 {
-    const unsigned char* rsu8 = "";
-    strlen((const char*)rsu8);
+    const unsigned char *rsu8 = "";
+    strlen((const char *)rsu8);
 }
 
 void recognize_call_exit() { exit(1); }
@@ -98,7 +97,7 @@ void recognize_int_float_bitcast()
 {
     // XREF:recognize_int_float_bitcast
     unsigned int ui = 0x40490fdb; // bit pattern for float 3.1415927
-    float f = *((float*)&ui);
+    float f = *((float *)&ui);
     printf("float f = %f\n", f);
 }
 
@@ -124,34 +123,35 @@ int guided_condition_string_null_check_neq(const char *ostr)
     return (ostr != ((void *)0)) ? 2 : 5;
 }
 
-void guided_c_assignment_string_pop(char* ostr)
+void guided_c_assignment_string_pop(char *ostr)
 {
     // XREF:guided_c_assignment_string_pop
     ostr[strlen(ostr) - 1] = '\0';
 }
 
-unsigned long guided_c_strlen(char* ostr)
+unsigned long guided_c_strlen(char *ostr)
 {
     // XREF:guided_c_strlen
     return strlen(ostr);
 }
 
-int guided_isalnum() {
+int guided_isalnum()
+{
     // XREF:guided_isalnum
     return isalnum('A');
 }
 
-
-int guided_tolower() {
+int guided_tolower()
+{
     // XREF:guided_tolower
     return tolower('A');
 }
 
-int guided_strcspn(const char* ostr, const char* delimiters) {
+int guided_strcspn(const char *ostr, const char *delimiters)
+{
     // XREF:guided_strcspn
     return strcspn(ostr, delimiters);
 }
-
 
 // void guided_vec_memset_zero_nosizeof(char* ovu8)
 // {
@@ -159,14 +159,13 @@ int guided_strcspn(const char* ostr, const char* delimiters) {
 //     memset(ovu8, 0, 3);
 // }
 
-
-void guided_vec_memset_zero_mulsizeof_ty(char* ovu8)
+void guided_vec_memset_zero_mulsizeof_ty(char *ovu8)
 {
     // XREF:guided_vec_memset_zero_mulsizeof_ty
     memset(ovu8, 0, sizeof(char) * 3);
 }
 
-void guided_vec_memset_zero_mulsizeof_deref(char* ovu8)
+void guided_vec_memset_zero_mulsizeof_deref(char *ovu8)
 {
     // XREF:guided_vec_memset_zero_mulsizeof_deref
     memset(ovu8, 0, sizeof(*ovu8) * 3);
@@ -200,7 +199,7 @@ int guided_mut_ref_neq(const char *xstr, const char *xstr2)
 int guided_1d_slice(int *x, int index)
 {
     // XREF:guided_subscript_noderef
-    int* x2 = x + 3;
+    int *x2 = x + 3;
     return x[index];
 }
 
@@ -219,8 +218,9 @@ int guided_2d_vec(int **x2d, int i, int j)
     return x2d[i][j];
 }
 
-void guided_local_int_as_char() {
-    char unguided = (char) 65;
+void guided_local_int_as_char()
+{
+    char unguided = (char)65;
     // char oc = unguided; // fails because unguided is i8, not Rust char
     // XREF:guided_int_as_char
     char oc = 65;
@@ -232,20 +232,22 @@ void guided_local_int_as_char() {
 //     return x;
 // }
 
-void takes_shared_str(const char* rstr) { (void) rstr; }
-void takes_shared_u8(unsigned char* ru8) { (void) ru8; }
+void takes_shared_str(const char *rstr) { (void)rstr; }
+void takes_shared_u8(unsigned char *ru8) { (void)ru8; }
 
-void guided_coerce_borrow_arg() {
+void guided_coerce_borrow_arg()
+{
     // XREF:guided_arg_coerce_borrow
-    const char* ostr = guided_ret_ostr();
+    const char *ostr = guided_ret_ostr();
     takes_shared_str(ostr);
 
     // notyet:
     // (gets unneeded `.as_ref().unwrap()`)
-    //takes_shared_str(guided_ret_ostr());
+    // takes_shared_str(guided_ret_ostr());
 }
 
-void unguided_coerce_asref(unsigned char* unguided) {
+void unguided_coerce_asref(unsigned char *unguided)
+{
     // XREF:unguided_arg_coerce_asref
     takes_shared_u8(unguided);
 }
@@ -253,41 +255,47 @@ void unguided_coerce_asref(unsigned char* unguided) {
 void guided_string_zero_empty()
 {
     // XREF:guided_string_zero_empty
-    const char* ostr = 0;
+    const char *ostr = 0;
 }
 
-struct StructWithMembersA {
-    unsigned char* uptr;
+struct StructWithMembersA
+{
+    unsigned char *uptr;
     unsigned char zu8;
 };
 
-void struct_unguided_ptr_with_guided_members(struct StructWithMembersA* ug_ptr) {
-    //takes_shared_str(gm_ptr->ostr); // fails due to lack of Copy
-    //takes_shared_u8(&gm_ptr->zu8); // fails due to lack of AsRef<_>
+void struct_unguided_ptr_with_guided_members(struct StructWithMembersA *ug_ptr)
+{
+    // takes_shared_str(gm_ptr->ostr); // fails due to lack of Copy
+    // takes_shared_u8(&gm_ptr->zu8); // fails due to lack of AsRef<_>
     ug_ptr->uptr[0] = 42;
     ug_ptr->zu8 = 43;
 }
 
-void struct_guided_ptr_with_guided_members(struct StructWithMembersA* gm_ptr) {
-    //takes_shared_str(gm_ptr->ostr); // fails due to lack of Copy
-    //takes_shared_u8(&gm_ptr->zu8); // fails due to lack of AsRef<_>
-    // XREF:struct_guided_ptr_with_guided_members
+void struct_guided_ptr_with_guided_members(struct StructWithMembersA *gm_ptr)
+{
+    // takes_shared_str(gm_ptr->ostr); // fails due to lack of Copy
+    // takes_shared_u8(&gm_ptr->zu8); // fails due to lack of AsRef<_>
+    //  XREF:struct_guided_ptr_with_guided_members
     gm_ptr->uptr[0] = 42;
     gm_ptr->zu8 = 43;
 }
 
-union UsedForFloatIntBitcast {
+union UsedForFloatIntBitcast
+{
     unsigned int ui;
     float f;
 };
 
-unsigned int guided_union_float_int_bitcast(float f) {
+unsigned int guided_union_float_int_bitcast(float f)
+{
     union UsedForFloatIntBitcast u;
     u.f = f;
     return u.ui;
 }
 
-float guided_union_int_float_bitcast(unsigned int ui) {
+float guided_union_int_float_bitcast(unsigned int ui)
+{
     union UsedForFloatIntBitcast u;
     u.ui = ui;
     return u.f;
@@ -297,13 +305,15 @@ void unguided_int_putchar(int c) { putchar(c); }
 void guided_int_putchar(int oc) { putchar(oc); }
 void unguided_char_putchar(char c) { putchar(c); }
 
-struct PodNotGuided {
+struct PodNotGuided
+{
     int a;
     int b;
 };
 
 // XREF:pod_guided
-struct PodGuided {
+struct PodGuided
+{
     int a;
     int b;
 };
@@ -313,15 +323,16 @@ int use_pod_structs(struct PodNotGuided png, struct PodGuided pg)
     return png.a + pg.a + png.b + pg.b;
 }
 
-int printf_in_cond(const char* ostr)
+int printf_in_cond(const char *ostr)
 {
     // Note that currently when we suppress print->println! conversion
     // due to the return code being used, we also don't apply any value
     // coercions to the arguments, so the guidance here will produce
     // incorrect code (which will unfortunately not be caught due to
     // the lenient nature of varargs in C).
-    if (printf("%s\n", ostr) < 0) {
-	    return 42;
+    if (printf("%s\n", ostr) < 0)
+    {
+        return 42;
     }
     return 0;
 }
@@ -329,4 +340,14 @@ int printf_in_cond(const char* ostr)
 void peek_slice(const char *rsu8)
 {
     char v = *rsu8;
+}
+
+void receive_slice(const unsigned char *rsu8)
+{
+    char v = rsu8[0];
+}
+void pass_slice_offset(int idx)
+{
+    char unsigned arr[72] = {0};
+    receive_slice(&arr[idx + 2]);
 }
