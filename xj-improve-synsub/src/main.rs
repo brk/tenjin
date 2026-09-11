@@ -49,6 +49,7 @@ fn main() -> Result<()> {
     rw.add_expr_rewrite(Rewriter::rewrite_isinf_isnan_comparisons);
     rw.add_expr_rewrite(Rewriter::rewrite_ctime_time);
     rw.add_expr_rewrite(Rewriter::rewrite_casted_literal_comparison);
+    rw.add_expr_rewrite(Rewriter::rewrite_decayed_array_redundant_borrow);
 
     rw.add_stmt_rewrite(Rewriter::rewrite_stmt_outer_parens);
     rw.add_stmt_rewrite(Rewriter::rewrite_local);

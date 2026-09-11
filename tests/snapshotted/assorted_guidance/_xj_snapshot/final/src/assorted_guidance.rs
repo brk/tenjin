@@ -256,6 +256,19 @@ pub unsafe fn printf_in_cond(mut ostr: String) -> ::core::ffi::c_int {
 pub fn peek_slice(mut rsu8: &[u8]) {
     let mut v = rsu8[0];
 }
+#[no_mangle]
+pub fn receive_slice(mut rsu8: &[u8]) {
+    let mut v = rsu8[0_usize] as ::core::ffi::c_char;
+}
+#[no_mangle]
+pub fn pass_slice_offset(mut idx: ::core::ffi::c_int) {
+    let mut arr: [::core::ffi::c_uchar; 72] = [
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    ];
+    receive_slice(&arr[(idx + 2) as usize..]);
+}
 unsafe fn xj_str_from_ptr<'a>(ptr: *const core::ffi::c_char) -> &'a str {
     if ptr.is_null() {
         "(null)"

@@ -22,6 +22,7 @@ impl<'c> Translation<'c> {
         mut ctx: ExprContext,
         cqual_type: CQualTypeId,
         arg: CExprId,
+        ctx_guided_type: &Option<tenjin::GuidedType>,
     ) -> TranslationResult<WithStmts<Box<Expr>>> {
         let arg_kind = &self.ast_context.index_unwrap_parens(arg).kind;
 
@@ -39,6 +40,7 @@ impl<'c> Translation<'c> {
                     rhs,
                     LRValue::RValue, // if we bypass the deref, we stay an RValue
                     false,           // don't deref, keep as pointer
+                    ctx_guided_type,
                 );
             }
             // An AddrOf DeclRef/Member is safe to not decay
@@ -327,6 +329,7 @@ impl<'c> Translation<'c> {
         rhs: CExprId,
         lrvalue: LRValue,
         deref: bool,
+        ctx_guided_type: &Option<tenjin::GuidedType>,
     ) -> TranslationResult<WithStmts<Box<Expr>>> {
         let (pointer_id, offset_id) = if self.ast_context.expr_is_indexable(lhs) {
             (lhs, rhs)
@@ -437,16 +440,22 @@ impl<'c> Translation<'c> {
                 }
             };
 
-            // If the pointer is guided to a slice, convert it without decaying
+            // If the pointer is guided to something indexable, convert it without decaying
             // to a raw pointer so `convert_pointer_offset` can index the slice
             // directly. Otherwise it must be ref-decayed for `.offset()`.
-            let can_subscript = self.can_subscript(pointer_id);
+            let can_subscript = self.can_subscript(pointer_id) || {
+                ctx_guided_type
+                    .as_ref()
+                    .map(|t| t.is_slice_or_array() || t.is_slice_or_array_ref())
+                    .unwrap_or(false)
+            };
             let pointer_ctx = if can_subscript {
                 ctx.used()
             } else {
                 ctx.used().set_needs_address(false).decay_ref()
             };
-            let pointer_rs = self.convert_expr(pointer_ctx, pointer_id, None)?;
+            let pointer_rs =
+                self.convert_expr_guided(pointer_ctx, pointer_id, None, ctx_guided_type)?;
             let offset_cty = self.ast_context[offset_id]
                 .kind
                 .get_qual_type()
@@ -498,6 +507,7 @@ impl<'c> Translation<'c> {
                             pointee_type_id.ctype,
                             false,
                             deref,
+                            ctx_guided_type,
                         )
                     }
                 });
@@ -533,8 +543,17 @@ impl<'c> Translation<'c> {
         pointee_cty: CTypeId,
         neg: bool,
         deref: bool,
+        ctx_guided_type: &Option<tenjin::GuidedType>, // The guided type context of the pointer operand
     ) -> WithStmts<Box<Expr>> {
-        if !neg && c_ptr.is_some_and(|ptr_id| self.can_subscript(ptr_id)) {
+        if !neg
+            && c_ptr.is_some_and(|ptr_id| {
+                ctx_guided_type
+                    .as_ref()
+                    .map(|t| t.is_slice_or_array() || t.is_slice_or_array_ref())
+                    .unwrap_or(false)
+                    || self.can_subscript(ptr_id)
+            })
+        {
             let subscript = cast_int(offset, "usize", false);
             return self.make_pointer_subscript(ptr, subscript, deref);
         }

@@ -444,6 +444,25 @@ impl Rewriter {
         }
     }
 
+    /// Rewrite `(&t)[i]` into t[i]
+    pub fn rewrite_decayed_array_redundant_borrow(
+        &self,
+        _symbols: &SymbolTable,
+        expr: &Expr,
+    ) -> Option<(Expr, Depth)> {
+        let Expr::Index(index) = expr else {
+            return None;
+        };
+        let inner = expr_strip_refs(&index.expr);
+        let new_index = syn::ExprIndex {
+            attrs: index.attrs.clone(),
+            expr: Box::new(inner.clone()),
+            bracket_token: index.bracket_token,
+            index: index.index.clone(),
+        };
+        Some((Expr::Index(new_index), Depth::Limited(0)))
+    }
+
     /// Rewrite `e1.as_mut_ptr()[e2]` into `e1[e2]`
     /// (it's an artifact of guidance).
     pub fn rewrite_decayed_array_subscript(
@@ -1510,5 +1529,15 @@ fn expr_strip_transmute_deref(expr: &Expr) -> &Expr {
             }
             _ => break ep,
         }
+    }
+}
+
+fn expr_strip_refs(expr: &Expr) -> &Expr {
+    if let Expr::Reference(e) = expr {
+        expr_strip_refs(&e.expr)
+    } else if let Expr::Paren(e) = expr {
+        expr_strip_refs(&e.expr)
+    } else {
+        expr
     }
 }
