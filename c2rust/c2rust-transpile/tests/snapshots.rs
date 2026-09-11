@@ -327,6 +327,11 @@ fn test_atomics() {
 }
 
 #[test]
+fn test_atomic_function_pointers() {
+    transpile("atomic_function_pointers.c").run();
+}
+
+#[test]
 fn test_auto_type() {
     transpile("auto_type.c").run();
 }
@@ -339,6 +344,11 @@ fn test_bitfields() {
 #[test]
 fn test_bool() {
     transpile("bool.c").run();
+}
+
+#[test]
+fn test_comments_only() {
+    transpile("comments_only.c").run();
 }
 
 #[test]
@@ -437,6 +447,11 @@ fn test_macros() {
 #[test]
 fn test_main_fn() {
     transpile("main_fn.c").run();
+}
+
+#[test]
+fn test_opaque_pointer_casts() {
+    transpile("opaque_pointer_casts.c").run();
 }
 
 #[test]

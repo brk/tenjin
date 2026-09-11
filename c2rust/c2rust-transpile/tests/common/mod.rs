@@ -18,7 +18,6 @@ pub(crate) fn config(edition: RustEdition, guidance: serde_json::Value) -> Trans
         incremental_relooper: true,
         fail_on_multiple: false,
         filter: None,
-        debug_relooper_labels: false,
         cross_checks: false,
         cross_check_backend: Default::default(),
         cross_check_configs: Default::default(),

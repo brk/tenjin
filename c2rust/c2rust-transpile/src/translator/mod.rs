@@ -21,7 +21,7 @@ use serde_json::Map;
 use syn::spanned::Spanned as _;
 use syn::{
     AttrStyle, BareVariadic, BinOp, Block, Expr, ExprBinary, ExprBlock, ExprBreak, ExprCast,
-    ExprParen, ExprReturn, ExprUnary, FnArg, ForeignItem, ForeignItemFn, ForeignItemMacro,
+    ExprParen, ExprReturn, ExprUnary, Fields, FnArg, ForeignItem, ForeignItemFn, ForeignItemMacro,
     ForeignItemStatic, ForeignItemType, Ident, Item, ItemConst, ItemEnum, ItemExternCrate, ItemFn,
     ItemForeignMod, ItemImpl, ItemMacro, ItemMod, ItemStatic, ItemStruct, ItemTrait,
     ItemTraitAlias, ItemType, ItemUnion, ItemUse, Lit, Macro, MacroDelimiter, PathSegment,
@@ -153,7 +153,6 @@ pub struct ExprContext {
     /// address in function pointer literals.
     needs_address: bool,
 
-    ternary_needs_parens: bool,
     expanding_macro: Option<CDeclId>,
 }
 
@@ -215,21 +214,24 @@ impl ExprContext {
             ..self
         }
     }
-    pub fn is_bitfield_write(&self) -> bool {
-        self.is_bitfield_write
-    }
-    pub fn set_bitfield_write(self, is_bitfield_write: bool) -> Self {
+
+    pub fn bitfield_write(self) -> Self {
         ExprContext {
-            is_bitfield_write,
+            is_bitfield_write: true,
             ..self
         }
     }
-    pub fn needs_address(&self) -> bool {
-        self.needs_address
-    }
-    pub fn set_needs_address(self, needs_address: bool) -> Self {
+
+    pub fn needs_address(self) -> Self {
         ExprContext {
-            needs_address,
+            needs_address: true,
+            ..self
+        }
+    }
+
+    pub fn not_needs_address(self) -> Self {
+        ExprContext {
+            needs_address: false,
             ..self
         }
     }
@@ -662,6 +664,9 @@ pub struct Translation<'c> {
     // Accumulated outputs
     pub features: RefCell<IndexSet<&'static str>>,
     sectioned_static_initializers: RefCell<Vec<Stmt>>,
+    /// Function-local statics that need hoisting to module scope because a
+    /// sectioned static's initializer references them.
+    function_statics_to_hoist: RefCell<IndexSet<CDeclId>>,
     extern_crates: RefCell<CrateSet>,
 
     // Translation state and utilities
@@ -1256,7 +1261,6 @@ pub fn translate(
         decay_ref: DecayRef::Default,
         is_bitfield_write: false,
         needs_address: false,
-        ternary_needs_parens: false,
         expanding_macro: None,
     };
 
@@ -2837,6 +2841,7 @@ impl<'c> Translation<'c> {
             comment_store: RefCell::new(CommentStore::new()),
             spans: HashMap::new(),
             sectioned_static_initializers: RefCell::new(Vec::new()),
+            function_statics_to_hoist: RefCell::new(IndexSet::new()),
             items: RefCell::new(items),
             ffi_wrappers: RefCell::new(Vec::new()),
             mod_names: RefCell::new(IndexMap::new()),
@@ -3602,21 +3607,15 @@ impl<'c> Translation<'c> {
                         static_def.span(span).static_item(new_name, ty, init),
                     ))
                 } else {
-                    let ConvertedVariable { ty, mutbl: _, init } = self.convert_variable(
-                        ctx.const_(),
+                    let items = self.convert_compilable_static(
+                        ctx,
+                        static_def.span(span),
+                        new_name,
                         initializer,
                         typ,
                         &guided_type,
                         guided_mutbl,
                     )?;
-                    let mut init = init?;
-                    let mut items = init.stmts_to_items().ok_or_else(|| {
-                        format_err!("Expected only item statements in static initializer")
-                    })?;
-                    let init = init.wrap_unsafe().to_pure_expr().unwrap();
-                    let item = static_def.span(span).static_item(new_name, ty, init);
-                    items.push(item);
-
                     Ok(ConvertedDecl::Items(items))
                 }
             }
@@ -3670,46 +3669,73 @@ impl<'c> Translation<'c> {
         }
         if self.tcfg.json_function_cfgs {
             graph
-                .dump_json_graph(&store, format!("{}_{}.json", "cfg", name))
+                .dump_json_graph(&store, format!("dumps/{}_cfg.json", name))
                 .expect("Failed to write CFG .json file");
         }
 
-        let (lifted_stmts, relooped) = cfg::relooper::reloop(
+        let (lifted_stmts, mut relooped) = cfg::relooper::reloop(
             graph,
             store,
-            self.tcfg.simplify_structures,
             self.tcfg.use_c_loop_info,
             self.tcfg.use_c_multiple_info,
             live_in,
         );
 
+        fn dump_structures(structures: &[cfg::Structure<Stmt>], fn_name: &str, suffix: &str) {
+            use std::io::Write;
+
+            std::fs::create_dir_all("dumps").unwrap();
+
+            // Use the `.ron` extension to aid with syntax highlighting when opening the
+            // dump file in an editor. The output isn't actually RON (it's just the
+            // `Debug` representation of the structured CFG), but this makes inspecting
+            // the dump files easier.
+            let path = format!("dumps/{fn_name}_structures_{suffix}.ron");
+            let mut file = std::fs::File::create(&path).unwrap();
+
+            write!(&mut file, "{:#?}", structures).unwrap();
+        }
+
         if self.tcfg.dump_structures {
-            eprintln!("Relooped structures:");
-            for s in &relooped {
-                eprintln!("  {s:#?}");
+            dump_structures(&relooped, name, "initial");
+        }
+
+        if self.tcfg.simplify_structures {
+            relooped = cfg::relooper::simplify_structure(relooped);
+
+            if self.tcfg.dump_structures {
+                dump_structures(&relooped, name, "simplified");
             }
         }
 
-        let current_block_ident = self
+        let mut cfg_info = cfg::structures::CfgInfo::default();
+        cfg::structures::gather_cfg_info(&relooped, &mut cfg_info);
+
+        let current_block_enum = self
+            .renamer
+            .borrow_mut()
+            .pick_name("C2Rust_Block", Namespaces::types());
+        let current_block_variable = self
             .renamer
             .borrow_mut()
             .pick_name("c2rust_current_block", Namespaces::values());
-        let current_block = mk().ident_expr(&current_block_ident);
         let mut stmts: Vec<Stmt> = lifted_stmts;
-        if cfg::structures::has_multiple(&relooped) {
+        if !cfg_info.checked_entries.is_empty() {
             if self.tcfg.fail_on_multiple {
                 panic!("Uses of `c2rust_current_block' are illegal with `--fail-on-multiple'.");
             }
 
-            let current_block_ty = if self.tcfg.debug_relooper_labels {
-                mk().ref_lt_ty("static", mk().path_ty(vec!["str"]))
-            } else {
-                mk().path_ty(vec!["u64"])
-            };
+            let variants = cfg_info
+                .checked_entries
+                .iter()
+                .map(|lbl| mk().variant(lbl.to_variant_ident(), Fields::Unit))
+                .collect();
+            let item = mk().enum_item(&current_block_enum, variants);
+            stmts.push(mk().item_stmt(item));
 
             let local = mk().local(
-                mk().mutbl().ident_pat(current_block_ident),
-                Some(current_block_ty),
+                mk().mutbl().ident_pat(&current_block_variable),
+                Some(mk().ident_ty(&current_block_enum)),
                 None,
             );
             stmts.push(mk().local_stmt(Box::new(local)))
@@ -3717,9 +3743,10 @@ impl<'c> Translation<'c> {
 
         stmts.extend(cfg::structures::structured_cfg(
             &relooped,
+            &cfg_info,
             &mut self.comment_store.borrow_mut(),
-            current_block,
-            self.tcfg.debug_relooper_labels,
+            mk().ident(current_block_enum),
+            mk().ident_expr(current_block_variable),
         )?);
         Ok(stmts)
     }
@@ -3879,6 +3906,89 @@ impl<'c> Translation<'c> {
         false
     }
 
+    /// Find function-local statics in `body` that must be hoisted to module
+    /// scope: those referenced, transitively, by the initializer of a sectioned
+    /// static. `c2rust_run_static_initializers` cannot see function-local names,
+    /// so everything a sectioned initializer references must be hoisted with it.
+    fn collect_function_statics_to_hoist(&self, body: CStmtId) {
+        // Entries are only consulted while converting the current function's
+        // body, so drop any left over from the previous function.
+        self.function_statics_to_hoist.borrow_mut().clear();
+
+        // Map each local static (in any nested block) to its initializer;
+        // seed the worklist with the ones that will get sectioned.
+        let mut local_statics: IndexMap<CDeclId, Option<CExprId>> = IndexMap::new();
+        let mut worklist: Vec<CDeclId> = Vec::new();
+        for id in DFExpr::new(&self.ast_context, body.into()) {
+            if let SomeId::Decl(decl_id) = id {
+                if let CDeclKind::Variable {
+                    has_static_duration: true,
+                    is_externally_visible: false,
+                    is_defn: true,
+                    initializer,
+                    typ,
+                    ..
+                } = self.ast_context[decl_id].kind
+                {
+                    local_statics.insert(decl_id, initializer);
+                    if self.static_initializer_is_uncompilable(initializer, typ) {
+                        worklist.push(decl_id);
+                    }
+                }
+            }
+        }
+        if worklist.is_empty() {
+            return;
+        }
+        // Transitively collect local statics referenced by the seeds'
+        // initializers. Hoisting too much is harmless, so unlike
+        // `has_decl_reference` we don't bother pruning sizeof/typeof subtrees.
+        let mut visited: IndexSet<CDeclId> = worklist.iter().copied().collect();
+        while let Some(decl_id) = worklist.pop() {
+            let init = match local_statics.get(&decl_id) {
+                Some(&Some(init)) => init,
+                _ => continue,
+            };
+            for i in DFExpr::new(&self.ast_context, init.into()) {
+                if let SomeId::Expr(e) = i {
+                    if let CExprKind::DeclRef(_, target, _) =
+                        self.ast_context.index_unwrap_parens(e).kind
+                    {
+                        if local_statics.contains_key(&target) && visited.insert(target) {
+                            self.function_statics_to_hoist.borrow_mut().insert(target);
+                            worklist.push(target);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Convert a static with a compilable initializer into its Rust items:
+    /// any auxiliary items produced while converting the initializer, followed
+    /// by the static item itself, built from `static_def`.
+    fn convert_compilable_static(
+        &self,
+        ctx: ExprContext,
+        static_def: Builder,
+        name: &str,
+        initializer: Option<CExprId>,
+        typ: CQualTypeId,
+    ) -> TranslationResult<Vec<Box<Item>>> {
+        let ConvertedVariable { ty, mutbl: _, init } =
+            self.convert_variable(ctx.const_(), initializer, typ)?;
+        let mut init = init?;
+        let mut items = init
+            .stmts_to_items()
+            .ok_or_else(|| format_err!("Expected only item statements in static initializer"))?;
+        let init = init
+            .wrap_unsafe()
+            .to_pure_expr()
+            .expect("no statements remain after stmts_to_items");
+        items.push(static_def.static_item(name, ty, init));
+        Ok(items)
+    }
+
     pub fn convert_decl_stmt_info(
         &self,
         ctx: ExprContext,
@@ -3933,6 +4043,36 @@ impl<'c> Translation<'c> {
 
                 self.add_static_initializer_to_section(ctx, &ident2, typ, &mut init)?;
                 self.items.borrow_mut()[&self.main_file].add_item(static_item);
+
+                return Ok(cfg::DeclStmtInfo::empty());
+            } else if self.function_statics_to_hoist.borrow().contains(&decl_id) {
+                // A sectioned static's initializer references this static, so
+                // hoist it to module scope too. Its own initializer is
+                // compilable and can be emitted as-is.
+                let ident2 = self
+                    .renamer
+                    .borrow_mut()
+                    .insert_root(decl_id, ident, Namespaces::values())
+                    .ok_or_else(|| {
+                        TranslationError::generic("Unable to rename hoisted function scoped static")
+                    })?;
+
+                let span = self
+                    .get_span(SomeId::Decl(decl_id))
+                    .unwrap_or_else(Span::call_site);
+                let items = self.convert_compilable_static(
+                    ctx.static_(),
+                    mk().span(span).mutbl(),
+                    &ident2,
+                    initializer,
+                    typ,
+                )?;
+
+                let mut item_stores = self.items.borrow_mut();
+                let store = &mut item_stores[&self.main_file];
+                for item in items {
+                    store.add_item(item);
+                }
 
                 return Ok(cfg::DeclStmtInfo::empty());
             }
@@ -4970,15 +5110,7 @@ impl<'c> Translation<'c> {
                     let then = lhs.to_block();
                     let else_ = rhs.to_expr();
 
-                    Ok(cond.map(|c| {
-                        let ifte_expr = mk().ifte_expr(c, then, Some(else_));
-
-                        if ctx.ternary_needs_parens {
-                            mk().paren_expr(ifte_expr)
-                        } else {
-                            ifte_expr
-                        }
-                    }))
+                    Ok(cond.map(|c| mk().ifte_expr(c, then, Some(else_))))
                 }
             }
 
@@ -5296,7 +5428,7 @@ impl<'c> Translation<'c> {
             CDeclKind::Function { parameters, .. } => {
                 // If we are referring to a function and need its address, we
                 // need to cast it to fn() to ensure that it has a real address.
-                if ctx.needs_address() {
+                if ctx.needs_address {
                     let ty = self.convert_type(result_type_id.ctype)?;
                     let actual_ty = self
                         .type_converter
@@ -5345,7 +5477,7 @@ impl<'c> Translation<'c> {
                 // but this requirement was removed in later versions of the
                 // `raw_ref_op` feature.
                 if (*has_static_duration || *has_thread_duration)
-                    && (self.tcfg.edition < Edition2024 || !ctx.needs_address())
+                    && (self.tcfg.edition < Edition2024 || !ctx.needs_address)
                 {
                     set_unsafe = true;
                 }
@@ -5548,14 +5680,60 @@ impl<'c> Translation<'c> {
         ctx_guided_type: &Option<tenjin::GuidedType>,
         is_explicit: bool,
     ) -> TranslationResult<WithStmts<Box<Expr>>> {
-        if matches!(
-            kind,
-            CastKind::IntegralToBoolean | CastKind::FloatingToBoolean | CastKind::PointerToBoolean
-        ) {
-            return self.convert_condition(ctx, true, expr);
-        }
+        let source_ty = if let Some(func_decl) = self
+            .ast_context
+            .fn_declref_decl(expr)
+            .filter(|_| is_explicit)
+        {
+            // If we're casting a function, look for its declared ty to use as a more
+            // precise source type. The AST node's type will not preserve typedef arg types
+            // but the function's declaration will.
+            let kind_with_declared_args = self.ast_context.fn_decl_ty_with_declared_args(func_decl);
+            let func_ty = self.ast_context.type_for_kind(&kind_with_declared_args);
+            let func_ptr_ty = self
+                .ast_context
+                .type_for_kind(&CTypeKind::Pointer(CQualTypeId::new(func_ty)));
 
+            CQualTypeId::new(func_ptr_ty)
+        } else {
+            self.ast_context
+                .index_unwrap_parens(expr)
+                .kind
+                .get_qual_type()
+                .ok_or_else(|| format_err!("bad source type"))?
+        };
         let target_ty = override_ty.unwrap_or(ty);
+
+        match kind {
+            CastKind::LValueToRValue => {
+                let val = if source_ty.qualifiers.is_volatile {
+                    // If the expression is volatile and used as something that isn't an LValue,
+                    // this constitutes a volatile read. A volatile read is a side effect, so it
+                    // needs to be included even if the expression is unused.
+                    let val = self
+                        .convert_expr(ctx.used(), expr, None)?
+                        .try_map(|val| self.volatile_read(val, source_ty))?;
+                    self.convert_side_effects_expr(
+                        ctx,
+                        val,
+                        "LValueToRValue value is not supposed to be used",
+                    )
+                } else {
+                    self.convert_expr(ctx, expr, None)?
+                };
+
+                // if the context wants a different type, add a cast
+                return self.make_cast(ctx, source_ty.not_volatile(), target_ty, val);
+            }
+
+            CastKind::IntegralToBoolean
+            | CastKind::FloatingToBoolean
+            | CastKind::PointerToBoolean => {
+                return self.convert_condition(ctx, true, expr);
+            }
+
+            _ => {}
+        }
 
         // In general, if we are casting the result of an expression, then the inner
         // expression should be translated to whatever type it normally would.
@@ -5593,29 +5771,6 @@ impl<'c> Translation<'c> {
         if self.casting_simd_builtin_call(expr, is_explicit, kind) {
             return Ok(val);
         }
-
-        let source_ty = if let Some(func_decl) = self
-            .ast_context
-            .fn_declref_decl(expr)
-            .filter(|_| is_explicit)
-        {
-            // If we're casting a function, look for its declared ty to use as a more
-            // precise source type. The AST node's type will not preserve typedef arg types
-            // but the function's declaration will.
-            let kind_with_declared_args = self.ast_context.fn_decl_ty_with_declared_args(func_decl);
-            let func_ty = self.ast_context.type_for_kind(&kind_with_declared_args);
-            let func_ptr_ty = self
-                .ast_context
-                .type_for_kind(&CTypeKind::Pointer(CQualTypeId::new(func_ty)));
-
-            CQualTypeId::new(func_ptr_ty)
-        } else {
-            self.ast_context
-                .index_unwrap_parens(expr)
-                .kind
-                .get_qual_type()
-                .ok_or_else(|| format_err!("bad source type"))?
-        };
 
         self.make_cast_full(
             ctx,
@@ -5775,7 +5930,12 @@ impl<'c> Translation<'c> {
             })
         });
 
-        if source_ty_kind == target_ty_kind && kind != CastKind::LValueToRValue {
+        if self.ast_context.type_kinds_eq(
+            source_ty_kind,
+            target_ty_kind,
+            &TypedAstContext::resolve_type_id,
+        ) && kind != CastKind::LValueToRValue
+        {
             return Ok(val);
         }
 
@@ -5857,21 +6017,7 @@ impl<'c> Translation<'c> {
             }
 
             CastKind::LValueToRValue => {
-                let mut val = if source_cty.qualifiers.is_volatile {
-                    // If the expression is volatile and used as something that isn't an LValue,
-                    // this constitutes a volatile read.
-                    val.try_map(|val| self.volatile_read(val, target_cty))?
-                } else {
-                    val
-                };
-
-                // if the context wants a different type, add a cast
-                if target_cty.ctype != source_cty.ctype {
-                    let ty = self.convert_type(target_cty.ctype)?;
-                    val = val.map(|val| mk().cast_expr(val, ty));
-                }
-
-                Ok(val)
+                panic!("LValueToRValue casts must be handled in convert_cast")
             }
 
             CastKind::ToVoid | CastKind::ConstCast => Ok(val),
@@ -6037,6 +6183,8 @@ impl<'c> Translation<'c> {
                     mk().lit_expr(mk().float_unsuffixed_lit("0.")),
                 )),
             }
+        } else if let &CTypeKind::Atomic(inner) = resolved_ty {
+            self.implicit_default_expr(ctx, inner.ctype)
         } else if let &CTypeKind::Pointer(_) = resolved_ty {
             self.null_ptr(resolved_ty_id).map(WithStmts::new_val)
         } else if let &CTypeKind::ConstantArray(elt, sz) = resolved_ty {
