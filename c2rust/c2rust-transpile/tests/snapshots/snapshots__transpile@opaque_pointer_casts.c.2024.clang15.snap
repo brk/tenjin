@@ -19,30 +19,26 @@ unsafe extern "C" {
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sentinel() -> *mut Opaque {
-    return ::core::ptr::with_exposed_provenance_mut::<::core::ffi::c_void>(
-        8 as ::core::ffi::c_int as usize,
-    ) as *mut Opaque;
+    return ::core::ptr::with_exposed_provenance_mut::<::core::ffi::c_void>(8 as usize)
+        as *mut Opaque;
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn const_sentinel() -> *const Opaque {
-    return ::core::ptr::with_exposed_provenance::<::core::ffi::c_void>(
-        8 as ::core::ffi::c_int as usize,
-    ) as *const Opaque;
+    return ::core::ptr::with_exposed_provenance::<::core::ffi::c_void>(8 as usize)
+        as *const Opaque;
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn union_sentinel() -> *mut OpaqueUnion {
-    return ::core::ptr::with_exposed_provenance_mut::<::core::ffi::c_void>(
-        8 as ::core::ffi::c_int as usize,
-    ) as *mut OpaqueUnion;
+    return ::core::ptr::with_exposed_provenance_mut::<::core::ffi::c_void>(8 as usize)
+        as *mut OpaqueUnion;
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn from_address(mut address: ::core::ffi::c_ulong) -> *mut Opaque {
     return ::core::ptr::with_exposed_provenance_mut::<::core::ffi::c_void>(address as usize)
         as *mut Opaque;
 }
-static mut static_sentinel: *const Opaque = ::core::ptr::with_exposed_provenance::<
-    ::core::ffi::c_void,
->(8 as ::core::ffi::c_int as usize) as *const Opaque;
+static mut static_sentinel: *const Opaque =
+    ::core::ptr::with_exposed_provenance::<::core::ffi::c_void>(8 as usize) as *const Opaque;
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn get_static_sentinel() -> *const Opaque {
     return static_sentinel;

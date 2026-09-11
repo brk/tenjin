@@ -675,7 +675,7 @@ pub struct Translation<'c> {
     pub(crate) type_converter: RefCell<TypeConverter>,
     renamer: Rc<RefCell<Renamer<CDeclId>>>,
     zero_inits: RefCell<ZeroInits>,
-    function_context: RefCell<FuncContext>,
+    pub(crate) function_context: RefCell<FuncContext>,
     potential_flexible_array_members: RefCell<IndexSet<CDeclId>>,
     macro_expansions: RefCell<IndexMap<CDeclId, Option<MacroExpansion>>>,
     /// Sets of imports deferred while translating nested expressions for caching. Imports are
@@ -3967,6 +3967,7 @@ impl<'c> Translation<'c> {
     /// Convert a static with a compilable initializer into its Rust items:
     /// any auxiliary items produced while converting the initializer, followed
     /// by the static item itself, built from `static_def`.
+    #[allow(clippy::vec_box/*, reason = "not worth a substantial refactor"*/)]
     fn convert_compilable_static(
         &self,
         ctx: ExprContext,
@@ -3974,9 +3975,11 @@ impl<'c> Translation<'c> {
         name: &str,
         initializer: Option<CExprId>,
         typ: CQualTypeId,
+        guided_type: &Option<tenjin::GuidedType>,
+        guided_mutbl: Option<Mutability>,
     ) -> TranslationResult<Vec<Box<Item>>> {
         let ConvertedVariable { ty, mutbl: _, init } =
-            self.convert_variable(ctx.const_(), initializer, typ)?;
+            self.convert_variable(ctx.const_(), initializer, typ, guided_type, guided_mutbl)?;
         let mut init = init?;
         let mut items = init
             .stmts_to_items()
@@ -4066,6 +4069,8 @@ impl<'c> Translation<'c> {
                     &ident2,
                     initializer,
                     typ,
+                    &None,
+                    None,
                 )?;
 
                 let mut item_stores = self.items.borrow_mut();
@@ -5711,7 +5716,7 @@ impl<'c> Translation<'c> {
                     // this constitutes a volatile read. A volatile read is a side effect, so it
                     // needs to be included even if the expression is unused.
                     let val = self
-                        .convert_expr(ctx.used(), expr, None)?
+                        .convert_expr_guided(ctx.used(), expr, None, ctx_guided_type)?
                         .try_map(|val| self.volatile_read(val, source_ty))?;
                     self.convert_side_effects_expr(
                         ctx,
@@ -5719,11 +5724,17 @@ impl<'c> Translation<'c> {
                         "LValueToRValue value is not supposed to be used",
                     )
                 } else {
-                    self.convert_expr(ctx, expr, None)?
+                    self.convert_expr_guided(ctx, expr, None, ctx_guided_type)?
                 };
 
                 // if the context wants a different type, add a cast
-                return self.make_cast(ctx, source_ty.not_volatile(), target_ty, val);
+                return self.make_cast(
+                    ctx,
+                    source_ty.not_volatile(),
+                    target_ty,
+                    val,
+                    ctx_guided_type,
+                );
             }
 
             CastKind::IntegralToBoolean

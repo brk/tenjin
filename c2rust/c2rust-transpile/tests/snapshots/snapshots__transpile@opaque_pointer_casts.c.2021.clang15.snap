@@ -11,34 +11,32 @@ expression: cat tests/snapshots/opaque_pointer_casts.2021.clang15.rs
     unused_assignments,
     unused_mut
 )]
-#![feature(extern_types, strict_provenance)]
+#![feature(extern_types)]
 extern "C" {
     pub type Opaque;
     pub type OpaqueUnion;
 }
 #[no_mangle]
 pub unsafe extern "C" fn sentinel() -> *mut Opaque {
-    return ::core::ptr::from_exposed_addr_mut::<::core::ffi::c_void>(
-        8 as ::core::ffi::c_int as usize,
-    ) as *mut Opaque;
+    return ::core::ptr::with_exposed_provenance_mut::<::core::ffi::c_void>(8 as usize)
+        as *mut Opaque;
 }
 #[no_mangle]
 pub unsafe extern "C" fn const_sentinel() -> *const Opaque {
-    return ::core::ptr::from_exposed_addr::<::core::ffi::c_void>(8 as ::core::ffi::c_int as usize)
+    return ::core::ptr::with_exposed_provenance::<::core::ffi::c_void>(8 as usize)
         as *const Opaque;
 }
 #[no_mangle]
 pub unsafe extern "C" fn union_sentinel() -> *mut OpaqueUnion {
-    return ::core::ptr::from_exposed_addr_mut::<::core::ffi::c_void>(
-        8 as ::core::ffi::c_int as usize,
-    ) as *mut OpaqueUnion;
+    return ::core::ptr::with_exposed_provenance_mut::<::core::ffi::c_void>(8 as usize)
+        as *mut OpaqueUnion;
 }
 #[no_mangle]
 pub unsafe extern "C" fn from_address(mut address: ::core::ffi::c_ulong) -> *mut Opaque {
-    return ::core::ptr::from_exposed_addr_mut::<::core::ffi::c_void>(address as usize)
+    return ::core::ptr::with_exposed_provenance_mut::<::core::ffi::c_void>(address as usize)
         as *mut Opaque;
 }
-static mut static_sentinel: *const Opaque = 8 as ::core::ffi::c_int as *const Opaque;
+static mut static_sentinel: *const Opaque = 8 as *const Opaque;
 #[no_mangle]
 pub unsafe extern "C" fn get_static_sentinel() -> *const Opaque {
     return static_sentinel;

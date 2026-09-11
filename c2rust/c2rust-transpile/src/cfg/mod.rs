@@ -96,7 +96,7 @@ impl Label {
 
     pub(crate) fn to_variant_ident(&self) -> Ident {
         mk().ident(match self {
-            Label::FromC(_, Some(s)) => format!("{}", s.as_ref()),
+            Label::FromC(_, Some(s)) => s.as_ref().to_string(),
             Label::FromC(CStmtId(label_id), None) => format!("C_{}", label_id),
             Label::Synthetic(syn_id) => format!("S_{}", syn_id),
         })
@@ -615,8 +615,14 @@ impl Cfg<Label, StmtOrDecl> {
                         wip.body.push(StmtOrDecl::Stmt(mk().semi_stmt(ret_expr)));
                     }
                     ImplicitReturnType::StmtExpr(ctx, expr_id, brk_label) => {
+                        let ret_ty_guidance = translator
+                            .parsed_guidance
+                            .borrow_mut()
+                            .query_fn_return_type(translator.function_context.borrow().get_name());
+
+                        // XREF:snapshot_guided_ret_ostr
                         let (stmts, val) = translator
-                            .convert_expr(ctx, expr_id, None)?
+                            .convert_expr_guided(ctx, expr_id, None, &ret_ty_guidance)?
                             .discard_unsafe();
 
                         wip.body.extend(stmts.into_iter().map(StmtOrDecl::Stmt));

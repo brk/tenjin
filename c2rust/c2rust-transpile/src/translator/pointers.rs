@@ -307,6 +307,7 @@ impl<'c> Translation<'c> {
                 });
         }
 
+        self.convert_expr(ctx.used().not_needs_address(), arg, None)?
             .try_map(|val: Box<Expr>| {
                 if let CTypeKind::Function(..) =
                     self.ast_context.resolve_type(cqual_type.ctype).kind
