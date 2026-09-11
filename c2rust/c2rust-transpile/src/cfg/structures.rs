@@ -2,31 +2,227 @@
 
 use super::*;
 use log::warn;
-use syn::{spanned::Spanned as _, ExprBinary, ExprBreak, ExprIf, ExprUnary, Stmt};
+use proc_macro2::TokenStream;
+use syn::{spanned::Spanned as _, ExprBinary, ExprBreak, ExprIf, ExprUnary, MacroDelimiter, Stmt};
 
 use crate::rust_ast::{comment_store, set_span::SetSpan, BytePos, SpanExt};
 
 /// Convert a sequence of structures produced by Relooper back into Rust statements
 pub fn structured_cfg(
     root: &[Structure<Stmt>],
+    cfg_info: &CfgInfo,
     comment_store: &mut comment_store::CommentStore,
-    current_block: Box<Expr>,
-    debug_labels: bool,
+    current_block_enum: Ident,
+    current_block_variable: Box<Expr>,
 ) -> TranslationResult<Vec<Stmt>> {
-    let ast: StructuredAST<Box<Expr>, Pat, Label, Stmt> =
-        structured_cfg_help(vec![], &IndexSet::new(), root, &mut IndexSet::new())?;
+    let loop_context = LoopContext::default();
+    let mut ast = process_cfg(
+        root,
+        cfg_info,
+        &IndexSet::new(),
+        &loop_context,
+        &mut IndexSet::new(),
+    )?;
+
+    // TODO: It would be good to be able to spit out the AST before label cleanup
+    // for debugging purposes.
+    cleanup_labels(&mut ast, &None, &mut IndexSet::new());
 
     let s = StructureState {
-        debug_labels,
-        current_block,
+        current_block_enum,
+        current_block_variable,
     };
     let (stmts, _span) = s.to_stmt(ast, comment_store);
 
     Ok(stmts)
 }
 
+/// Simplifies the relooped AST by removing labels from exits and moving block
+/// labels to loop labels.
+///
+/// This is an optimization pass on the relooped AST. When building the AST from
+/// the structured CFG, it's easier and less error-prone to always label all
+/// loops and exits. But doing so makes the resulting code more verbose and gets
+/// in the way of our ability to generate `while` loops, which relies on `loop {
+/// if cond { break; } }` being in the AST.
+///
+/// This function walks the AST, keeping track of when we're allowed to use
+/// unlabeled exits (i.e. when we're in a loop and NOT inside a labeled block),
+/// and removes labels from exits that don't need them. We then also remove
+/// labels from loops if there aren't any exits that need the label.
+///
+/// We also simplify the structure of the AST by removing blocks that contain an
+/// unlabeled loop by moving the label to the loop.
+fn cleanup_labels(
+    ast: &mut StructuredAST<Box<Expr>, Pat, Label, Stmt>,
+    current_loop: &Option<Label>,
+    encountered_labels: &mut IndexSet<Label>,
+) {
+    use StructuredASTKind::*;
+
+    match &mut ast.node {
+        // Remove the label if an exit targets the loop it's directly inside of. If we
+        // can't remove the label, track it in `encountered_labels` so we can later
+        // decide if the loop needs its label.
+        Exit(_, label) => {
+            if label == current_loop {
+                *label = None;
+            } else if let Some(label) = label {
+                encountered_labels.insert(label.clone());
+            }
+        }
+
+        // Recurse through loops and blocks, tracking if we're directly inside a loop
+        // and cleaning up labels where possible.
+        Loop(label_place, body) => {
+            let mut inner_labels = IndexSet::new();
+            cleanup_labels(body, label_place, &mut inner_labels);
+
+            // Remove the loop's label if it's never used in the loop's body.
+            if let Some(label) = label_place {
+                if !inner_labels.contains(label) {
+                    *label_place = None;
+                }
+            }
+
+            encountered_labels.extend(inner_labels);
+        }
+        Block(label, body) => {
+            let mut inner_labels = IndexSet::new();
+            cleanup_labels(body, &None, &mut inner_labels);
+
+            match &mut body.node {
+                // If, after cleaning up labels in the block's body, the block's only contents
+                // are an unlabeled loop, remove the block and apply the label to the loop
+                // instead. After doing this we must then re-process the block's contents to see
+                // if we can remove more labels from the loop's body.
+                Loop(loop_label @ None, _) => {
+                    *loop_label = Some(label.clone());
+
+                    inner_labels.clear();
+                    cleanup_labels(body, &None, &mut inner_labels);
+
+                    *ast = std::mem::take(&mut *body);
+                }
+
+                // If the block's body is a labeled loop or a block, then exiting either takes
+                // us to the same place. In that case we can merge the two labels together and
+                // then replace the block with its contents.
+                //
+                // NOTE: In the future we may want to be a bit smarter about which label we
+                // choose to use. Currently we always replaces the inner label with the outer
+                // label, but it's possible that the inner label might have a more meaningful
+                // name. The names of labels are either taken from `goto` labels in the original
+                // C, or are synthetic, numeric names. At time of writing, when we do generate
+                // an AST like this (i.e. a block containing a labeled loop), the inner loop
+                // will have a synthetic label and the outer block will have the `goto` label
+                // from the original C (this comes from the fact that the original C has to use
+                // a `goto` to exit nested loops).
+                //
+                // In theory the smarter approach is to look at both labels, and if one of them
+                // is a named label then choose that one, preferring the outer label if both are
+                // named. However the current approach is simpler and does the right thing for
+                // now.
+                Loop(Some(inner_label), _) => {
+                    // Clone the label to avoid borrowing `body` while we modify it.
+                    let inner_label = inner_label.clone();
+                    merge_labels(body, &inner_label, label);
+
+                    // The loop's label has changed, re-process it to see if any more labels can be
+                    // removed.
+                    inner_labels.clear();
+                    cleanup_labels(body, &None, &mut inner_labels);
+
+                    *ast = std::mem::replace(&mut *body, dummy_spanned(StructuredASTKind::Empty));
+                }
+                Block(inner_label, _) => {
+                    // Clone the label to avoid borrowing `body` while we modify it.
+                    let inner_label = inner_label.clone();
+                    merge_labels(body, &inner_label, label);
+                    *ast = std::mem::replace(&mut *body, dummy_spanned(StructuredASTKind::Empty));
+                }
+
+                _ => {}
+            }
+
+            encountered_labels.extend(inner_labels);
+        }
+
+        // Recurse through the rest of the AST.
+        Append(left, right) => {
+            cleanup_labels(left, current_loop, encountered_labels);
+            cleanup_labels(right, current_loop, encountered_labels);
+        }
+        Match(_, arms) => {
+            for (_, arm) in arms {
+                cleanup_labels(arm, current_loop, encountered_labels);
+            }
+        }
+        If(_, then, else_) => {
+            cleanup_labels(then, current_loop, encountered_labels);
+            cleanup_labels(else_, current_loop, encountered_labels);
+        }
+        GotoTable(cases, then) => {
+            for (_, case) in cases {
+                cleanup_labels(case, current_loop, encountered_labels);
+            }
+
+            if let Some(then) = then {
+                cleanup_labels(then, current_loop, encountered_labels);
+            }
+        }
+        Empty | Singleton(_) | Goto(_) => {}
+    }
+}
+
+/// Rewrites the AST to replace one label with another.
+fn merge_labels(ast: &mut StructuredAST<Box<Expr>, Pat, Label, Stmt>, old: &Label, new: &Label) {
+    use StructuredASTKind::*;
+
+    match &mut ast.node {
+        // Rewrite labels for exits, blocks, and loops.
+        Exit(_, Some(label)) => {
+            if label == old {
+                *label = new.clone();
+            }
+        }
+        Block(label, body) | Loop(Some(label), body) => {
+            if label == old {
+                *label = new.clone();
+            }
+            merge_labels(body, old, new);
+        }
+
+        // Recurse through the rest of the AST.
+        Loop(None, body) => merge_labels(body, old, new),
+        Append(left, right) => {
+            merge_labels(left, old, new);
+            merge_labels(right, old, new);
+        }
+        Match(_, arms) => {
+            for (_, arm) in arms {
+                merge_labels(arm, old, new);
+            }
+        }
+        If(_, then, else_) => {
+            merge_labels(then, old, new);
+            merge_labels(else_, old, new);
+        }
+        GotoTable(cases, then) => {
+            for (_, case) in cases {
+                merge_labels(case, old, new);
+            }
+
+            if let Some(then) = then {
+                merge_labels(then, old, new);
+            }
+        }
+        Exit(_, None) | Empty | Singleton(_) | Goto(_) => {}
+    }
+}
+
 /// Ways of exiting from a loop body
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum ExitStyle {
     /// Jumps to the beginning of the loop body
     Continue,
@@ -73,11 +269,13 @@ pub trait StructuredStatement: Sized {
     /// Make a `goto` table
     fn mk_goto_table(
         cases: Vec<(Self::L, Self)>, // entries in the goto table
-        then: Self,                  // default case of the goto table
+        then: Option<Self>,          // default case of the goto table
     ) -> Self;
 
     /// Make some sort of loop
     fn mk_loop(lbl: Option<Self::L>, body: Self) -> Self;
+
+    fn mk_block(lbl: Self::L, body: Self) -> Self;
 
     /// Make an exit from a loop
     fn mk_exit(
@@ -94,6 +292,23 @@ pub struct Spanned<T> {
     pub span: Span,
 }
 
+impl<T: PartialEq> PartialEq for Spanned<T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.node == other.node
+    }
+}
+
+impl<T: Eq> Eq for Spanned<T> {}
+
+impl<T: Default> Default for Spanned<T> {
+    fn default() -> Self {
+        Self {
+            node: Default::default(),
+            span: Span::dummy(),
+        }
+    }
+}
+
 pub type StructuredAST<E, P, L, S> = Spanned<StructuredASTKind<E, P, L, S>>;
 
 fn dummy_spanned<T>(inner: T) -> Spanned<T> {
@@ -105,7 +320,7 @@ fn dummy_spanned<T>(inner: T) -> Spanned<T> {
 
 /// Defunctionalized version of `StructuredStatement` trait
 #[allow(missing_docs)]
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum StructuredASTKind<E, P, L, S> {
     Empty,
     Singleton(S),
@@ -122,10 +337,18 @@ pub enum StructuredASTKind<E, P, L, S> {
     ),
     GotoTable(
         Vec<(L, StructuredAST<E, P, L, S>)>,
-        Box<StructuredAST<E, P, L, S>>,
+        Option<Box<StructuredAST<E, P, L, S>>>,
     ),
     Loop(Option<L>, Box<StructuredAST<E, P, L, S>>),
+    Block(L, Box<StructuredAST<E, P, L, S>>),
     Exit(ExitStyle, Option<L>),
+}
+
+// Custom impl so that we don't require the generic args to impl `Default`.
+impl<E, P, L, S> Default for StructuredASTKind<E, P, L, S> {
+    fn default() -> Self {
+        Self::Empty
+    }
 }
 
 impl<E, P, L, S> StructuredStatement for StructuredAST<E, P, L, S> {
@@ -158,12 +381,16 @@ impl<E, P, L, S> StructuredStatement for StructuredAST<E, P, L, S> {
         dummy_spanned(StructuredASTKind::If(cond, Box::new(then), Box::new(else_)))
     }
 
-    fn mk_goto_table(cases: Vec<(Self::L, Self)>, then: Self) -> Self {
-        dummy_spanned(StructuredASTKind::GotoTable(cases, Box::new(then)))
+    fn mk_goto_table(cases: Vec<(Self::L, Self)>, then: Option<Self>) -> Self {
+        dummy_spanned(StructuredASTKind::GotoTable(cases, then.map(Box::new)))
     }
 
     fn mk_loop(lbl: Option<Self::L>, body: Self) -> Self {
         dummy_spanned(StructuredASTKind::Loop(lbl, Box::new(body)))
+    }
+
+    fn mk_block(lbl: Self::L, body: Self) -> Self {
+        dummy_spanned(StructuredASTKind::Block(lbl, Box::new(body)))
     }
 
     fn mk_exit(exit_style: ExitStyle, label: Option<Self::L>) -> Self {
@@ -182,446 +409,350 @@ impl<E, P, L, S> StructuredStatement for StructuredAST<E, P, L, S> {
     }
 }
 
+#[allow(dead_code)]
 type Exit = (Label, IndexMap<Label, (IndexSet<Label>, ExitStyle)>);
 
-enum StructuredCfgTask<'a, S> {
-    PushEmpty,
-    EvalSeq {
-        exits: Vec<Exit>,
-        next: &'a IndexSet<Label>,
-        root: &'a [Structure<Stmt>],
-    },
-    ProcessStructure {
-        exits: Vec<Exit>,
-        next: &'a IndexSet<Label>,
-        structure: &'a Structure<Stmt>,
-    },
-    BuildSimple {
-        rest: S,
-        exits: Vec<Exit>,
-        next: &'a IndexSet<Label>,
-        body: &'a [Stmt],
-        terminator: &'a GenTerminator<StructureLabel<Stmt>>,
-        span: Span,
-    },
-    BuildMultiple {
-        rest: S,
-        branch_labels: Vec<Label>,
-    },
-    BuildLoop {
-        rest: S,
-        label: Label,
-    },
+/// Information gathered from the structured CFG needed for AST generation.
+#[derive(Debug, Default)]
+pub struct CfgInfo {
+    /// Labels that require `current_block` to be set before traveling to them.
+    /// These are entries of loops with multiple entries.
+    pub checked_entries: IndexSet<Label>,
+
+    /// Maps loop entries to their canonical loop label (i.e., `entries.first()`).
+    /// Used to determine which label to use for `continue` statements.
+    pub entry_to_loop: IndexMap<Label, Label>,
 }
 
-fn structured_cfg_insert_goto<
-    S: StructuredStatement<E = Box<Expr>, P = Pat, L = Label, S = Stmt>,
->(
-    to: Label,
-    target: &IndexSet<Label>,
-) -> S {
-    if target.len() == 1 {
-        S::empty()
-    } else {
-        S::mk_goto(to)
+/// Searches the structured CFG for loops and gathers information needed for AST
+/// generation.
+pub fn gather_cfg_info(structures: &[Structure<Stmt>], info: &mut CfgInfo) {
+    for structure in structures {
+        match structure {
+            Structure::Loop { entries, body } => {
+                // Track checked entries for multi-entry loops
+                if entries.len() > 1 {
+                    info.checked_entries.extend(entries.iter().cloned());
+                }
+
+                // Map all loop entries to the canonical loop label
+                let loop_label = entries.first().expect("Loop must have at least one entry");
+                for entry in entries {
+                    info.entry_to_loop.insert(entry.clone(), loop_label.clone());
+                }
+
+                gather_cfg_info(body, info);
+            }
+            Structure::Multiple { branches, .. } => {
+                for branch in branches.values() {
+                    gather_cfg_info(branch, info);
+                }
+            }
+            Structure::Simple { terminator, .. } => {
+                for label in terminator.get_labels() {
+                    if let StructureLabel::Nested(nested) = label {
+                        gather_cfg_info(nested, info);
+                    }
+                }
+            }
+        }
     }
 }
 
-fn structured_cfg_branch<S: StructuredStatement<E = Box<Expr>, P = Pat, L = Label, S = Stmt>>(
-    slbl: &StructureLabel<Stmt>,
-    next: &IndexSet<Label>,
-    exits: &[Exit],
-    used_loop_labels: &mut IndexSet<Label>,
-    span: Span,
-    nested_result: Option<S>,
-) -> TranslationResult<S> {
-    use StructureLabel::*;
+/// Tracks context about loops we're currently inside while processing the CFG.
+#[derive(Clone, Debug, Default)]
+struct LoopContext {
+    /// Set of all entries to loops we're currently inside.
+    /// Used to determine if an exit target is a back edge (continue) or forward edge (break).
+    current_loop_entries: IndexSet<Label>,
 
-    match slbl {
-        Nested(_) => nested_result
-            .ok_or_else(|| format_err!("structured_cfg_help lost a nested branch result").into()),
+    /// The label of the innermost loop we're in, if any.
+    innermost_loop: Option<Label>,
 
-        GoTo(to) | ExitTo(to) if next.contains(to) => {
-            Ok(structured_cfg_insert_goto(to.clone(), next))
-        }
-
-        ExitTo(to) => {
-            let mut immediate = true;
-            for (label, local) in exits {
-                if let Some((follow, exit_style)) = local.get(to) {
-                    let lbl = if immediate {
-                        None
-                    } else {
-                        used_loop_labels.insert(label.clone());
-                        Some(label.clone())
-                    };
-
-                    let mut new_cfg = S::mk_append(
-                        structured_cfg_insert_goto(to.clone(), follow),
-                        S::mk_exit(*exit_style, lbl),
-                    );
-                    new_cfg.extend_span(span);
-                    return Ok(new_cfg);
-                }
-                immediate = false;
-            }
-
-            Err(format_err!("Not a valid exit: {:?} has nothing to exit to", to).into())
-        }
-
-        GoTo(to) => Err(format_err!(
-            "Not a valid exit: {:?} (GoTo isn't falling through to {:?})",
-            to,
-            next
-        )
-        .into()),
-    }
+    /// The entries to the structure following the innermost loop.
+    /// Used to optimize continues into breaks when possible.
+    innermost_loop_exits: IndexSet<Label>,
 }
 
-/// Helper for `structured_cfg` implemented with an explicit task stack
-///
-/// TODO: move this into `structured_cfg`?
-fn structured_cfg_help<S: StructuredStatement<E = Box<Expr>, P = Pat, L = Label, S = Stmt>>(
-    exits: Vec<Exit>,
-    next: &IndexSet<Label>,
-    root: &[Structure<Stmt>],
-    used_loop_labels: &mut IndexSet<Label>,
-) -> TranslationResult<S> {
-    let mut tasks = vec![StructuredCfgTask::EvalSeq { exits, next, root }];
-    let mut results = Vec::new();
+fn process_cfg(
+    structures: &[Structure<Stmt>],
+    cfg_info: &CfgInfo,
+    followup_entries: &IndexSet<Label>,
+    loop_context: &LoopContext,
+    break_targets: &mut IndexSet<Label>,
+) -> TranslationResult<StructuredAST<Box<Expr>, Pat, Label, Stmt>> {
+    use Structure::*;
 
-    while let Some(task) = tasks.pop() {
-        match task {
-            StructuredCfgTask::PushEmpty => results.push(S::empty()),
+    type S = StructuredAST<Box<Expr>, Pat, Label, Stmt>;
 
-            StructuredCfgTask::EvalSeq { exits, next, root } => {
-                let mut structure_nexts = Vec::with_capacity(root.len());
-                let mut next_for_structure = next;
-                for structure in root.iter().rev() {
-                    structure_nexts.push((structure, next_for_structure));
-                    next_for_structure = structure.get_entries();
-                }
+    // HACK: Reorder the branches of a multiple to put all named labels at the end.
+    //
+    // From a CFG perspective there's no inherent order to the branches of a
+    // `Multiple`, and the order we choose when building the structured CFG is
+    // currently arbitrary (i.e. we don't enforce a particular ordering). However,
+    // the order we visit the branches here determines when we can fall through to
+    // the branch vs when we need to `break` to it: Only the first branch will be
+    // arrived at naturally, and all subsequent branches will be `break` targets.
+    //
+    // For the common `goto error` pattern in C code, we'll end up with a `Multiple`
+    // where some of the branches are named and some aren't, but they may appear in
+    // any order. In this case, pushing the named label(s) to the end is a
+    // reasonable heuristic because the named labels had to be `goto` targets, and
+    // therefore shouldn't be the code we flow to directly.
+    //
+    // This only papers over one part of the larger problem of how we order CFG
+    // nodes. See https://github.com/immunant/c2rust/issues/1542 for more
+    // information about how we have similar ordering problems for branches of
+    // adjacent `Multiple`s. Fixing that issue should also allow us to remove this
+    // hack.
+    fn sort_branches(branches: &IndexMap<Label, Vec<Structure<Stmt>>>) -> Vec<Label> {
+        let (named, mut rest) = branches
+            .keys()
+            .cloned()
+            .partition::<Vec<_>, _>(|lbl| matches!(lbl, Label::FromC(_, Some(_))));
+        rest.extend(named);
+        rest
+    }
 
-                for (structure, next) in structure_nexts.into_iter().rev() {
-                    tasks.push(StructuredCfgTask::ProcessStructure {
-                        exits: exits.clone(),
-                        next,
-                        structure,
-                    });
-                }
-
-                tasks.push(StructuredCfgTask::PushEmpty);
-            }
-
-            StructuredCfgTask::ProcessStructure {
-                exits,
-                next,
-                structure,
-            } => {
-                let rest = results.pop().ok_or_else(|| {
-                    format_err!("structured_cfg_help lost the running sequence result")
-                })?;
-
-                use Structure::*;
-                match structure {
-                    Simple {
-                        body,
-                        terminator,
-                        span,
-                        ..
-                    } => {
-                        tasks.push(StructuredCfgTask::BuildSimple {
-                            rest,
-                            exits: exits.clone(),
-                            next,
-                            body,
-                            terminator,
-                            span: *span,
-                        });
-
-                        match terminator {
-                            End => {}
-                            Jump(slbl) => {
-                                if let StructureLabel::Nested(nested) = slbl {
-                                    tasks.push(StructuredCfgTask::EvalSeq {
-                                        exits: exits.clone(),
-                                        next,
-                                        root: nested,
-                                    });
-                                }
-                            }
-                            Branch(_, t, f) => {
-                                for slbl in [f, t] {
-                                    if let StructureLabel::Nested(nested) = slbl {
-                                        tasks.push(StructuredCfgTask::EvalSeq {
-                                            exits: exits.clone(),
-                                            next,
-                                            root: nested,
-                                        });
-                                    }
-                                }
-                            }
-                            Switch { cases, .. } => {
-                                for (_, slbl) in cases.iter().rev() {
-                                    if let StructureLabel::Nested(nested) = slbl {
-                                        tasks.push(StructuredCfgTask::EvalSeq {
-                                            exits: exits.clone(),
-                                            next,
-                                            root: nested,
-                                        });
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    Multiple { branches, then, .. } => {
-                        let branch_labels = branches.keys().cloned().collect();
-                        tasks.push(StructuredCfgTask::BuildMultiple {
-                            rest,
-                            branch_labels,
-                        });
-                        tasks.push(StructuredCfgTask::EvalSeq {
-                            exits: exits.clone(),
-                            next,
-                            root: then,
-                        });
-                        for body in branches.values().rev() {
-                            tasks.push(StructuredCfgTask::EvalSeq {
-                                exits: exits.clone(),
-                                next,
-                                root: body,
-                            });
-                        }
-                    }
-
-                    Loop { body, entries } => {
-                        let label = entries
-                            .iter()
-                            .next()
-                            .ok_or_else(|| format_err!("The loop {:?} has no entry", structure))?
-                            .clone();
-
-                        let mut these_exits = IndexMap::new();
-                        these_exits.extend(
-                            entries
-                                .iter()
-                                .map(|e| (e.clone(), (entries.clone(), ExitStyle::Continue))),
-                        );
-                        these_exits.extend(
-                            next.iter()
-                                .map(|e| (e.clone(), (next.clone(), ExitStyle::Break))),
-                        );
-
-                        let mut exits_new = vec![(label.clone(), these_exits)];
-                        exits_new.extend(exits.clone());
-
-                        tasks.push(StructuredCfgTask::BuildLoop { rest, label });
-                        tasks.push(StructuredCfgTask::EvalSeq {
-                            exits: exits_new,
-                            next: entries,
-                            root: body,
-                        });
-                    }
+    // Gets the entries for the structure at index `i`. If we are looking past the
+    // last structure, then we use `followup_entries`.
+    let get_entries = |i: usize| {
+        if i < structures.len() {
+            match &structures[i] {
+                Simple { entries, .. } => entries.clone(),
+                Loop { entries, .. } => entries.clone(),
+                Multiple { branches, .. } => {
+                    indexset! { sort_branches(branches).first().unwrap().clone() }
                 }
             }
+        } else {
+            followup_entries.clone()
+        }
+    };
 
-            StructuredCfgTask::BuildSimple {
-                rest,
-                exits,
-                next,
+    let mut ast = S::empty();
+    let mut i = 0;
+    while i < structures.len() {
+        let structure = &structures[i];
+        let next_entries = get_entries(i + 1);
+
+        // Generate the AST for the current structure.
+        let mut structure_ast = match structure {
+            Simple {
                 body,
-                terminator,
                 span,
+                terminator,
+                ..
             } => {
-                let mut new_rest = S::empty();
-                for stmt in body.iter().cloned() {
-                    new_rest = S::mk_append(new_rest, S::mk_singleton(stmt));
+                let mut body_ast: S = S::empty();
+                for s in body.clone() {
+                    body_ast = S::mk_append(body_ast, S::mk_singleton(s));
                 }
-                new_rest.extend_span(span);
+                body_ast.extend_span(*span);
 
-                let terminator_cfg = match terminator {
-                    End => S::empty(),
+                let mut branch = |slbl: &StructureLabel<Stmt>| -> TranslationResult<S> {
+                    use StructureLabel::*;
 
-                    Jump(slbl) => {
-                        let nested_result = if matches!(slbl, StructureLabel::Nested(_)) {
-                            Some(results.pop().ok_or_else(|| {
-                                format_err!("structured_cfg_help lost a jump branch result")
-                            })?)
-                        } else {
-                            None
-                        };
-                        structured_cfg_branch(
-                            slbl,
-                            next,
-                            &exits,
-                            used_loop_labels,
-                            span,
-                            nested_result,
-                        )?
-                    }
+                    match slbl {
+                        Nested(nested) => process_cfg(
+                            nested,
+                            cfg_info,
+                            &next_entries,
+                            loop_context,
+                            break_targets,
+                        ),
 
-                    Branch(cond, then_lbl, else_lbl) => {
-                        let else_result = if matches!(else_lbl, StructureLabel::Nested(_)) {
-                            Some(results.pop().ok_or_else(|| {
-                                format_err!("structured_cfg_help lost an else branch result")
-                            })?)
-                        } else {
-                            None
-                        };
-                        let then_result = if matches!(then_lbl, StructureLabel::Nested(_)) {
-                            Some(results.pop().ok_or_else(|| {
-                                format_err!("structured_cfg_help lost a then branch result")
-                            })?)
-                        } else {
-                            None
-                        };
+                        ExitTo(target) => {
+                            // Check if the target is a checked entry (multi-entry loop), in which
+                            // case we need to set `current_block` before branching.
+                            let mut new_ast = if cfg_info.checked_entries.contains(target) {
+                                S::mk_goto(target.clone())
+                            } else {
+                                S::empty()
+                            };
 
-                        S::mk_if(
-                            cond.clone(),
-                            structured_cfg_branch(
-                                then_lbl,
-                                next,
-                                &exits,
-                                used_loop_labels,
-                                span,
-                                then_result,
-                            )?,
-                            structured_cfg_branch(
-                                else_lbl,
-                                next,
-                                &exits,
-                                used_loop_labels,
-                                span,
-                                else_result,
-                            )?,
-                        )
-                    }
+                            // Determine if this is a back edge (continue) or forward edge (break)
+                            // by checking if the target is an entry to a loop we're currently inside.
+                            let is_back_edge = loop_context.current_loop_entries.contains(target);
 
-                    Switch { expr, cases } => {
-                        let mut branched_cases = Vec::with_capacity(cases.len());
-                        for (pat, slbl) in cases.iter().rev() {
-                            let nested_result = if matches!(slbl, StructureLabel::Nested(_)) {
-                                Some(results.pop().ok_or_else(|| {
-                                    format_err!("structured_cfg_help lost a switch branch result")
-                                })?)
+                            let exit = if is_back_edge {
+                                let loop_label = cfg_info.entry_to_loop.get(target).expect(
+                                    "target in current_loop_entries but not in entry_to_loop",
+                                );
+
+                                // If we can get where we're going with a `break`, prefer that over
+                                // using a `continue`. This helps us to reconstruct `while` loops in
+                                // more cases, since generating a `while` requires the AST to be
+                                // structured like `loop { if { break; } }`.
+                                if loop_context.innermost_loop_exits.contains(loop_label) {
+                                    let break_label = loop_context.innermost_loop.as_ref().expect(
+                                        "innermost_loop_exits set but innermost_loop is None",
+                                    );
+                                    Some((ExitStyle::Break, break_label.clone()))
+                                } else if !next_entries.contains(loop_label) {
+                                    Some((ExitStyle::Continue, loop_label.clone()))
+                                } else {
+                                    None
+                                }
+                            } else if !next_entries.contains(target) {
+                                Some((ExitStyle::Break, target.clone()))
                             } else {
                                 None
                             };
 
-                            branched_cases.push((
-                                pat.clone(),
-                                structured_cfg_branch(
-                                    slbl,
-                                    next,
-                                    &exits,
-                                    used_loop_labels,
-                                    span,
-                                    nested_result,
-                                )?,
-                            ));
-                        }
-                        branched_cases.reverse();
+                            if let Some((style, label)) = exit {
+                                break_targets.insert(label.clone());
+                                new_ast = S::mk_append(new_ast, S::mk_exit(style, Some(label)));
+                            }
 
-                        S::mk_match(expr.clone(), branched_cases)
+                            new_ast.extend_span(*span);
+                            Ok(new_ast)
+                        }
+
+                        GoTo(to) => panic!("Encountered GoTo({to:?}) in structured AST"),
                     }
                 };
 
-                new_rest = S::mk_append(new_rest, terminator_cfg);
-                results.push(S::mk_append(new_rest, rest));
+                S::mk_append(
+                    body_ast,
+                    match terminator {
+                        End => S::empty(),
+                        Jump(to) => branch(to)?,
+                        Branch(c, t, f) => S::mk_if(c.clone(), branch(t)?, branch(f)?),
+                        Switch { expr, cases } => {
+                            let branched_cases = cases
+                                .iter()
+                                .map(|(pat, slbl)| Ok((pat.clone(), branch(slbl)?)))
+                                .collect::<TranslationResult<_>>()?;
+
+                            S::mk_match(expr.clone(), branched_cases)
+                        }
+                    },
+                )
             }
 
-            StructuredCfgTask::BuildMultiple {
-                rest,
-                branch_labels,
-            } => {
-                let then = results.pop().ok_or_else(|| {
-                    format_err!("structured_cfg_help lost a multiple tail result")
-                })?;
-                let mut cases = Vec::with_capacity(branch_labels.len());
-                for label in branch_labels.iter().rev() {
-                    let stmts = results.pop().ok_or_else(|| {
-                        format_err!("structured_cfg_help lost a multiple branch result")
-                    })?;
-                    cases.push((label.clone(), stmts));
-                }
-                cases.reverse();
+            Loop { entries, body } => {
+                let label = entries.first().expect("There must be at least one entry");
 
-                let new_rest = S::mk_append(S::empty(), S::mk_goto_table(cases, then));
-                results.push(S::mk_append(new_rest, rest));
-            }
-
-            StructuredCfgTask::BuildLoop { rest, label } => {
-                let body = results
-                    .pop()
-                    .ok_or_else(|| format_err!("structured_cfg_help lost a loop body result"))?;
-                let loop_lbl = if used_loop_labels.contains(&label) {
-                    Some(label)
-                } else {
-                    None
+                let inner_loop_context = LoopContext {
+                    current_loop_entries: loop_context
+                        .current_loop_entries
+                        .iter()
+                        .cloned()
+                        .chain(entries.iter().cloned())
+                        .collect(),
+                    innermost_loop: Some(label.clone()),
+                    innermost_loop_exits: next_entries.clone(),
                 };
-                let new_rest = S::mk_append(S::empty(), S::mk_loop(loop_lbl, body));
-                results.push(S::mk_append(new_rest, rest));
+
+                let body =
+                    process_cfg(body, cfg_info, entries, &inner_loop_context, break_targets)?;
+                S::mk_loop(Some(label.clone()), body)
             }
+
+            Multiple {
+                entries: _,
+                branches,
+            } => {
+                let cases = branches
+                    .keys()
+                    .map(|entry| {
+                        let stmts = process_cfg(
+                            &branches[entry],
+                            cfg_info,
+                            &next_entries,
+                            loop_context,
+                            break_targets,
+                        )?;
+                        Ok((entry.clone(), stmts))
+                    })
+                    .collect::<TranslationResult<_>>()?;
+
+                let then = if cfg_info
+                    .checked_entries
+                    .iter()
+                    .all(|entry| branches.contains_key(entry))
+                {
+                    // If the branches cover all the enum variants in `checked_entries`, then the
+                    // `match` is exhaustive and we don't need a "then" branch.
+                    None
+                } else {
+                    // Otherwise, the branches *should* at least cover all of our entries, so there
+                    // should be no other possible cases. Mark the "then" branch as unreachable.
+                    // See https://github.com/immunant/c2rust/pull/1556#discussion_r3874230125
+                    let unreachable_call = mk().mac_expr(mk().mac(
+                        mk().path(vec!["unreachable"]),
+                        TokenStream::new(),
+                        MacroDelimiter::Paren(Default::default()),
+                    ));
+                    Some(S::mk_singleton(mk().expr_stmt(unreachable_call)))
+                };
+
+                S::mk_goto_table(cases, then)
+            }
+        };
+
+        i += 1;
+
+        // Handle any followup multiple structures by wrapping the current structure's AST in a block.
+        while let Some(Multiple { branches, .. }) = structures.get(i) {
+            let next_entries = get_entries(i + 1);
+
+            // Generate blocks as break targets for the remaining branches.
+            for (branch_idx, entry) in sort_branches(branches).iter().enumerate() {
+                let branch = &branches[entry];
+
+                // Choose the next entries for the branch. For most of the branches we want to
+                // say that there are no next entries, because we don't want one branch to flow
+                // into another. But the last branch can fall through to the next entries that
+                // follow this multiple.
+                let empty = IndexSet::new();
+                let next_entries = if branch_idx == branches.len() - 1 {
+                    &next_entries
+                } else {
+                    &empty
+                };
+
+                let branch_ast =
+                    process_cfg(branch, cfg_info, next_entries, loop_context, break_targets)?;
+
+                if break_targets.contains(entry) {
+                    structure_ast = S::mk_block(entry.clone(), structure_ast);
+                }
+
+                structure_ast = S::mk_append(structure_ast, branch_ast);
+            }
+
+            i += 1;
         }
+
+        // Check for a simple or loop after the multiple. If there is one, we need to
+        // also wrap the current ast in a labeled block.
+        match structures.get(i) {
+            Some(Simple { entries, .. }) | Some(Loop { entries, .. }) => {
+                for entry in entries {
+                    if break_targets.contains(entry) {
+                        structure_ast = S::mk_block(entry.clone(), structure_ast);
+                    }
+                }
+            }
+
+            Some(Multiple { .. }) => {
+                unreachable!("We should have already handled followup multiples");
+            }
+
+            None => {}
+        }
+
+        ast = S::mk_append(ast, structure_ast);
     }
 
-    match results.len() {
-        1 => Ok(results.pop().expect("checked result length")),
-        _ => Err(format_err!("structured_cfg_help finished with an invalid result stack").into()),
-    }
-}
-
-/// Checks if there are any `Multiple` structures anywhere. Only if so will there be any need for a
-/// `c2rust_current_block` variable.
-pub fn has_multiple<Stmt>(root: &[Structure<Stmt>]) -> bool {
-    use Structure::*;
-    root.iter().any(|structure| match structure {
-        Simple { terminator, .. } => {
-            terminator
-                .get_labels()
-                .into_iter()
-                .any(|structure_label| match structure_label {
-                    StructureLabel::Nested(nested) => has_multiple(nested),
-                    _ => false,
-                })
-        }
-        Multiple { .. } => true,
-        Loop { body, .. } => has_multiple(body),
-    })
+    Ok(ast)
 }
 
 struct StructureState {
-    debug_labels: bool,
-    current_block: Box<Expr>,
-}
-
-enum ToStmtTask {
-    Eval(Box<StructuredAST<Box<Expr>, Pat, Label, Stmt>>),
-    BuildAppendEmpty {
-        ast_span: Span,
-        lhs_span: Span,
-    },
-    BuildAppend {
-        ast_span: Span,
-    },
-    BuildMatch {
-        span: Span,
-        cond: Box<Expr>,
-        pats: Vec<Pat>,
-    },
-    BuildIf {
-        span: Span,
-        cond: Box<Expr>,
-    },
-    BuildGotoTable {
-        span: Span,
-        labels: Vec<Label>,
-    },
-    BuildLoop {
-        span: Span,
-        label: Option<Label>,
-    },
+    current_block_enum: Ident,
+    current_block_variable: Box<Expr>,
 }
 
 /// Returns a `Span` between the beginning of `span` or `other`, whichever is
@@ -652,22 +783,6 @@ fn span_subst_hi(span: Span, other: Span) -> Option<Span> {
     Some(span)
 }
 
-fn adjust_stmt_block_span(
-    stmts: &mut [Stmt],
-    span: Span,
-    comment_store: &mut comment_store::CommentStore,
-) {
-    if let Some(stmt) = stmts.first_mut() {
-        stmt.set_span(span_subst_lo(stmt.span(), span).unwrap_or_else(|| {
-            comment_store.move_comments(stmt.span().lo(), span.lo());
-            stmt.span().with_lo(span.lo())
-        }));
-    }
-    if let Some(stmt) = stmts.last_mut() {
-        stmt.set_span(span_subst_hi(stmt.span(), span).unwrap_or_else(|| stmt.span()));
-    }
-}
-
 impl StructureState {
     pub fn to_stmt(
         &self,
@@ -676,280 +791,266 @@ impl StructureState {
     ) -> (Vec<Stmt>, Span) {
         use crate::cfg::structures::StructuredASTKind::*;
 
-        let mut tasks = vec![ToStmtTask::Eval(Box::new(ast))];
-        let mut results = Vec::new();
+        let span = ast.span;
 
-        while let Some(task) = tasks.pop() {
-            match task {
-                ToStmtTask::Eval(ast) => {
-                    let span = ast.span;
+        let stmt = match ast.node {
+            Empty => return (vec![], ast.span),
 
-                    match ast.node {
-                        Empty => results.push((vec![], span)),
+            Singleton(mut s) => {
+                let span = s.span().substitute_dummy(ast.span);
+                s.set_span(span);
+                return (vec![s], span);
+            }
 
-                        Singleton(mut s) => {
-                            let span = s.span().substitute_dummy(span);
-                            s.set_span(span);
-                            results.push((vec![s], span));
-                        }
+            Append(spanned, rhs) if matches!(spanned.node, Empty) => {
+                let lhs_span = spanned.span;
+                let span = ast.span.substitute_dummy(lhs_span);
+                let span = span_subst_lo(span, lhs_span).unwrap_or_else(|| {
+                    comment_store.move_comments(lhs_span.lo(), span.lo());
+                    span
+                });
 
-                        Append(spanned, rhs) if matches!(spanned.node, Empty) => {
-                            tasks.push(ToStmtTask::BuildAppendEmpty {
-                                ast_span: span,
-                                lhs_span: spanned.span,
-                            });
-                            tasks.push(ToStmtTask::Eval(Box::new(*rhs)));
-                        }
+                let (mut stmts, stmts_span) = self.to_stmt(*rhs, comment_store);
+                let span = span_subst_hi(span, stmts_span).unwrap_or(span);
 
-                        Append(lhs, rhs) => {
-                            tasks.push(ToStmtTask::BuildAppend { ast_span: span });
-                            tasks.push(ToStmtTask::Eval(Box::new(*rhs)));
-                            tasks.push(ToStmtTask::Eval(Box::new(*lhs)));
-                        }
+                // Adjust the first and last elements of the block if this AST
+                // node has a span.
+                if let Some(stmt) = stmts.first_mut() {
+                    stmt.set_span(span_subst_lo(stmt.span(), span).unwrap_or_else(|| {
+                        comment_store.move_comments(stmt.span().lo(), span.lo());
+                        stmt.span().with_lo(span.lo())
+                    }));
+                }
+                if let Some(stmt) = stmts.last_mut() {
+                    stmt.set_span(span_subst_hi(stmt.span(), span).unwrap_or_else(|| stmt.span()));
+                }
+                return (stmts, span);
+            }
 
-                        Goto(to) => {
-                            let lbl_expr = if self.debug_labels {
-                                to.to_string_expr()
-                            } else {
-                                to.to_num_expr()
-                            };
-                            let stmt = mk()
-                                .span(span)
-                                .semi_stmt(mk().assign_expr(self.current_block.clone(), lbl_expr));
-                            results.push((vec![stmt], span));
-                        }
+            Append(lhs, rhs) => {
+                let (mut stmts, lhs_span) = self.to_stmt(*lhs, comment_store);
+                let span = ast.span.substitute_dummy(lhs_span);
+                let span = span_subst_lo(span, lhs_span).unwrap_or_else(|| {
+                    comment_store.move_comments(lhs_span.lo(), span.lo());
+                    span
+                });
+                let (rhs_stmts, rhs_span) = self.to_stmt(*rhs, comment_store);
+                let span = span_subst_hi(span, rhs_span).unwrap_or(span);
+                stmts.extend(rhs_stmts);
+                // Adjust the first and last elements of the block if this AST
+                // node has a span.
+                if let Some(stmt) = stmts.first_mut() {
+                    stmt.set_span(span_subst_lo(stmt.span(), span).unwrap_or_else(|| {
+                        comment_store.move_comments(stmt.span().lo(), span.lo());
+                        stmt.span().with_lo(span.lo())
+                    }));
+                }
+                if let Some(stmt) = stmts.last_mut() {
+                    stmt.set_span(span_subst_hi(stmt.span(), span).unwrap_or_else(|| stmt.span()));
+                }
+                return (stmts, span);
+            }
 
-                        Match(cond, cases) => {
-                            let mut pats = Vec::with_capacity(cases.len());
-                            let mut case_stmts = Vec::with_capacity(cases.len());
-                            for (pat, stmts) in cases {
-                                pats.push(pat);
-                                case_stmts.push(stmts);
-                            }
+            Goto(to) => {
+                // Assign to `c2rust_current_block` the next label we want to go to.
+                let path = vec![self.current_block_enum.clone(), to.to_variant_ident()];
+                let expr =
+                    mk().assign_expr(self.current_block_variable.clone(), mk().path_expr(path));
+                mk().span(span).semi_stmt(expr)
+            }
 
-                            tasks.push(ToStmtTask::BuildMatch { span, cond, pats });
-                            for stmts in case_stmts.into_iter().rev() {
-                                tasks.push(ToStmtTask::Eval(Box::new(stmts)));
-                            }
-                        }
+            Match(cond, cases) => {
+                // Make a `match`.
 
-                        If(cond, then, els) => {
-                            tasks.push(ToStmtTask::BuildIf { span, cond });
-                            tasks.push(ToStmtTask::Eval(Box::new(*els)));
-                            tasks.push(ToStmtTask::Eval(Box::new(*then)));
-                        }
+                let arms: Vec<Arm> = cases
+                    .into_iter()
+                    .map(|(pat, stmts)| -> Arm {
+                        let (stmts, span) = self.to_stmt(stmts, comment_store);
 
-                        GotoTable(cases, then) => {
-                            let mut labels = Vec::with_capacity(cases.len());
-                            let mut case_stmts = Vec::with_capacity(cases.len());
-                            for (lbl, stmts) in cases {
-                                labels.push(lbl);
-                                case_stmts.push(stmts);
-                            }
+                        let body = mk().block_expr(mk().span(span).block(stmts));
+                        mk().arm(pat, None, body)
+                    })
+                    .collect();
 
-                            tasks.push(ToStmtTask::BuildGotoTable { span, labels });
-                            tasks.push(ToStmtTask::Eval(Box::new(*then)));
-                            for stmts in case_stmts.into_iter().rev() {
-                                tasks.push(ToStmtTask::Eval(Box::new(stmts)));
-                            }
-                        }
+                let e = mk().match_expr(cond, arms);
 
-                        Loop(lbl, body) => {
-                            tasks.push(ToStmtTask::BuildLoop { span, label: lbl });
-                            tasks.push(ToStmtTask::Eval(Box::new(*body)));
-                        }
+                mk().span(span).expr_stmt(e)
+            }
 
-                        Exit(exit_style, lbl) => {
-                            let lbl = lbl.map(|l| l.pretty_print());
-                            let e = match exit_style {
-                                ExitStyle::Break => mk().break_expr(lbl),
-                                ExitStyle::Continue => mk().continue_expr(lbl),
-                            };
-                            results.push((vec![mk().span(span).semi_stmt(e)], span));
-                        }
+            If(cond, then, els) => {
+                // Construct a Rust `if` statement from a condition and then/else branches
+                //
+                //   * `if <cond-expr> { } else { }` turns into `<cond-expr>;`
+                //   * `if <cond-expr> { .. } else { }` turns into `if <cond-expr> { .. }`
+                //   * `if <cond-expr> { } else { .. }` turns into `if !<cond-expr> { .. }`
+                //
+
+                let (then_stmts, then_span) = self.to_stmt(*then, comment_store);
+
+                let (mut els_stmts, els_span) = self.to_stmt(*els, comment_store);
+
+                let mut if_stmt = match (then_stmts.is_empty(), els_stmts.is_empty()) {
+                    (true, true) => mk().semi_stmt(cond),
+                    (false, true) => {
+                        let if_expr =
+                            mk().ifte_expr(cond, mk().span(then_span).block(then_stmts), None);
+                        mk().expr_stmt(if_expr)
                     }
-                }
-
-                ToStmtTask::BuildAppendEmpty { ast_span, lhs_span } => {
-                    let (mut stmts, stmts_span) = results
-                        .pop()
-                        .expect("to_stmt lost an append-empty rhs result");
-                    let span = ast_span.substitute_dummy(lhs_span);
-                    let span = span_subst_lo(span, lhs_span).unwrap_or_else(|| {
-                        comment_store.move_comments(lhs_span.lo(), span.lo());
-                        span
-                    });
-                    let span = span_subst_hi(span, stmts_span).unwrap_or(span);
-                    adjust_stmt_block_span(&mut stmts, span, comment_store);
-                    results.push((stmts, span));
-                }
-
-                ToStmtTask::BuildAppend { ast_span } => {
-                    let (rhs_stmts, rhs_span) =
-                        results.pop().expect("to_stmt lost an append rhs result");
-                    let (mut stmts, lhs_span) =
-                        results.pop().expect("to_stmt lost an append lhs result");
-                    let span = ast_span.substitute_dummy(lhs_span);
-                    let span = span_subst_lo(span, lhs_span).unwrap_or_else(|| {
-                        comment_store.move_comments(lhs_span.lo(), span.lo());
-                        span
-                    });
-                    let span = span_subst_hi(span, rhs_span).unwrap_or(span);
-                    stmts.extend(rhs_stmts);
-                    adjust_stmt_block_span(&mut stmts, span, comment_store);
-                    results.push((stmts, span));
-                }
-
-                ToStmtTask::BuildMatch { span, cond, pats } => {
-                    let mut arms = Vec::with_capacity(pats.len());
-                    for pat in pats.into_iter().rev() {
-                        let (stmts, stmts_span) =
-                            results.pop().expect("to_stmt lost a match arm result");
-                        let body = mk().block_expr(mk().span(stmts_span).block(stmts));
-                        arms.push(mk().arm(pat, None, body));
+                    (true, false) => {
+                        let negated_cond = not(&cond);
+                        let if_expr = mk().ifte_expr(
+                            negated_cond,
+                            mk().span(els_span).block(els_stmts),
+                            None,
+                        );
+                        mk().expr_stmt(if_expr)
                     }
-                    arms.reverse();
-
-                    let e = mk().match_expr(cond, arms);
-                    results.push((vec![mk().span(span).expr_stmt(e)], span));
-                }
-
-                ToStmtTask::BuildIf { span, cond } => {
-                    let (mut els_stmts, els_span) =
-                        results.pop().expect("to_stmt lost an else branch result");
-                    let (then_stmts, then_span) =
-                        results.pop().expect("to_stmt lost a then branch result");
-
-                    fn is_expr(kind: &Stmt) -> bool {
-                        matches!(kind, Stmt::Expr(Expr::If(..) | Expr::Block(..), None))
-                    }
-
-                    let mut if_stmt = match (then_stmts.is_empty(), els_stmts.is_empty()) {
-                        (true, true) => mk().semi_stmt(cond),
-                        (false, true) => {
-                            let if_expr =
-                                mk().ifte_expr(cond, mk().span(then_span).block(then_stmts), None);
-                            mk().expr_stmt(if_expr)
+                    (false, false) => {
+                        fn is_expr(kind: &Stmt) -> bool {
+                            matches!(kind, Stmt::Expr(Expr::If(..) | Expr::Block(..), None))
                         }
-                        (true, false) => {
-                            let negated_cond = not(&cond);
-                            let if_expr = mk().ifte_expr(
-                                negated_cond,
-                                mk().span(els_span).block(els_stmts),
-                                None,
-                            );
-                            mk().expr_stmt(if_expr)
-                        }
-                        (false, false) => {
-                            let is_els_expr = els_stmts.len() == 1 && is_expr(&els_stmts[0]);
 
-                            let els_branch = if is_els_expr {
-                                let stmt_expr = els_stmts.swap_remove(0);
-                                let stmt_expr_span = stmt_expr.span();
-                                let mut els_expr = match stmt_expr {
-                                    Stmt::Expr(e, None) => e,
-                                    _ => panic!("is_els_expr out of sync"),
-                                };
-                                els_expr.set_span(stmt_expr_span);
-                                Box::new(els_expr)
-                            } else {
-                                mk().block_expr(mk().span(els_span).block(els_stmts))
+                        // Do the else statements contain a single If, IfLet or
+                        // Block expression? The pretty printer handles only
+                        // these kinds of expressions for the else case.
+                        let is_els_expr = els_stmts.len() == 1 && is_expr(&els_stmts[0]);
+
+                        let els_branch = if is_els_expr {
+                            let stmt_expr = els_stmts.swap_remove(0);
+                            let stmt_expr_span = stmt_expr.span();
+                            let mut els_expr = match stmt_expr {
+                                Stmt::Expr(e, None) => e,
+                                _ => panic!("is_els_expr out of sync"),
                             };
-
-                            let if_expr = mk().ifte_expr(
-                                cond,
-                                mk().span(then_span).block(then_stmts),
-                                Some(els_branch),
-                            );
-                            mk().expr_stmt(if_expr)
-                        }
-                    };
-
-                    if_stmt.set_span(span);
-                    results.push((vec![if_stmt], span));
-                }
-
-                ToStmtTask::BuildGotoTable { span, labels } => {
-                    let (then, then_span) = results
-                        .pop()
-                        .expect("to_stmt lost a goto-table default result");
-                    let mut arms = Vec::with_capacity(labels.len() + 1);
-                    for lbl in labels.into_iter().rev() {
-                        let (stmts, stmts_span) = results
-                            .pop()
-                            .expect("to_stmt lost a goto-table case result");
-                        let lbl_lit = if self.debug_labels {
-                            lbl.to_string_lit()
+                            els_expr.set_span(stmt_expr_span);
+                            Box::new(els_expr)
                         } else {
-                            lbl.to_int_lit()
+                            mk().block_expr(mk().span(els_span).block(els_stmts))
                         };
-                        let pat = mk().lit_pat(lbl_lit);
-                        let body = mk().block_expr(mk().span(stmts_span).block(stmts));
-                        arms.push(mk().arm(pat, None, body));
+
+                        let if_expr = mk().ifte_expr(
+                            cond,
+                            mk().span(then_span).block(then_stmts),
+                            Some(els_branch),
+                        );
+                        mk().expr_stmt(if_expr)
                     }
-                    arms.reverse();
+                };
+
+                if_stmt.set_span(span);
+                if_stmt
+            }
+
+            GotoTable(cases, then) => {
+                // Dispatch based on the next `c2rust_current_block` value.
+
+                let mut arms: Vec<Arm> = cases
+                    .into_iter()
+                    .map(|(lbl, stmts)| -> Arm {
+                        let (stmts, stmts_span) = self.to_stmt(stmts, comment_store);
+                        let pat = {
+                            let path = mk().path(vec![
+                                self.current_block_enum.clone(),
+                                lbl.to_variant_ident(),
+                            ]);
+                            mk().path_pat(path, None)
+                        };
+                        let body = mk().block_expr(mk().span(stmts_span).block(stmts));
+                        mk().arm(pat, None, body)
+                    })
+                    .collect();
+
+                if let Some(then) = then {
+                    let (then, then_span) = self.to_stmt(*then, comment_store);
 
                     arms.push(mk().arm(
                         mk().wild_pat(),
                         None,
                         mk().block_expr(mk().span(then_span).block(then)),
                     ));
-
-                    let e = mk().match_expr(self.current_block.clone(), arms);
-                    results.push((vec![mk().span(span).expr_stmt(e)], span));
                 }
 
-                ToStmtTask::BuildLoop { span, label } => {
-                    let (body, body_span) = results.pop().expect("to_stmt lost a loop body result");
+                let e = mk().match_expr(self.current_block_variable.clone(), arms);
 
-                    if let Some(stmt @ &Stmt::Expr(ref expr, None)) = body.first() {
-                        let stmt_span = stmt.span();
-                        let span = if !stmt_span.is_dummy() {
-                            stmt_span
-                        } else {
-                            span
-                        };
-                        if let syn::Expr::If(ExprIf {
-                            cond,
-                            then_branch,
-                            else_branch: None,
-                            ..
-                        }) = expr
+                mk().span(span).expr_stmt(e)
+            }
+
+            Loop(lbl, body) => {
+                // Make (possibly labelled) `loop`.
+                //
+                //   * Loops that start with an `if <cond-expr> { break; }` get converted into `while` loops
+                //
+
+                let (body, body_span) = self.to_stmt(*body, comment_store);
+
+                // TODO: this is ugly but it needn't be. We are just pattern matching on particular ASTs.
+                if let Some(stmt @ &Stmt::Expr(ref expr, None)) = body.first() {
+                    let stmt_span = stmt.span();
+                    let span = if !stmt_span.is_dummy() {
+                        stmt_span
+                    } else {
+                        span
+                    };
+                    if let syn::Expr::If(ExprIf {
+                        cond,
+                        then_branch,
+                        else_branch: None,
+                        ..
+                    }) = expr
+                    {
+                        if let [Stmt::Expr(
+                            syn::Expr::Break(ExprBreak {
+                                label: None,
+                                expr: None,
+                                ..
+                            }),
+                            Some(_),
+                        )] = then_branch.stmts.as_slice()
                         {
-                            if let [Stmt::Expr(
-                                syn::Expr::Break(ExprBreak {
-                                    label: None,
-                                    expr: None,
-                                    ..
-                                }),
-                                Some(_),
-                            )] = then_branch.stmts.as_slice()
-                            {
-                                let e = mk().while_expr(
-                                    not(cond),
-                                    mk().span(body_span)
-                                        .block(body.iter().skip(1).cloned().collect::<Vec<_>>()),
-                                    label.map(|l| l.pretty_print()),
-                                );
-                                results.push((vec![mk().span(span).expr_stmt(e)], span));
-                                continue;
-                            }
+                            let e = mk().while_expr(
+                                not(cond),
+                                mk().span(body_span)
+                                    .block(body.iter().skip(1).cloned().collect::<Vec<_>>()),
+                                lbl.map(|l| l.pretty_print()),
+                            );
+                            return (vec![mk().span(span).expr_stmt(e)], ast.span);
                         }
                     }
-
-                    let e = mk().loop_expr(
-                        mk().span(body_span).block(body),
-                        label.map(|l| l.pretty_print()),
-                    );
-                    results.push((vec![mk().span(span).expr_stmt(e)], span));
                 }
-            }
-        }
 
-        match results.len() {
-            1 => results.pop().expect("checked result length"),
-            _ => panic!("to_stmt finished with an invalid result stack"),
-        }
+                let e = mk().loop_expr(
+                    mk().span(body_span).block(body),
+                    lbl.map(|l| l.pretty_print()),
+                );
+
+                mk().span(span).expr_stmt(e)
+            }
+
+            Block(lbl, body) => {
+                // Make a labeled block.
+
+                let (body, body_span) = self.to_stmt(*body, comment_store);
+
+                let e =
+                    mk().labelled_block_expr(mk().span(body_span).block(body), lbl.pretty_print());
+
+                mk().span(span).expr_stmt(e)
+            }
+
+            Exit(exit_style, lbl) => {
+                // Make a (possibly labelled) `break` or `continue`.
+
+                let lbl = lbl.map(|l| l.pretty_print());
+                let e = match exit_style {
+                    ExitStyle::Break => mk().break_expr(lbl),
+                    ExitStyle::Continue => mk().continue_expr(lbl),
+                };
+
+                mk().span(span).semi_stmt(e)
+            }
+        };
+
+        (vec![stmt], ast.span)
     }
 }
 
@@ -984,5 +1085,169 @@ fn not(bool_expr: &Expr) -> Box<Expr> {
             mk().binary_expr(op, left.clone(), right.clone())
         }
         _ => mk().unary_expr(UnOp::Not(Default::default()), Box::new(bool_expr.clone())),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    type AST = StructuredAST<Box<Expr>, Pat, Label, Stmt>;
+
+    fn label(id: u64) -> Label {
+        Label::Synthetic(id)
+    }
+
+    fn check(mut input: AST, expected: AST) {
+        cleanup_labels(&mut input, &None, &mut IndexSet::new());
+        assert_eq!(input, expected);
+    }
+
+    #[test]
+    fn test_removes_label_from_exit_targeting_current_loop() {
+        // 'a: loop { break 'a; }  =>  loop { break; }
+        check(
+            AST::mk_loop(
+                Some(label(1)),
+                AST::mk_exit(ExitStyle::Break, Some(label(1))),
+            ),
+            AST::mk_loop(None, AST::mk_exit(ExitStyle::Break, None)),
+        );
+    }
+
+    #[test]
+    fn test_keeps_label_for_outer_loop_exit() {
+        // 'a: loop { loop { break 'a; } }  =>  'a: loop { loop { break 'a; } }
+        check(
+            AST::mk_loop(
+                Some(label(1)),
+                AST::mk_loop(
+                    Some(label(2)),
+                    AST::mk_exit(ExitStyle::Break, Some(label(1))),
+                ),
+            ),
+            AST::mk_loop(
+                Some(label(1)),
+                AST::mk_loop(None, AST::mk_exit(ExitStyle::Break, Some(label(1)))),
+            ),
+        );
+    }
+
+    #[test]
+    fn test_removes_unused_loop_label() {
+        // 'a: loop { break; }  =>  loop { break; }
+        check(
+            AST::mk_loop(Some(label(1)), AST::mk_exit(ExitStyle::Break, None)),
+            AST::mk_loop(None, AST::mk_exit(ExitStyle::Break, None)),
+        );
+    }
+
+    #[test]
+    fn test_block_unlabeled_loop_with_labeled_break() {
+        // 'a: { loop { break 'a; } }  =>  loop { break; }
+        check(
+            AST::mk_block(
+                label(1),
+                AST::mk_loop(None, AST::mk_exit(ExitStyle::Break, Some(label(1)))),
+            ),
+            AST::mk_loop(None, AST::mk_exit(ExitStyle::Break, None)),
+        );
+    }
+
+    #[test]
+    fn test_block_labeled_loop_merges_labels() {
+        // 'a: { 'b: loop { break 'b; } }  =>  loop { break; }
+        check(
+            AST::mk_block(
+                label(1),
+                AST::mk_loop(
+                    Some(label(2)),
+                    AST::mk_exit(ExitStyle::Break, Some(label(2))),
+                ),
+            ),
+            AST::mk_loop(None, AST::mk_exit(ExitStyle::Break, None)),
+        );
+    }
+
+    #[test]
+    fn test_block_labeled_loop_with_outer_exit() {
+        // 'a: { 'b: loop { break 'a; } }  =>  loop { break; }
+        check(
+            AST::mk_block(
+                label(1),
+                AST::mk_loop(
+                    Some(label(2)),
+                    AST::mk_exit(ExitStyle::Break, Some(label(1))),
+                ),
+            ),
+            AST::mk_loop(None, AST::mk_exit(ExitStyle::Break, None)),
+        );
+    }
+
+    #[test]
+    fn test_block_loop_with_external_exit() {
+        // 'a: { 'b: loop { break 'c; } }  =>  loop { break 'c; }
+        check(
+            AST::mk_block(
+                label(1),
+                AST::mk_loop(
+                    Some(label(2)),
+                    AST::mk_exit(ExitStyle::Break, Some(label(3))),
+                ),
+            ),
+            AST::mk_loop(None, AST::mk_exit(ExitStyle::Break, Some(label(3)))),
+        );
+    }
+
+    #[test]
+    fn test_block_nested_loops_with_labeled_break() {
+        // Regression test: ensures block containing labeled loop preserves loop structure.
+        // 'a: { 'b: loop { loop { break 'b; } } }  =>  'a: loop { loop { break 'a; } }
+        check(
+            AST::mk_block(
+                label(1),
+                AST::mk_loop(
+                    Some(label(2)),
+                    AST::mk_loop(
+                        Some(label(3)),
+                        AST::mk_exit(ExitStyle::Break, Some(label(2))),
+                    ),
+                ),
+            ),
+            AST::mk_loop(
+                Some(label(1)),
+                AST::mk_loop(None, AST::mk_exit(ExitStyle::Break, Some(label(1)))),
+            ),
+        );
+    }
+
+    #[test]
+    fn test_nested_blocks_merge_labels() {
+        // 'a: { 'b: { break 'b; } }  =>  'a: { break 'a; }
+        check(
+            AST::mk_block(
+                label(1),
+                AST::mk_block(label(2), AST::mk_exit(ExitStyle::Break, Some(label(2)))),
+            ),
+            AST::mk_block(label(1), AST::mk_exit(ExitStyle::Break, Some(label(1)))),
+        );
+    }
+
+    #[test]
+    fn test_nested_blocks_with_loop() {
+        // 'a: { 'b: { loop { break 'b; } } }  =>  loop { break; }
+        check(
+            AST::mk_block(
+                label(1),
+                AST::mk_block(
+                    label(2),
+                    AST::mk_loop(
+                        Some(label(3)),
+                        AST::mk_exit(ExitStyle::Break, Some(label(2))),
+                    ),
+                ),
+            ),
+            AST::mk_loop(None, AST::mk_exit(ExitStyle::Break, None)),
+        );
     }
 }

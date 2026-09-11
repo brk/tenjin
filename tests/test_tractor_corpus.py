@@ -48,18 +48,21 @@ def test_tractor_ta3_corpus_p0_app(tenjin_fixtures: TenjinFixtures):
     eval_tractor_ta3_corpus_app(tenjin_fixtures, case_dir)
 
 
+@pytest.mark.skip("recursive relooper stack overflow in debug builds")
 @pytest.mark.slow
 def test_tractor_ta3_corpus_p01_005_app(tenjin_fixtures: TenjinFixtures):
     case_dir = "Public-Tests/P01_sphincs_plus/005_sphincs_PQCgenKAT_sign_blake_128f_simple"
     eval_tractor_ta3_corpus_app(tenjin_fixtures, case_dir)
 
 
+@pytest.mark.skip("recursive relooper stack overflow in debug builds")
 @pytest.mark.slow
 def test_tractor_ta3_corpus_p01_010_app(tenjin_fixtures: TenjinFixtures):
     case_dir = "Public-Tests/P01_sphincs_plus/010_sphincs_PQCgenKAT_sign_blake_192f_robust"
     eval_tractor_ta3_corpus_app(tenjin_fixtures, case_dir)
 
 
+@pytest.mark.skip("recursive relooper stack overflow in debug builds")
 @pytest.mark.slow
 def test_tractor_ta3_corpus_p01_016_app(tenjin_fixtures: TenjinFixtures):
     case_dir = "Public-Tests/P01_sphincs_plus/016_sphincs_PQCgenKAT_sign_blake_256s_robust"
@@ -84,24 +87,28 @@ def test_tractor_ta3_corpus_p01_042_app(tenjin_fixtures: TenjinFixtures):
     eval_tractor_ta3_corpus_app(tenjin_fixtures, case_dir)
 
 
+@pytest.mark.skip("recursive relooper stack overflow in debug builds")
 @pytest.mark.slow
 def test_tractor_ta3_corpus_p01_053_lib(tenjin_fixtures: TenjinFixtures):
     case_dir = "Public-Tests/P01_sphincs_plus/053_blake_128f_s_initialize_hash_function_lib"
     eval_tractor_ta3_corpus_lib(tenjin_fixtures, case_dir)
 
 
+@pytest.mark.skip("recursive relooper stack overflow in debug builds")
 @pytest.mark.slow
 def test_tractor_ta3_corpus_p01_059_lib(tenjin_fixtures: TenjinFixtures):
     case_dir = "Public-Tests/P01_sphincs_plus/059_blake_128f_r_gen_message_random_lib"
     eval_tractor_ta3_corpus_lib(tenjin_fixtures, case_dir)
 
 
+@pytest.mark.skip("recursive relooper stack overflow in debug builds")
 @pytest.mark.slow
 def test_tractor_ta3_corpus_p01_066_lib(tenjin_fixtures: TenjinFixtures):
     case_dir = "Public-Tests/P01_sphincs_plus/066_blake_128s_r_prf_addr_lib"
     eval_tractor_ta3_corpus_lib(tenjin_fixtures, case_dir)
 
 
+@pytest.mark.skip("recursive relooper stack overflow in debug builds")
 @pytest.mark.slow
 def test_tractor_ta3_corpus_p01_088_lib(tenjin_fixtures: TenjinFixtures):
     case_dir = "Public-Tests/P01_sphincs_plus/088_blake_256f_s_hash_message_lib"

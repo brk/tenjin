@@ -1195,7 +1195,7 @@ def test_itsjustme27__dns_tool_exe(tenjin_fixtures: TenjinFixtures):
     run_cargo_on_final(tmp_resultsdir / "final", ["build"])
 
     cp = hermetic.run(
-        ["target/debug/dt", "google.com"],
+        ["target/debug/dns_tool", "google.com"],
         capture_output=True,
         cwd=tmp_resultsdir / "final",
     )
