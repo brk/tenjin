@@ -35,7 +35,7 @@ impl Rewriter {
                 let replacement: Expr = syn::parse_quote! {
                     #place.store(#value, ::core::sync::atomic::Ordering::SeqCst)
                 };
-                Some((replacement, Depth::Limited(0)))
+                Some((replacement, Depth::Unlimited))
             }
             Expr::Struct(expr_struct) => {
                 let struct_name = expr_struct.path.segments.last()?.ident.to_string();
@@ -62,7 +62,7 @@ impl Rewriter {
                     changed = true;
                 }
 
-                changed.then_some((Expr::Struct(replacement), Depth::Limited(0)))
+                changed.then_some((Expr::Struct(replacement), Depth::Unlimited))
             }
             _ => None,
         }
@@ -106,7 +106,7 @@ impl Rewriter {
         let replacement: Expr = syn::parse_quote! {
             #receiver.#method(#(#values,)* ::core::sync::atomic::Ordering::#ordering)
         };
-        Some((replacement, Depth::Limited(0)))
+        Some((replacement, Depth::Unlimited))
     }
 
     /// Rewrite `array[Nusize]` into `array[N]`. Array indexing already constrains
@@ -189,7 +189,7 @@ impl Rewriter {
             #left_inner #op3 #right_inner
         };
 
-        Some((replacement, Depth::Limited(0)))
+        Some((replacement, Depth::Unlimited))
     }
 
     /// Rewrite `xj_astgrep_print("{:}", E as char)` into a direct stdout byte write.
@@ -227,7 +227,7 @@ impl Rewriter {
             ::std::io::stdout().write_all(&[#byte_expr as u8])
         };
 
-        Some((replacement, Depth::Limited(0)))
+        Some((replacement, Depth::Unlimited))
     }
 
     pub fn rewrite_ctime_time(&self, symbols: &SymbolTable, expr: &Expr) -> Option<(Expr, Depth)> {
@@ -401,7 +401,7 @@ impl Rewriter {
             syn::parse_quote! { #receiver.#method_ident() }
         };
 
-        Some((replacement, Depth::Limited(0)))
+        Some((replacement, Depth::Unlimited))
     }
 
     /// Rewrite `strstr(e1, e2)` into `xj_cstr::strstr_mut_ptr(e1, e2)` when
@@ -429,7 +429,7 @@ impl Rewriter {
             xj_cstr::strstr_mut_ptr(#e1, #e2)
         };
 
-        Some((replacement, Depth::Limited(0)))
+        Some((replacement, Depth::Unlimited))
     }
 
     /// Rewrite `fgets(e1.as_mut_ptr(), e2, e3).is_null()`
@@ -503,7 +503,7 @@ impl Rewriter {
                 let replacement: Expr = syn::parse_quote! {
                     fgets_stdin_u8_count(#decayed.as_mut_u8_slice(), #limit as usize).is_none()
                 };
-                return Some((replacement, Depth::Limited(0)));
+                return Some((replacement, Depth::Unlimited));
             }
         }
 
@@ -598,12 +598,12 @@ impl Rewriter {
             let rewrite: Expr = syn::parse_quote! {
                 #expr[0]
             };
-            return Some((rewrite, Depth::Limited(0)));
+            return Some((rewrite, Depth::Unlimited));
         } else if is_indexable_typed(expr, symbols) {
             let rewrite: Expr = syn::parse_quote! {
                 #expr[0]
             };
-            return Some((rewrite, Depth::Limited(0)));
+            return Some((rewrite, Depth::Unlimited));
         }
         None
     }
@@ -645,7 +645,7 @@ impl Rewriter {
         let replacement: Expr = syn::parse_quote! {
             ::std::io::stdout().write_all(& #base[#offset..])
         };
-        Some((replacement, Depth::Limited(0)))
+        Some((replacement, Depth::Unlimited))
     }
 
     /// Rewrite `usleep(n)` into `std::thread::sleep(std::time::Duration::from_micros(n))`.
@@ -668,7 +668,7 @@ impl Rewriter {
         let replacement: Expr = syn::parse_quote! {
             std::thread::sleep(std::time::Duration::from_micros(#arg))
         };
-        Some((replacement, Depth::Limited(0)))
+        Some((replacement, Depth::Unlimited))
     }
 
     /// Rewrite `memset(arr.as_mut_ptr(), val, len)`
@@ -711,7 +711,7 @@ impl Rewriter {
             let replacement: Expr = syn::parse_quote! {
                 #coerced_arr[..#len_arg as usize].fill(#val_arg_as_u8)
             };
-            return Some((replacement, Depth::Limited(0)));
+            return Some((replacement, Depth::Unlimited));
         }
 
         if let Some(receiver) = extract_slice_ptr_base(arr_arg, symbols) {
@@ -727,7 +727,7 @@ impl Rewriter {
             let replacement: Expr = syn::parse_quote! {
                 cast_slice_mut(&mut #receiver)[..#len_arg as usize].fill(#val_arg_as_u8)
             };
-            return Some((replacement, Depth::Limited(0)));
+            return Some((replacement, Depth::Unlimited));
         }
         None
     }
@@ -792,7 +792,9 @@ impl Rewriter {
         let mut scanf_compatible_args = vec![];
         for arg in value_args {
             if let Some(coerced) = self.coerce_scanf_arg(arg, symbols) {
-                scanf_compatible_args.push(*coerced);
+                let mut coerced = *coerced;
+                self.rewrite_expr_fully(symbols, &mut coerced);
+                scanf_compatible_args.push(coerced);
             } else {
                 eprintln!(
                     "synsub: rewrite_scanf_and_fscanf_and_sscanf: unsupported target argument {arg:?}"
@@ -814,6 +816,8 @@ impl Rewriter {
             }
         } else if let Some(input_u8s) = self.coerce_u8s(&call.args[0], symbols, false) {
             self.add_dep("xj_scanf");
+            let mut input_u8s = *input_u8s;
+            self.rewrite_expr_fully(symbols, &mut input_u8s);
             // self.with_cur_file_item_store(|item_store| {
             //     item_store.add_use(false, vec!["xj_scanf".into()], "bscanf");
             // });
@@ -907,7 +911,7 @@ impl Rewriter {
             return None;
         }
 
-        Some((Stmt::Expr(stripped.clone(), *semi), Depth::Limited(0)))
+        Some((Stmt::Expr(stripped.clone(), *semi), Depth::Unlimited))
     }
 
     /// Rewrite
@@ -988,7 +992,7 @@ impl Rewriter {
                 let replacement: Expr = syn::parse_quote! {
                     (::std::ffi::CStr::from_bytes_until_nul(#decayed).unwrap().count_bytes()) as size_t
                 };
-                Some((replacement, Depth::Limited(0)))
+                Some((replacement, Depth::Unlimited))
             } else {
                 self.add_dep("xj_cstr");
                 self.with_cur_file_item_store(|item_store| {
@@ -997,7 +1001,7 @@ impl Rewriter {
                 let replacement: Expr = syn::parse_quote! {
                     (::std::ffi::CStr::from_bytes_until_nul(#decayed.as_u8_slice()).unwrap().count_bytes()) as size_t
                 };
-                Some((replacement, Depth::Limited(0)))
+                Some((replacement, Depth::Unlimited))
             }
         } else {
             None
@@ -1020,7 +1024,7 @@ impl Rewriter {
             let mut replacement = local.clone();
             replacement.init.as_mut()?.expr =
                 Box::new(atomic_constructor(&pat_type.ty, &localinit.expr)?);
-            return Some((Stmt::Local(replacement), Depth::Limited(0)));
+            return Some((Stmt::Local(replacement), Depth::Unlimited));
         }
 
         if let Some(elt_ty) = type_of_slice_ref(&pat_type.ty) {
@@ -1030,7 +1034,7 @@ impl Rewriter {
                 let replacement: Stmt = syn::parse_quote! {
                     let #pat_type = #coerced;
                 };
-                return Some((replacement, Depth::Limited(0)));
+                return Some((replacement, Depth::Unlimited));
             }
         }
 
