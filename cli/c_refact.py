@@ -271,6 +271,7 @@ def refold_build(
     t: targets.BuildTarget,
     target_dir_path: Path,
     consolidation_data_by_rel_tu: dict[str, ConsolidationRevertContext] | None = None,
+    refold_map_root: Path | None = None,
 ) -> None:
     """
     For each TU in compdb, run clang-refold to produce .c files from modified .i files
@@ -283,7 +284,11 @@ def refold_build(
         assert abs_src_path.suffixes[-2:] == [".nolines", ".i"]
         abs_src_path_base = abs_src_path.with_suffix("")
         c_path = abs_src_path_base.with_suffix(".c")
-        refold_map_path = abs_src_path_base.with_suffix(".nolines.refoldmap.json")
+        if refold_map_root is None:
+            refold_map_path = abs_src_path_base.with_suffix(".nolines.refoldmap.json")
+        else:
+            rel_src_path = abs_src_path.relative_to(target_dir_path)
+            refold_map_path = (refold_map_root / rel_src_path).with_suffix(".refoldmap.json")
         edit_map_path = abs_src_path_base.with_suffix(".nolines.editmap.json")
 
         print("Refolding", abs_src_path, "to", c_path)
