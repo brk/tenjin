@@ -87,11 +87,13 @@ pub unsafe extern "C" fn initialized_atomic() -> ::core::ffi::c_int {
     let mut value: atomic_int = 5 as ::core::ffi::c_int;
     return ::core::intrinsics::atomic_load_seqcst(&raw mut value);
 }
-static atomic_numchars: size_t = 0;
 #[no_mangle]
-pub unsafe extern "C" fn atomic_size_t_remainder(mut value: uint64_t) -> uint64_t {
-    return value.wrapping_rem(::core::intrinsics::atomic_load_seqcst(
-        &raw mut atomic_numchars,
-    ));
+pub unsafe extern "C" fn atomic_size_t_remainder(
+    mut value: uint64_t,
+    mut atomic_numchars: size_t,
+) -> uint64_t {
+    return value.wrapping_rem(
+        ::core::intrinsics::atomic_load_seqcst(&raw mut atomic_numchars) as uint64_t,
+    );
 }
 pub const __ATOMIC_SEQ_CST: ::core::ffi::c_int = 5 as ::core::ffi::c_int;

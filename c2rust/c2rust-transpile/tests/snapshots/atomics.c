@@ -47,9 +47,9 @@ int initialized_atomic(void) {
     return atomic_load(&value);
 }
 
-/* C's usual arithmetic conversions promote this size_t load to uint64_t. */
-static _Atomic(size_t) atomic_numchars;
-
-uint64_t atomic_size_t_remainder(uint64_t value) {
+uint64_t atomic_size_t_remainder(
+    uint64_t value,
+    _Atomic(size_t) atomic_numchars) {
+    /* C's usual arithmetic conversions promote this size_t load to uint64_t. */
     return value % __c11_atomic_load(&atomic_numchars, __ATOMIC_SEQ_CST);
 }
