@@ -261,6 +261,42 @@ def test_findfnptrdecls_marks_initialized_fnptr_vars_for_cross_tu_replication(ro
     ), replicated
 
 
+def test_findfnptrdecls_does_not_cross_tu_replicate_local_fnptr_types(root, tmp_codebase):
+    tmp_codebase.mkdir()
+    a_c = tmp_codebase / "a.c"
+    b_c = tmp_codebase / "b.c"
+
+    a_c.write_text(
+        "int needs_globals(int x) { return x + 1; }\n"
+        "int use_needs_globals(int x) {\n"
+        "    int (*fp)(int) = needs_globals;\n"
+        "    return fp(x);\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    b_c.write_text(
+        "int stays_plain(int x) { return x - 1; }\n"
+        "int use_stays_plain(int x) {\n"
+        "    int (*fp)(int) = stays_plain;\n"
+        "    return fp(x);\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    write_compile_commands_for_sources(tmp_codebase, [a_c, b_c])
+
+    output = c_refact.run_xj_prepare_findfnptrdecls(
+        tmp_codebase,
+        nonmain_tissue_functions={"needs_globals"},
+        all_function_names={"needs_globals", "use_needs_globals", "stays_plain", "use_stays_plain"},
+    )
+
+    # The local `fp` in a.c must be rewritten for `needs_globals`, but
+    # its unrelated, same-named counterpart in b.c has no cross-TU ABI.
+    assert output["modified_fn_ptr_type_locs"].get(a_c.as_posix()), output
+    assert "fp" not in output["var_decl_fn_ptr_arg_lparen_locs"].get(a_c.as_posix(), {})
+    assert "fp" not in output["var_decl_fn_ptr_arg_lparen_locs"].get(b_c.as_posix(), {})
+
+
 def test_localize_mutable_globals_phase1_clones_typedef_backed_field_types(root, tmp_codebase):
     current_codebase = tmp_codebase
     prev_codebase = tmp_codebase.parent / "prev_codebase"
