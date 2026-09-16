@@ -115,6 +115,38 @@ def test_cursor_extent_contains_typedef_embedded_struct_definition(tmp_codebase)
     assert not c_refact.cursor_extent_contains(typedef_cursor, standalone_cursor)
 
 
+def test_type_names_declared_before_offset_excludes_later_atomic_typedef(tmp_codebase):
+    tmp_codebase.mkdir()
+    sample_c = tmp_codebase / "sample.c"
+    sample_c.write_text(
+        "typedef int EarlyAlias;\n"
+        "struct EarlyTag { int value; };\n"
+        "int first_user(void) { return 0; }\n"
+        "typedef _Atomic(int) __tenjin_atomic_i32_t;\n"
+        "struct LateTag { int value; };\n",
+        encoding="utf-8",
+    )
+    write_compile_commands_for_sources(tmp_codebase, [sample_c])
+
+    compdb = compilation_database.CompileCommands.from_json_file(
+        tmp_codebase / "compile_commands.json"
+    )
+    tus = c_refact.parse_project(create_xj_clang_index(), compdb)
+    tu = next(iter(tus.values()))
+    first_user = next(
+        cursor
+        for cursor in tu.cursor.get_children()
+        if cursor.kind == CursorKind.FUNCTION_DECL and cursor.spelling == "first_user"
+    )
+
+    names = c_refact.type_names_declared_before_offset(tu, first_user.extent.start.offset)
+
+    assert "EarlyAlias" in names
+    assert "EarlyTag" in names
+    assert "__tenjin_atomic_i32_t" not in names
+    assert "LateTag" not in names
+
+
 def test_hoist_embedded_tag_definitions_unblocks_histindex_split(root, tmp_codebase):
     tmp_codebase.mkdir()
     sample_c = tmp_codebase / "sample.c"
