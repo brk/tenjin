@@ -159,4 +159,11 @@ pub unsafe extern "C" fn atomic_size_t_remainder(
         { ::core::intrinsics::AtomicOrdering::SeqCst },
     >(&raw mut atomic_numchars) as uint64_t);
 }
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn atomic_u64_add_size_t(mut total: uint64_t, mut amount: size_t) {
+    ::core::intrinsics::atomic_xadd::<_, _, { ::core::intrinsics::AtomicOrdering::SeqCst }>(
+        &raw mut total,
+        amount as uint64_t,
+    );
+}
 pub const __ATOMIC_SEQ_CST: ::core::ffi::c_int = 5 as ::core::ffi::c_int;
