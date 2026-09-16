@@ -136,7 +136,7 @@ impl Rewriter {
         replacement_lit.lit = syn::Lit::Int(LitInt::new(unsuffixed, int_lit.span()));
         replacement.index = Box::new(Expr::Lit(replacement_lit));
 
-        Some((Expr::Index(replacement), Depth::Limited(0)))
+        Some((Expr::Index(replacement), Depth::Unlimited))
     }
 
     /// Rewrite `(_ BINOP1 _) as Y CMP_BINOP3 (_ BINOP2 _) as Y`
@@ -547,13 +547,16 @@ impl Rewriter {
             return None;
         };
         let inner = expr_strip_refs(&index.expr);
+        if std::ptr::eq(inner, index.expr.as_ref()) {
+            return None;
+        }
         let new_index = syn::ExprIndex {
             attrs: index.attrs.clone(),
             expr: Box::new(inner.clone()),
             bracket_token: index.bracket_token,
             index: index.index.clone(),
         };
-        Some((Expr::Index(new_index), Depth::Limited(0)))
+        Some((Expr::Index(new_index), Depth::Unlimited))
     }
 
     /// Rewrite `e1.as_mut_ptr()[e2]` into `e1[e2]`
@@ -571,7 +574,7 @@ impl Rewriter {
             let replacement: Expr = syn::parse_quote! {
                 #decayed[#subscript]
             };
-            Some((replacement, Depth::Limited(0)))
+            Some((replacement, Depth::Unlimited))
         } else {
             None
         }
@@ -886,7 +889,7 @@ impl Rewriter {
             if #cond { #then_expr } else { #else_expr }
         };
 
-        Some((replacement, Depth::Limited(0)))
+        Some((replacement, Depth::Unlimited))
     }
 
     /// Rewrite statement expressions like `((expr));` into `expr;`.

@@ -106,11 +106,11 @@ def run_modifying_subprocess_or_restore_prev(
     """Run a mutating subprocess, restoring `prev` on subprocess failure."""
 
     def restore_preparation_dir_from_prev():
-        """Replace `current_codebase` with the exact contents of `prev`."""
+        """Restore `current_codebase` from `prev`, excluding canonical refold maps."""
         assert prev.is_dir(), f"Expected previous preparation output to be a directory: {prev}"
         if current_codebase.exists():
             shutil.rmtree(current_codebase)
-        shutil.copytree(prev, current_codebase)
+        copy_preparation_stage(prev, current_codebase, remove_stale_compdb=False)
 
     try:
         cp = run_subprocess()
@@ -489,6 +489,20 @@ def copy_codebase_dir(
         compdb_path.unlink()
 
 
+def copy_preparation_stage(src: Path, dst: Path, *, remove_stale_compdb: bool):
+    """Copy one preparation stage without duplicating canonical refold maps."""
+    assert src.is_dir()
+    shutil.copytree(
+        src,
+        dst,
+        ignore=lambda _directory, names: [
+            name for name in names if name.endswith(".refoldmap.json")
+        ],
+    )
+    if remove_stale_compdb:
+        (dst / "compile_commands.json").unlink(missing_ok=True)
+
+
 type QUSS = c_refact_type_mod_replicator.QuasiUniformSymbolSpecifier
 type QUSS_is_defn = bool
 type QUSS_and_defn = tuple[QUSS, QUSS_is_defn]
@@ -793,6 +807,7 @@ class PrepPassResultStore:
     static_uniquification_base_by_generated_name: dict[
         tenj_types.CIdentifier, tenj_types.CIdentifier
     ] = dataclasses.field(default_factory=dict)
+    refold_map_root: Path | None = None
 
 
 # Matches `weak` spelled as its own token, which covers `__attribute__((weak))`,
@@ -2030,6 +2045,7 @@ def run_preparation_passes(
 
         # Miscellaneous tasks over, onwards with preprocessor expansion!
         c_refact.preprocess_build(store.build_info, all_build_targets[0], current_codebase)
+        store.refold_map_root = current_codebase
         # build_info now marked to use preprocessed files, so re-generate compdb
         new_compdb: compilation_database.CompileCommands = (
             store.build_info.compdb_for_target_within(all_build_targets[0].key, current_codebase)
@@ -2438,6 +2454,7 @@ def run_preparation_passes(
             all_build_targets[0],
             current_codebase,
             consolidation_data_by_rel_tu=store.consolidation_data_by_rel_tu,
+            refold_map_root=store.refold_map_root,
         )
         # build_info now marked to use refolded files, for future steps
 
@@ -2496,7 +2513,7 @@ def run_preparation_passes(
         with tracker.tracking(f"preparation_pass_{counter:02d}_{tag}", newdir) as step:
             start_ns = time.perf_counter_ns()
             if counter > 0:
-                copy_codebase_dir(prev, newdir)
+                copy_preparation_stage(prev, newdir, remove_stale_compdb=True)
             cp_or_None: CompletedProcess | None = func(prev, newdir, store)
             if cp_or_None is not None:
                 step.update_sub(cp_or_None)

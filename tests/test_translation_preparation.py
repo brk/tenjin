@@ -112,3 +112,23 @@ def test_xj_generated_sources_preserves_extensionless_prebuild_output(tmp_path, 
     assert (builddir / "blocktags").exists()
     assert (current_codebase / "blocktags").exists()
     assert os.access(current_codebase / "blocktags", os.X_OK)
+
+
+def test_copy_preparation_stage_omits_refold_maps(tmp_path):
+    previous = tmp_path / "previous"
+    current = tmp_path / "current"
+    nested = previous / "src"
+    nested.mkdir(parents=True)
+    (nested / "sample.nolines.i").write_text("translation unit", encoding="utf-8")
+    (nested / "sample.nolines.refoldmap.json").write_text("large map", encoding="utf-8")
+    (nested / "keep.json").write_text("other metadata", encoding="utf-8")
+    (previous / "compile_commands.json").write_text("stale", encoding="utf-8")
+
+    translation_preparation.copy_preparation_stage(previous, current, remove_stale_compdb=True)
+
+    assert (current / "src" / "sample.nolines.i").read_text(encoding="utf-8") == (
+        "translation unit"
+    )
+    assert not (current / "src" / "sample.nolines.refoldmap.json").exists()
+    assert (current / "src" / "keep.json").read_text(encoding="utf-8") == "other metadata"
+    assert not (current / "compile_commands.json").exists()

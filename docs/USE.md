@@ -60,8 +60,8 @@ The following keys are available:
 value for each key is either a variable specifier, or a list of specifiers.
 A variable specifier is a string like `foo:bar`, which indicates the `bar`
 parameter or local variable within the `foo` function. `*:bar` means every
-such variable named `bar` in every function.
-* `declspecs_of_type` - closely related, but applies to global variables.
+such variable named `bar` in every function. A bare `quux` refers to
+a global variable.
 * `vars_mut`: likewise, a dict mapping specifiers to boolean values
     indicating whether that declaration should be marked `mut` in Rust.
 * `fn_return_type` - a dict mapping function names to the Rust type they should be made to / assumed to return
