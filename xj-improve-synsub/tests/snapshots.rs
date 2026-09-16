@@ -84,6 +84,59 @@ fn atomic_struct_initialization_and_intrinsics() {
 }
 
 #[test]
+fn atomic_intrinsics_nested_in_array_subscripts() {
+    let mut rw = Rewriter::new();
+    rw.add_expr_rewrite(Rewriter::rewrite_atomic_intrinsic);
+    rw.add_expr_rewrite(Rewriter::rewrite_usize_array_subscript_literal);
+    rw.add_expr_rewrite(Rewriter::rewrite_decayed_array_redundant_borrow);
+    check(
+        &rw,
+        r#"static index: ::core::sync::atomic::AtomicUsize =
+            ::core::sync::atomic::AtomicUsize::new(0);
+        fn demo(values: &mut [[i32; 1]; 2]) {
+            values[::core::intrinsics::atomic_load_seqcst(&raw mut index)][0usize] = 1;
+            (&values)[::core::intrinsics::atomic_load_seqcst(&raw mut index)][0usize] = 2;
+        }"#,
+        expect![[r#"
+            static index: ::core::sync::atomic::AtomicUsize = ::core::sync::atomic::AtomicUsize::new(
+                0,
+            );
+            fn demo(values: &mut [[i32; 1]; 2]) {
+                values[index.load(::core::sync::atomic::Ordering::SeqCst)][0] = 1;
+                values[index.load(::core::sync::atomic::Ordering::SeqCst)][0] = 2;
+            }
+        "#]],
+    );
+}
+
+#[test]
+fn atomic_intrinsic_nested_in_cstr_if_rewrite() {
+    let mut rw = Rewriter::new();
+    rw.add_expr_rewrite(Rewriter::rewrite_atomic_intrinsic);
+    rw.add_expr_rewrite(Rewriter::rewrite_cstr_ctor_over_if);
+    check(
+        &rw,
+        r#"static enabled: ::core::sync::atomic::AtomicI32 =
+            ::core::sync::atomic::AtomicI32::new(0);
+        fn demo() {
+            xj_str_from_ptr((if ::core::intrinsics::atomic_load_seqcst(&raw mut enabled) != 0 {
+                b"ON\0".as_ptr() as *const ::core::ffi::c_char
+            } else {
+                b"OFF\0".as_ptr() as *const ::core::ffi::c_char
+            }) as *const core::ffi::c_char);
+        }"#,
+        expect![[r#"
+            static enabled: ::core::sync::atomic::AtomicI32 = ::core::sync::atomic::AtomicI32::new(
+                0,
+            );
+            fn demo() {
+                if enabled.load(::core::sync::atomic::Ordering::SeqCst) != 0 { "ON" } else { "OFF" };
+            }
+        "#]],
+    );
+}
+
+#[test]
 fn assignment_to_immutable_atomic_global_becomes_store() {
     let mut rw = Rewriter::new();
     rw.add_expr_rewrite(Rewriter::rewrite_atomic_initialization);
