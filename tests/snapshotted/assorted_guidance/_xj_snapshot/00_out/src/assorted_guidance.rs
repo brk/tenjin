@@ -36,7 +36,6 @@ extern "C" {
     static extern_int_nonmutbl: ::core::ffi::c_int;
 }
 pub type size_t = ::core::ffi::c_ulong;
-pub type __tenjin_atomic_i32_t = ::core::ffi::c_int;
 #[derive(Copy, Clone)]
 #[repr(C)]
 pub struct StructWithMembersA {
@@ -61,14 +60,12 @@ pub struct PodGuided {
     pub a: ::core::ffi::c_int,
     pub b: ::core::ffi::c_int,
 }
-static static_int_nonmutbl: __tenjin_atomic_i32_t = 0 as ::core::ffi::c_int;
+static static_int_nonmutbl: ::core::ffi::c_int = 0 as ::core::ffi::c_int;
 #[no_mangle]
 pub unsafe fn use_global_ints() {
     static static_local_nonmutbl: ::core::ffi::c_int = 0 as ::core::ffi::c_int;
-    extern_int_unguided = 5 as ::core::ffi::c_int
-        + extern_int_nonmutbl
-        + ::core::intrinsics::atomic_load_seqcst(&raw mut static_int_nonmutbl)
-        + static_local_nonmutbl;
+    extern_int_unguided =
+        5 as ::core::ffi::c_int + extern_int_nonmutbl + static_int_nonmutbl + static_local_nonmutbl;
 }
 #[no_mangle]
 pub unsafe fn print_owned_String(mut ostr: String) {
@@ -391,7 +388,6 @@ pub unsafe fn pass_slice_offset(mut idx: ::core::ffi::c_int) {
     ];
     receive_slice(&(&mut arr)[(idx + 2 as ::core::ffi::c_int) as usize..]);
 }
-pub const __ATOMIC_SEQ_CST: ::core::ffi::c_int = 5 as ::core::ffi::c_int;
 unsafe fn xj_str_from_ptr<'a>(ptr: *const core::ffi::c_char) -> &'a str {
     if ptr.is_null() {
         "(null)"

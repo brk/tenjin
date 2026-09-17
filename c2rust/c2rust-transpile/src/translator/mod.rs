@@ -5299,6 +5299,7 @@ impl<'c> Translation<'c> {
             }
 
             Atomic {
+                typ,
                 ref name,
                 ptr,
                 order,
@@ -5307,7 +5308,15 @@ impl<'c> Translation<'c> {
                 val2,
                 weak,
                 ..
-            } => self.convert_atomic(ctx, name, ptr, order, val1, order_fail, val2, weak),
+            } => {
+                // AtomicExpr bypasses the normal expression conversion paths, which
+                // usually apply `override_ty` to preserve C's implicit arithmetic
+                // conversions.  An atomic load of `size_t`, for example, must be
+                // cast when it is used as the RHS of a `uint64_t` remainder.
+                let val =
+                    self.convert_atomic(ctx, name, ptr, order, val1, order_fail, val2, weak)?;
+                self.make_cast(ctx, typ, override_ty.unwrap_or(typ), val, ctx_guided_type)
+            }
         }
     }
 
